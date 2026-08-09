@@ -118,6 +118,13 @@ class Storage:
     def close(self) -> None:
         self._conn.close()
 
+    def __enter__(self) -> "Storage":
+        """支持 with 语句（GUI 等场景使用）。"""
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.close()
+
     # ---------- 写入 ----------
 
     def insert_article(self, article: Article, title_fp: str = "") -> tuple[int, bool]:

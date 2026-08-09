@@ -123,6 +123,13 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_gui(args: argparse.Namespace) -> int:
+    """news gui —— 启动 Windows 桌面版 ECO News Reader。"""
+    from .gui import run_gui
+
+    return run_gui(db_path=args.db, site=args.site)
+
+
 def cmd_process(args: argparse.Namespace) -> int:
     """news process —— 把已入库的文章交给 AI 生成结构化分析并保存。
 
@@ -309,6 +316,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_status.add_argument("--source", help="按站点过滤")
     _add_common_args(p_status)
     p_status.set_defaults(func=cmd_status)
+
+    p_gui = sub.add_parser("gui", help="启动 Windows 桌面 GUI（ECO News Reader）")
+    p_gui.add_argument("--site", default="eco", help="站点 id（当前仅 ECO）")
+    _add_common_args(p_gui)
+    p_gui.set_defaults(func=cmd_gui)
 
     p_process = sub.add_parser("process", help="AI 处理已入库文章（生成结构化分析）")
     p_process.add_argument("--site", help="只处理指定站点（默认全部）")

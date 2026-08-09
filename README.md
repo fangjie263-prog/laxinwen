@@ -108,6 +108,10 @@ uv run news export --format html --site eco           # 只导出 ECO
 uv run news export --format html --article-id 1       # 只导出指定文章
 uv run news export --format html --output /tmp/out    # 指定导出目录
 
+# ---------- Windows 桌面 GUI（ECO News Reader） ----------
+# 轻量级 tkinter 桌面窗口（Python 标准库，零额外依赖）
+uv run news gui
+
 # ---------- 测试 ----------
 uv run python -m pytest          # 全部离线测试
 uv run python -m pytest -m network   # 需要外网的在线测试
@@ -115,10 +119,78 @@ uv run python -m pytest -m network   # 需要外网的在线测试
 
 ---
 
+## Windows 桌面 GUI（ECO News Reader）
+
+> 第四阶段新增：把 CLI 的完整能力包成普通用户可直接双击使用的 Windows 桌面窗口。
+> **GUI 只是用户界面层**：抓取 / 去重 / AI 分析 / HTML 导出全部调用现有
+> pipeline / processor / export，**绝不重新实现**一套抓取逻辑，也不破坏去重。
+
+### 启动方式
+
+**方式一：命令行**
+
+```bash
+uv run news gui
+```
+
+**方式二：Windows 双击**
+
+```
+双击 NewsReader.bat
+```
+
+- 自动 `cd` 到项目目录、检查 uv、首次自动 `uv sync`，然后 `uv run news gui`；
+- 出错时窗口保持打开并显示错误码，方便排查；
+- **不包含任何 API Key**，不修改环境变量中的敏感信息（AI 配置请放在项目根 `.env`）。
+
+需要查看完整命令行日志时，双击 `NewsReader-Console.bat`（保留控制台窗口）。
+
+### 主界面
+
+| 区域 | 说明 |
+| --- | --- |
+| 新闻网站 | 下拉框（当前仅 ECO，未来可扩展） |
+| 抓取数量 | 数字输入框（默认 100，无上限）+ 快捷按钮 `[50] [100] [200]` |
+| 抓取最新新闻 | 等价 `news fetch --site eco --limit N`，**异步执行**不卡界面 |
+| 📖 打开新闻库 | 导出 News Archive（`news export --format news-html --site eco --limit N`）并自动用默认浏览器打开 |
+| 🤖 AI 分析 | 输入分析数量（默认 3），复用现有 `news process` 的 AI processing 逻辑 |
+| 📊 打开 AI 研究结果 | 导出 `news export --format html --site eco` 并打开 `data/export/html/index.html` |
+| 日志区 | 实时显示抓取/AI/导出过程与结果（发现/重复/新增/失败） |
+| 状态区 | 数据库路径、ECO 新闻数、AI 已分析/失败、最后抓取时间（从现有 storage/status 读取，不硬编码） |
+
+### 与 CLI 的对应关系
+
+| GUI 按钮 | 等价 CLI |
+| --- | --- |
+| 抓取最新新闻 | `uv run news fetch --site eco --limit N` |
+| 📖 打开新闻库 | `uv run news export --format news-html --site eco --limit N` → 浏览器打开 `data/export/news-html/eco/index.html` |
+| 🤖 AI 分析 | `uv run news process --site eco --limit N`（复用现有 AI provider） |
+| 📊 打开 AI 研究结果 | `uv run news export --format html --site eco` → 浏览器打开 `data/export/html/index.html` |
+
+> 去重保证：GUI 的“抓取最新新闻”调用现有 `discover → deduplicate → fetch → extract → storage`
+> 完整 pipeline。数据库已有 100 篇时再次抓取最近 100 篇，结果为 `发现 100 / 重复 100 / 新增 0`，
+> 绝不重新下载已入库文章。
+
+### GUI 测试
+
+```bash
+# 无头环境（Linux CI）需要虚拟显示：
+xvfb-run -a uv run python -m pytest tests/test_gui.py -v
+# 全部测试（含 GUI）
+xvfb-run -a uv run python -m pytest
+```
+
+GUI 测试覆盖：默认抓取数量 100、快捷按钮 50/100/200、非法数量拦截、调用正确 pipeline、
+新闻库/研究按钮打开正确 HTML、AI 分析复用现有 processor、pipeline 出错不崩溃且按钮恢复、
+status 读取数据库统计。
+
+---
+
 ## CLI 命令一览
 
 | 命令 | 说明 |
 | --- | --- |
+| `news gui [--site <id>] [--db PATH]` | 启动 Windows 桌面 GUI（ECO News Reader） |
 | `news fetch [--site <id>] [--limit N] [--timeout S] [--retries N] [--interval S] [--retry-failed]` | 抓取新闻（`--limit` = 最近 N 篇发现窗口） |
 | `news list [--source <id>] [--limit N]` | 列出最近新闻 |
 | `news status [--source <id>]` | 显示数据库与抓取状态（含 AI 分析统计） |
@@ -143,12 +215,14 @@ laxinwen/
 ├── pyproject.toml          # uv 项目定义、依赖、CLI 入口
 ├── README.md
 ├── .gitignore
+├── NewsReader.bat             # Windows 双击启动器（GUI）
+├── NewsReader-Console.bat     # Windows 控制台启动器（查看完整命令行日志）
 ├── sites/                  # 站点配置（一个网站一个 YAML）
 │   ├── eco.yaml            # ECO – Economia Online（已跑通）
 │   └── hkej.yaml           # HKEJ 信报（预留，见“已知问题”）
 ├── src/news/
 │   ├── __init__.py
-│   ├── cli.py              # 命令行入口（fetch / list / status / process / export）
+│   ├── cli.py              # 命令行入口（fetch / list / status / gui / process / export）
 │   ├── config.py           # 站点配置加载
 │   ├── model.py            # 统一 Article 数据模型
 │   ├── normalize.py        # URL 规范化 + 标题指纹
@@ -159,6 +233,8 @@ laxinwen/
 │   ├── pipeline.py         # 抓取 pipeline（串联各阶段）
 │   ├── export.py           # JSONL / Markdown 导出
 │   ├── html_export.py      # HTML 研究结果展示层（第三阶段）
+│   ├── news_archive.py     # News Archive HTML 阅读目录（第三阶段）
+│   ├── gui.py              # Windows 桌面 GUI（ECO News Reader，第四阶段，tkinter）
 │   └── ai/                 # AI Processing Layer（第二阶段）
 │       ├── __init__.py
 │       ├── provider.py         # Provider 抽象与配置（环境变量 / .env）
@@ -673,3 +749,27 @@ HTML escape、原有 `--format html` 无回归等。
 > 说明：本次真实验收中用 `news process --site eco --limit 3` 通过 CNB AI 网关真实处理了
 > 3 篇 ECO 文章（成功 3），并人工构造 1 篇 failed 分析记录，用于验证 News Archive 的
 > AI 状态三态显示。数据库的 AI 分析记录可随时用 `news process` 补充或删除。
+
+---
+
+## 第四阶段：Windows 桌面 GUI（ECO News Reader）验收结果
+
+真实运行验证（本次 PR，Xvfb 虚拟显示下运行真实 tkinter 窗口）：
+
+| 项目 | 结果 |
+| --- | --- |
+| 离线测试 | **179 项全部通过**（原 164 + 新增 15 项 GUI 测试） |
+| `uv run news gui` | 正常启动 GUI（标题 “ECO News Reader”） |
+| 新闻网站下拉框 | 仅 ECO（未来可扩展） |
+| 抓取数量 | 默认 100，支持 50/100/200 快捷按钮，可输入任意正整数（无上限） |
+| 第一次“抓取最新新闻”（limit=100） | 发现 **100** / 重复 **0** / 新增 **100** / 失败 0 |
+| 第二次“抓取最新新闻”（limit=100） | 发现 **100** / 重复 **100** / 新增 **0**（完美去重，不重复下载） |
+| 📖 打开新闻库 | 导出 News Archive 100 篇 → `data/export/news-html/eco/index.html`，浏览器打开 |
+| 🤖 AI 分析（数量 3） | 复用现有 AI processing（CNB AI 网关），**成功 3 / 失败 0** |
+| 📊 打开 AI 研究结果 | 导出 `data/export/html/index.html`（成功 3 / 失败 0），浏览器打开 |
+| 状态区 | 数据库、ECO 新闻 100、AI 已分析 3、AI 失败 0、最后抓取时间（真实数据） |
+| 错误处理 | pipeline HTTP 500 / AI HTTP 401 均在日志显示“XX 失败”，GUI 不崩溃、按钮恢复可再点 |
+| 是否引入新依赖 | ❌ 仅 Python 标准库 `tkinter/ttk/threading/queue` |
+
+> 去重验收结论：数据库从 0 → 100 后，再次抓取最近 100 篇结果为
+> **发现 100 / 重复 100 / 新增 0**，完整走 `discover → deduplicate → fetch → extract → storage` pipeline。
