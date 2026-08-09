@@ -114,3 +114,106 @@ class TestPipeline:
         bad = [a for a in storage.list_articles(limit=10) if "bad-one" in a.canonical_url][0]
         assert bad.status == "failed"
         pipe.close()
+
+
+# ---------- 第三阶段：load-more 发现 + 去重集成测试 ----------
+
+
+def _card(url: str) -> str:
+    return (
+        f'<article class="card-list card card--list">'
+        f'<a class="link-cover" href="{url}"></a>'
+        f'<h3 class="card__title"><a href="{url}">Título {url[-10:]}</a></h3>'
+        f"</article>"
+    )
+
+
+class LoadMoreFetcher(BaseFetcher):
+    """模拟 ECO：RSS + 首页 + admin-ajax 分页。"""
+
+    def __init__(self, initial_n=26, pages_n=8):
+        self.initial = [f"https://eco.sapo.pt/2026/08/08/inicial-{i}/" for i in range(initial_n)]
+        self.pages = {}
+        for p in range(pages_n):
+            offset = initial_n + p * 12
+            self.pages[offset] = {
+                "success": True,
+                "data": {
+                    "posts_html": "".join(
+                        _card(f"https://eco.sapo.pt/2026/08/08/pagina-{offset + i}/")
+                        for i in range(12)
+                    ),
+                    "count": 12,
+                },
+            }
+        self.initial_html = (
+            "<html><head><script>var ECO_JS = "
+            '{"nonce_load_more":"abc","wp_ajax_url":"https://eco.sapo.pt/wp-admin/admin-ajax.php","archive_load_more":"12"};'
+            "</script></head><body>"
+            + "".join(_card(u) for u in self.initial)
+            + '<button class="js-archive-load-more" data-action="eco_ajax_get_posts_latest" data-offset="26">x</button>'
+            + "</body></html>"
+        )
+        self.calls: list[str] = []
+
+    def fetch(self, url: str, **kwargs) -> str:
+        self.calls.append(url)
+        if "admin-ajax" in url:
+            from urllib.parse import parse_qs, urlsplit
+
+            qs = parse_qs(urlsplit(url).query)
+            offset = int(qs.get("eco_offset", ["0"])[0])
+            if offset in self.pages:
+                import json
+
+                return json.dumps(self.pages[offset])
+            return '{"success":true,"data":{"posts_html":"","count":0}}'
+        return self.initial_html
+
+    def close(self) -> None:
+        pass
+
+
+class TestPipelineLoadMore:
+    def test_fetch_limit_100_then_rerun_no_duplicate(self, storage):
+        """多次 fetch 不重复插入（RSS + load-more 合并后去重）。"""
+        fetcher = LoadMoreFetcher()
+        pipe = Pipeline(storage, fetcher=fetcher, max_items=100)
+        # 用 run_site 走完整流程需要站点配置；这里直接验证 discover + ingest
+        from news.config import load_site_config
+
+        cfg = load_site_config("eco")
+        # 覆盖 fetcher
+        from news.discover import discover_for_site
+
+        items = discover_for_site(cfg, fetcher=fetcher, max_items=100)
+        assert len(items) == 100
+        stats1 = pipe._ingest_items(items, "eco", "ECO", "pt-PT", {}, [])
+        assert stats1.fetched_ok == 100
+        assert storage.count() == 100
+
+        # 第二次：同样的 discover → 全部去重
+        items2 = discover_for_site(cfg, fetcher=fetcher, max_items=100)
+        stats2 = pipe._ingest_items(items2, "eco", "ECO", "pt-PT", {}, [])
+        assert stats2.skipped_dup == 100
+        assert stats2.fetched_ok == 0
+        assert storage.count() == 100
+        pipe.close()
+
+    def test_load_more_failure_falls_back_to_rss_list(self, storage):
+        """load-more 失败时 RSS/栏目页仍然可以入库。"""
+        fetcher = LoadMoreFetcher()
+        # 破坏 admin-ajax：全部返回 success=false
+        fetcher.pages = {}
+        from news.config import load_site_config
+        from news.discover import discover_for_site
+
+        cfg = load_site_config("eco")
+        items = discover_for_site(cfg, fetcher=fetcher, max_items=100)
+        # RSS 22 篇 + 首页 26 篇（有重叠）→ 至少 26 篇
+        assert len(items) >= 26
+        pipe = Pipeline(storage, fetcher=fetcher, max_items=100)
+        stats = pipe._ingest_items(items, "eco", "ECO", "pt-PT", {}, [])
+        assert stats.fetched_ok == len(items)
+        assert storage.count() == len(items)
+        pipe.close()

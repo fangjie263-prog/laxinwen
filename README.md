@@ -76,7 +76,11 @@ uv run news fetch
 uv run news fetch --site eco
 
 # 控制每站候选文章数 / 超时 / 重试 / 同域间隔
-uv run news fetch --site eco --limit 30 --timeout 20 --retries 3 --interval 2
+# --limit 的含义：向网站寻找“最近 N 篇新闻”的发现窗口（RSS + 栏目页 + load-more 补齐），
+# 数据库持续累积，已存在的文章自动去重（不重复插入）。
+uv run news fetch --site eco --limit 100 --timeout 20 --retries 3 --interval 2
+uv run news fetch --site eco --limit 50
+uv run news fetch --site eco --limit 200
 
 # 抓取后重试失败文章
 uv run news fetch --site eco --retry-failed
@@ -90,6 +94,13 @@ uv run news status               # 数据库与抓取状态
 uv run news export --format jsonl
 uv run news export --format markdown
 uv run news export --format jsonl --source eco --output /path/to/exports
+
+# ---------- News Archive HTML（最近 N 条新闻阅读目录） ----------
+# 直接读取 articles 表，不要求 AI 分析成功；未分析 / 失败文章都会显示。
+# 默认输出到 data/export/news-html/<site>/，index.html 为阅读入口。
+uv run news export --format news-html --site eco --limit 50
+uv run news export --format news-html --site eco --limit 100
+uv run news export --format news-html --site eco --limit 200
 
 # ---------- HTML 研究结果展示（AI 分析） ----------
 uv run news export --format html                       # 导出全部成功 AI 分析 → data/export/html/
@@ -108,11 +119,12 @@ uv run python -m pytest -m network   # 需要外网的在线测试
 
 | 命令 | 说明 |
 | --- | --- |
-| `news fetch [--site <id>] [--limit N] [--timeout S] [--retries N] [--interval S] [--retry-failed]` | 抓取新闻 |
+| `news fetch [--site <id>] [--limit N] [--timeout S] [--retries N] [--interval S] [--retry-failed]` | 抓取新闻（`--limit` = 最近 N 篇发现窗口） |
 | `news list [--source <id>] [--limit N]` | 列出最近新闻 |
 | `news status [--source <id>]` | 显示数据库与抓取状态（含 AI 分析统计） |
 | `news process [--site <id>] [--limit N] [--article-id <id>] [--retry-failed]` | AI 处理已入库文章（生成结构化分析） |
 | `news export --format jsonl\|markdown [--source <id>] [--output DIR]` | 导出（JSONL / Markdown） |
+| `news export --format news-html [--site <id>] [--limit N]` | 导出 News Archive HTML（最近 N 条阅读目录） |
 | `news export --format html [--site <id>] [--article-id <id>] [--output DIR]` | 导出 AI 研究结果 HTML |
 
 环境变量（可选）：
@@ -165,13 +177,45 @@ laxinwen/
 
 按以下优先级（在 `sites/<id>.yaml` 中描述）：
 
-1. **官方 RSS / Atom**（`rss:`）—— 第一优先；
+1. **官方 RSS / Atom**（`rss:`）—— 第一优先（最快、含正文）；
 2. **RSSHub**（`rsshub:`）—— 没有官方 RSS 时检查已有 Route；
 3. **公开栏目页**（`lists:`）—— 前两者都不适用时才用 selectolax 解析；
-4. 站内搜索 —— 第一阶段不实现。
+4. **“加载更多”分页接口**（`load_more:`）—— RSS/栏目页不足时，通过站点 AJAX load-more 批量补齐最近 N 篇；
+5. 站内搜索 —— 第一阶段不实现。
+
+> **合并而非中断**：多个发现来源会**合并去重**，直到候选文章达到 `--limit`（最近 N 篇的发现窗口），
+> 而不是“遇到一个来源就停止”。`canonical_url` 去重保证 RSS 与栏目页/load-more 重叠时不会重复。
+> 某个来源失败（如 load-more nonce 过期 / 接口变更）不会中断其它来源。
 
 > 增加一个“有官方 RSS 的简单网站”：在 `sites/` 下新增一个 YAML 即可，
 > **无需修改核心 Python 代码**。
+
+### ECO load-more（“Carregar mais artigos”）
+
+ECO 的 `/ultimas/` 页面底部有“Carregar mais artigos”按钮，真实机制（已通过网页调查确认）：
+
+- 点击后向 `https://eco.sapo.pt/wp-admin/admin-ajax.php` 发送 **GET** 请求；
+- 参数：`action=eco_ajax_get_posts_latest`、`eco_offset=<n>`、`nonce=<nonce>`；
+- `nonce` 静态写在 `/ultimas/` 首页 HTML 内嵌的 `ECO_JS` 变量中（无需 Cookie / 无需 JS 渲染，httpx 可直接调用）；
+- 每次返回 **12 篇**新文章（JSON `data.posts_html` 卡片），offset 从首页文章数开始逐页 +12；
+- ECO 归档很深（offset 上万仍有文章），`--limit` 决定取多少篇。
+
+对应 `sites/eco.yaml` 配置：
+
+```yaml
+load_more:
+  endpoint_selector: "button.js-archive-load-more"
+  js_var: "ECO_JS"
+  offset_param: "eco_offset"
+  action_param: "action"
+  nonce_param: "nonce"
+  nonce_key: "nonce_load_more"
+  url_key: "wp_ajax_url"
+  per_page_key: "archive_load_more"
+```
+
+> 其他网站若有类似 AJAX load-more，只需按此结构配置（选择器 / 参数名 / JS 变量 key 可配置），
+> 核心代码不硬编码任何 ECO 专属规则。
 
 示例 `sites/eco.yaml`（节选）：
 
@@ -485,6 +529,60 @@ uv run python -m pytest tests/test_html_export.py -v
 
 ---
 
+## News Archive HTML（最近 N 条新闻阅读目录）
+
+```bash
+uv run news export --format news-html --site eco --limit 100
+uv run news export --format news-html --site eco --limit 50
+uv run news export --format news-html --site eco --limit 200
+```
+
+默认输出到 `data/export/news-html/<site>/`，`index.html` 是阅读入口。
+
+### 与 AI Research HTML 的区别
+
+| | News Archive（news-html） | AI Research（html） |
+| --- | --- | --- |
+| 数据源 | `articles` 表（全部新闻） | `article_analysis` 成功记录 |
+| 要求 AI 成功 | ❌ 不要求 | ✅ 只显示成功分析 |
+| 未分析文章 | 显示（○ 尚未分析） | 不显示 |
+| 失败文章 | 显示（⚠ 失败） | 不显示（仅 index 统计） |
+| 用途 | 最近 N 条新闻阅读目录 | 研究结果报告 |
+
+### 页面内容
+
+`index.html`（按 `published_at DESC`）：
+
+- 日期 / 时间 / 来源 / 标题 / 作者；
+- 中文摘要（如有成功分析）；
+- **AI 状态三态**：`✓ AI 已分析` / `⚠ AI 分析失败` / `○ 尚未分析`（绝不把失败伪装成成功）；
+- 原文链接 + AI Research 链接（如有成功分析，链接到 `data/export/html/` 对应研究页）。
+
+单篇页（`YYYY/MM/0001-<slug>.html`）：
+
+- 有 AI：AI 中文摘要 / 关键观点 / 主题 / 实体 / 市场相关性 / 原文语言 + 原文正文；
+- 无 AI：显示“尚未进行 AI 分析” + 原文正文；
+- AI 失败：显示“AI 分析失败”提示 + 原文正文。
+
+### 设计约束
+
+- 纯 Python + HTML + CSS，HTML5 / UTF-8，无外部 CDN / 字体 / JS；
+- 全部内容 HTML escape；
+- `--limit` 从 SQLite 按 `published_at DESC` 取最近 N 篇（数据库可以有 5000 篇，
+  `--limit 100` 只显示最近 100 篇）；
+- 不修改 `article_analysis` schema，不引入复杂前端。
+
+### 测试
+
+```bash
+uv run python -m pytest tests/test_news_archive.py -v
+```
+
+覆盖：不要求 AI 成功、三态显示、limit 50/100、Research 链接、失败/未分析仍显示、
+HTML escape、原有 `--format html` 无回归等。
+
+---
+
 ## 错误处理与抓取礼仪
 
 - 单站失败不影响其它站点；单篇失败不影响其它文章（记录 `status='failed'` 并可重试）。
@@ -503,11 +601,14 @@ uv run python -m pytest tests/test_html_export.py -v
   （见 `NEXT_PHASE.md`）。
 - **HTML 导出已知限制**：只导出 `status='ok'/'success'` 的成功分析；失败文章仅
   在 `index.html` 显示统计，不出现在正常研究页面（符合设计）。
+- **News Archive（news-html）**：直接读取 `articles` 表，未分析 / 失败文章都会显示；
+  AI 状态三态（✓ / ⚠ / ○）绝不混淆。
 - 下一步建议（详细见 `NEXT_PHASE.md`）：
   1. 增加更多财经站点（Reuters/FT/WSJ 等）——每个站点新增一个 YAML；
   2. 为必须 JS 的站点实现 `PlaywrightFetcher`；
   3. 接入 RSSHub 公共实例或自建实例；
-  4. 用 `cron` 定时调度 `news fetch` + `news process` + `news export --format html`；
+  4. 用 `cron` 定时调度 `news fetch` + `news process` + `news export --format news-html --limit 100` +
+     `news export --format html`；
   5. Prompt v2：多模型对比 / 历史分析比较 / 投资研究标签。
 
 ---
@@ -549,3 +650,26 @@ uv run python -m pytest tests/test_html_export.py -v
 | retry-failed | 失败项默认排除；`--retry-failed` 真实重试 3 篇 3/3 成功 |
 
 > 实际数字以本次 PR 的验收运行输出为准。
+
+---
+
+## 第三阶段：ECO 发现升级 + News Archive 验收结果
+
+真实运行验证（本次 PR）：
+
+| 项目 | 结果 |
+| --- | --- |
+| 离线测试 | **164 项全部通过**（原 132 + 新增 32） |
+| `news fetch --site eco --limit 100` | 发现 **100 篇**（RSS 22 + 首页 26 + load-more 补齐） |
+| 下载 / 提取 | **100 / 100**，失败 0 |
+| 二次 `--limit 100` | **100 篇全部 skipped_dup**（0 新插入，数据库保持 100） |
+| `news export --format news-html --limit 50` | 显示最近 **50** 条 |
+| `news export --format news-html --limit 100` | 显示最近 **100** 条 |
+| News Archive AI 状态 | 3 已分析 / 1 失败 / 96 未分析（三态正确显示） |
+| AI Research 链接 | index 3 个 + 单篇页均指向 `data/export/html/` 对应研究页（文件存在） |
+| `news export --format html` | 继续正常（只显示 3 篇成功分析） |
+| 是否使用 Playwright | ❌ 不需要（httpx + selectolax 即可，已真实验证） |
+
+> 说明：本次真实验收中用 `news process --site eco --limit 3` 通过 CNB AI 网关真实处理了
+> 3 篇 ECO 文章（成功 3），并人工构造 1 篇 failed 分析记录，用于验证 News Archive 的
+> AI 状态三态显示。数据库的 AI 分析记录可随时用 `news process` 补充或删除。

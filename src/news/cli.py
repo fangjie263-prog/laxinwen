@@ -3,7 +3,7 @@
 用法：
     news fetch [--site <id>] [--limit N] [--retry-failed]
     news list [--source <id>] [--limit N]
-    news export --format jsonl|markdown|html [--source <id>] [--article-id <id>]
+    news export --format jsonl|markdown|html|news-html [--source <id>] [--article-id <id>] [--limit N]
     news status [--source <id>]
     news process [--site <id>] [--limit N] [--article-id <id>] [--retry-failed]
 """
@@ -21,6 +21,7 @@ from typing import Optional
 from .config import list_available_sites, load_site_config
 from .export import export_jsonl, export_markdown
 from .html_export import export_html
+from .news_archive import export_news_archive
 from .fetch import FetcherOptions, HttpxFetcher
 from .pipeline import Pipeline
 from .storage import Storage
@@ -222,6 +223,43 @@ def cmd_export(args: argparse.Namespace) -> int:
             print(f"失败：\n{result.failed}")
             return 0
 
+        if args.format == "news-html":
+            # News Archive HTML：默认输出到 data/export/news-html/<site>/（阅读目录专用目录）
+            site = args.site or args.source
+            if not site:
+                # 若数据库只有一个站点则自动推断；否则报错提示 --site
+                from .config import list_available_sites as _las
+
+                sites = _las()
+                if len(sites) == 1:
+                    site = sites[0]
+                else:
+                    print(
+                        "News Archive 导出需要指定站点：--site <id>（当前可用："
+                        + ", ".join(sites)
+                        + "）",
+                        file=sys.stderr,
+                    )
+                    return 2
+            out_dir = (
+                Path(args.output)
+                if args.output
+                else Path("data") / "export" / "news-html" / site
+            )
+            result = export_news_archive(
+                storage,
+                out_dir,
+                source_id=site,
+                limit=args.limit,
+            )
+            print(f"News Archive 导出目录：\n{out_dir}/")
+            print(f"最近 {result.exported} 条：")
+            print(f"  ✓ AI 已分析 {result.analyzed_ok}")
+            print(f"  ⚠ AI 分析失败 {result.analyzed_failed}")
+            print(f"  ○ 尚未分析 {result.unanalyzed}")
+            print(f"  失败（导出错误）{result.failed}")
+            return 0
+
         output = Path(args.output) if args.output else Path(DEFAULT_EXPORTS)
         if args.format == "jsonl":
             path = output / "news.jsonl"
@@ -285,12 +323,13 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common_args(p_process)
     p_process.set_defaults(func=cmd_process)
 
-    p_export = sub.add_parser("export", help="导出 JSONL / Markdown / HTML")
-    p_export.add_argument("--format", choices=["jsonl", "markdown", "html"], required=True)
-    p_export.add_argument("--site", help="按站点过滤（HTML 导出）")
+    p_export = sub.add_parser("export", help="导出 JSONL / Markdown / HTML / News Archive HTML")
+    p_export.add_argument("--format", choices=["jsonl", "markdown", "html", "news-html"], required=True)
+    p_export.add_argument("--site", help="按站点过滤（HTML / news-html 导出）")
     p_export.add_argument("--source", help="按站点过滤（兼容旧参数）")
     p_export.add_argument("--article-id", type=int, default=None, help="只导出指定文章（HTML）")
-    p_export.add_argument("--output", default=None, help="导出目录（HTML 默认 data/export/html/）")
+    p_export.add_argument("--limit", type=int, default=100, help="News Archive 显示最近 N 条（默认 100）")
+    p_export.add_argument("--output", default=None, help="导出目录（HTML 默认 data/export/html/，news-html 默认 data/export/news-html/<site>/）")
     _add_common_args(p_export)
     p_export.set_defaults(func=cmd_export)
 

@@ -20,6 +20,22 @@ lists:
     link_selector: "article.card-list a.card__title, article.card--list a.link-cover"
     article_url_pattern: "https://eco\\.sapo\\.pt/(?:[0-9]{4}/[0-9]{2}/[0-9]{2}/|entrevista/|descodificador/|opiniao/|dossiers/|podcast/|videos/)[^/]+/$"
 
+# “加载更多”分页接口（admin-ajax load-more，真实调查确认）
+# 行为：GET admin-ajax.php?action=eco_ajax_get_posts_latest&eco_offset=N&nonce=<nonce>
+# 返回 JSON：{"success":true,"data":{"count":12,"count_query":13,"posts_html":"<article>...","last_batch":null}}
+# - nonce 静态写死在 /ultimas/ 首页 HTML 的 ECO_JS 变量中（每次访问页面重新生成）
+# - 每页固定新增 12 篇，offset 从首页文章数开始（当前 26），逐页 +12
+# - 无需 Cookie / 无需 JS 渲染，httpx 可直接调用（已真实复现连续 30+ 页）
+load_more:
+  endpoint_selector: "button.js-archive-load-more"
+  js_var: "ECO_JS"
+  offset_param: "eco_offset"
+  action_param: "action"
+  nonce_param: "nonce"
+  nonce_key: "nonce_load_more"
+  url_key: "wp_ajax_url"
+  per_page_key: "archive_load_more"
+
 # 是否无需 JS（普通 HTTP 即可取得正文与列表）
 requires_js: false
 

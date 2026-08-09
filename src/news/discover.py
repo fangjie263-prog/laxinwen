@@ -4,11 +4,13 @@
 1. 网站官方 RSS / Atom（feedparser）
 2. RSSHub（feedparser 解析同一格式）
 3. 网站公开栏目页（selectolax 提取文章链接）
-4. 站内搜索（第一阶段不实现）
+4. “加载更多”分页接口（如 ECO admin-ajax load-more，用于批量补齐最近 N 篇）
+5. 站内搜索（第一阶段不实现）
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from dataclasses import dataclass, field
@@ -183,25 +185,238 @@ def discover_from_list_page(
     return items
 
 
+# ---------- “加载更多”分页接口（ECO admin-ajax load-more） ----------
+
+
+def _extract_json_object(text: str, var_name: str = "ECO_JS") -> Optional[dict]:
+    """从 HTML 中提取 ``var_name = {...};`` 形式的 JS 对象字面量并解析为 dict。
+
+    用于读取页面内嵌的 JS 配置（如 ECO 的 ``ECO_JS``，包含 load-more 所需的
+    nonce / ajax url / 每页条数等）。解析失败返回 None。
+    """
+    m = re.search(rf"{re.escape(var_name)}\s*=\s*(\{{.*?\}})\s*;", text, re.S)
+    if not m:
+        return None
+    try:
+        obj = json.loads(m.group(1))
+        return obj if isinstance(obj, dict) else None
+    except (ValueError, TypeError):
+        logger.warning("%s JS 对象解析失败", var_name)
+        return None
+
+
+def discover_from_load_more(
+    list_url: str,
+    *,
+    fetcher: BaseFetcher,
+    load_more: dict,
+    article_url_pattern: str | None = None,
+    max_items: int = 50,
+) -> list[DiscoveredItem]:
+    """从“加载更多”分页接口批量发现文章（按 offset 翻页直到达到 max_items 或取不到更多）。
+
+    ``load_more`` 站点配置示例（ECO）：
+
+    .. code-block:: yaml
+
+        load_more:
+          endpoint_selector: "button.js-archive-load-more"   # 从按钮提取 data-action
+          js_var: "ECO_JS"                                    # 内嵌 JS 配置变量名
+          offset_param: "eco_offset"                          # offset 参数名
+          action_param: "action"                              # action 参数名
+          nonce_param: "nonce"                                # nonce 参数名
+          nonce_key: "nonce_load_more"                        # ECO_JS 中 nonce 的 key
+          url_key: "wp_ajax_url"                              # ECO_JS 中 ajax endpoint 的 key
+          per_page_key: "archive_load_more"                   # ECO_JS 中每页条数的 key
+
+    流程：
+    1. 抓取栏目页 HTML；
+    2. 从按钮 ``data-action`` 得到 action，从 JS 配置提取 ajax url / nonce / 每页条数；
+    3. 以 ``offset`` 从栏目页初始文章数开始，逐页请求；
+    4. 每页返回 ``posts_html``，用 selectolax 提取文章链接；
+    5. 累计去重，直到达到 max_items 或连续空页 / 接口失败。
+
+    返回文章列表。若无法提取配置（如页面结构变化），抛出 ValueError。
+    """
+    html = fetcher.fetch(list_url)
+    tree = HTMLParser(html)
+    pattern = re.compile(article_url_pattern) if article_url_pattern else None
+
+    # --- 读取按钮 data-action / data-offset ---
+    action = ""
+    offset_hint: Optional[int] = None
+    btn_selector = load_more.get("endpoint_selector", "")
+    if btn_selector:
+        for node in tree.css(btn_selector):
+            action = node.attributes.get("data-action") or ""
+            try:
+                offset_hint = int(node.attributes.get("data-offset") or 0) or None
+            except (TypeError, ValueError):
+                offset_hint = None
+            if action:
+                break
+
+    # --- 读取 JS 配置 ---
+    js = _extract_json_object(html, load_more.get("js_var", "ECO_JS")) or {}
+    ajax_url = js.get(load_more.get("url_key", "wp_ajax_url")) or load_more.get("endpoint")
+    nonce = js.get(load_more.get("nonce_key", "nonce_load_more")) or load_more.get("nonce")
+    per_page = js.get(load_more.get("per_page_key", "archive_load_more")) or load_more.get("per_page")
+
+    if not ajax_url:
+        raise ValueError(f"无法从 {list_url} 提取 load-more endpoint")
+    if not action:
+        raise ValueError(f"无法从 {list_url} 提取 load-more action（按钮选择器: {btn_selector or '(未配置)'}）")
+    if not nonce:
+        raise ValueError(f"无法从 {list_url} 提取 load-more nonce（JS 变量: {load_more.get('js_var', 'ECO_JS')}）")
+
+    try:
+        per_page = int(per_page)
+    except (TypeError, ValueError):
+        per_page = 12
+
+    offset_param = load_more.get("offset_param", "eco_offset")
+    action_param = load_more.get("action_param", "action")
+    nonce_param = load_more.get("nonce_param", "nonce")
+
+    # 初始文章：直接用首页 HTML 提取；offset 优先用按钮 data-offset（真实浏览器语义）
+    initial_items = _parse_card_links(html, article_url_pattern=pattern)
+    collected = _dedup_items(initial_items)
+    offset = offset_hint if offset_hint is not None else len(collected)
+
+    items: list[DiscoveredItem] = []
+    empty_pages = 0
+    while len(collected) < max_items:
+        params = {
+            action_param: action,
+            offset_param: str(offset),
+            nonce_param: nonce,
+        }
+        logger.debug("[load-more] %s %s", ajax_url, params)
+        try:
+            resp = fetcher.fetch(_url_with_query(ajax_url, params))
+        except Exception as exc:
+            logger.warning("[load-more] 第 %d 页请求失败: %s", offset, exc)
+            break
+        try:
+            # 部分站点 JSON 带 UTF-8 BOM，先去 BOM
+            data = json.loads(resp.lstrip("\ufeff"))
+        except (ValueError, TypeError):
+            logger.warning("[load-more] 第 %d 页响应不是 JSON，停止翻页", offset)
+            break
+        if not data.get("success"):
+            logger.warning("[load-more] 第 %d 页 success=false（nonce 可能过期），停止翻页", offset)
+            break
+        payload = data.get("data") or {}
+        posts_html = payload.get("posts_html") or ""
+        page_items = _parse_card_links(posts_html, article_url_pattern=pattern)
+        added = 0
+        for it in page_items:
+            if it.url not in {d.url for d in collected}:
+                collected.append(it)
+                added += 1
+        logger.info("[load-more] offset=%d 新增 %d 条（累计 %d）", offset, added, len(collected))
+
+        count = int(payload.get("count") or 0)
+        if payload.get("last_batch") or count <= 0:
+            break
+        if added == 0:
+            empty_pages += 1
+            if empty_pages >= 2:
+                break
+        else:
+            empty_pages = 0
+        offset += count if count > 0 else per_page
+
+    items = collected[:max_items]
+    return items
+
+
+def _url_with_query(url: str, params: dict) -> str:
+    """给 URL 附加 query 参数（保留已有 query）。"""
+    from urllib.parse import urlencode, urlsplit, urlunsplit
+
+    parts = urlsplit(url)
+    query = parts.query
+    if query:
+        query += "&" + urlencode(params)
+    else:
+        query = urlencode(params)
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, query, ""))
+
+
+def _parse_card_links(html: str, article_url_pattern: Optional[re.Pattern] = None) -> list[DiscoveredItem]:
+    """从 load-more 返回的 posts_html（卡片列表）中提取文章链接。"""
+    if not html:
+        return []
+    tree = HTMLParser(html)
+    items: list[DiscoveredItem] = []
+    seen: set[str] = set()
+    # 优先所有 a[href] 中符合文章 URL 模式的链接，避免依赖具体卡片结构
+    for node in tree.css("a[href]"):
+        href = node.attributes.get("href") or ""
+        if not href:
+            continue
+        canon = canonicalize_url(href)
+        if not canon or canon in seen:
+            continue
+        # 模式针对 canonical URL 匹配（去掉了 utm/fragment，避免带追踪参数的链接被误过滤）
+        if article_url_pattern and not article_url_pattern.search(canon):
+            continue
+        seen.add(canon)
+        items.append(DiscoveredItem(url=canon))
+    return items
+
+
+def _dedup_items(items: list[DiscoveredItem]) -> list[DiscoveredItem]:
+    """按 canonical URL 去重并保持顺序。"""
+    seen: set[str] = set()
+    result: list[DiscoveredItem] = []
+    for it in items:
+        canon = canonicalize_url(it.url)
+        if not canon or canon in seen:
+            continue
+        seen.add(canon)
+        result.append(it)
+    return result
+
+
 def discover_for_site(
     cfg: dict,
     *,
     fetcher: BaseFetcher,
     max_items: int = 50,
 ) -> list[DiscoveredItem]:
-    """按站点配置执行发现流程（RSS → RSSHub → 栏目页）。"""
+    """按站点配置执行发现流程（RSS → RSSHub → 栏目页 → load-more 补齐）。
+
+    与旧实现不同：多个来源**合并**而不是遇到一个就 return。
+    目标是把候选文章凑到 ``max_items``（--limit 的语义：最近 N 篇的发现窗口）。
+    各来源之间用 canonical URL 去重；load-more 仅在 RSS/栏目页不足时触发。
+    """
     source_id = cfg.get("id", "")
     source_name = cfg.get("name", "")
 
-    # 1. 官方 RSS
+    collected: list[DiscoveredItem] = []
+    seen: set[str] = set()
+
+    def _add(items: list[DiscoveredItem]) -> int:
+        """合并去重，返回新增条数。"""
+        added = 0
+        for it in items:
+            canon = canonicalize_url(it.url)
+            if not canon or canon in seen:
+                continue
+            seen.add(canon)
+            collected.append(it)
+            added += 1
+        return added
+
+    # 1. 官方 RSS（最快，含正文）
     if cfg.get("rss"):
         logger.info("[%s] 尝试官方 RSS: %s", source_id, cfg["rss"])
         try:
-            items = discover_from_rss(cfg["rss"], fetcher=fetcher)
-            if items:
-                logger.info("[%s] 官方 RSS 发现 %d 条", source_id, len(items))
-                return items[:max_items]
-            logger.warning("[%s] 官方 RSS 无条目，尝试下一个来源", source_id)
+            rss_items = discover_from_rss(cfg["rss"], fetcher=fetcher)
+            _add(rss_items)
+            logger.info("[%s] 官方 RSS 发现 %d 条", source_id, len(rss_items))
         except Exception as exc:
             logger.warning("[%s] 官方 RSS 失败: %s", source_id, exc)
 
@@ -209,11 +424,9 @@ def discover_for_site(
     if cfg.get("rsshub"):
         logger.info("[%s] 尝试 RSSHub: %s", source_id, cfg["rsshub"])
         try:
-            items = discover_from_rss(cfg["rsshub"], fetcher=fetcher)
-            if items:
-                logger.info("[%s] RSSHub 发现 %d 条", source_id, len(items))
-                return items[:max_items]
-            logger.warning("[%s] RSSHub 无条目", source_id)
+            rh_items = discover_from_rss(cfg["rsshub"], fetcher=fetcher)
+            _add(rh_items)
+            logger.info("[%s] RSSHub 发现 %d 条", source_id, len(rh_items))
         except Exception as exc:
             logger.warning("[%s] RSSHub 失败: %s", source_id, exc)
 
@@ -225,17 +438,45 @@ def discover_for_site(
             continue
         logger.info("[%s] 尝试栏目页: %s", source_id, url)
         try:
-            items = discover_from_list_page(
+            list_items = discover_from_list_page(
                 url,
                 fetcher=fetcher,
                 link_selector=lst.get("link_selector", ""),
                 article_url_pattern=lst.get("article_url_pattern") or cfg.get("article_url_pattern"),
                 max_items=max_items,
             )
-            if items:
-                logger.info("[%s] 栏目页发现 %d 条", source_id, len(items))
-                return items
+            _add(list_items)
+            logger.info("[%s] 栏目页发现 %d 条", source_id, len(list_items))
         except Exception as exc:
             logger.warning("[%s] 栏目页失败: %s", source_id, exc)
 
-    return []
+    # 4. load-more 分页接口（补齐最近 N 篇）
+    if len(collected) < max_items and cfg.get("load_more"):
+        load_more = cfg["load_more"]
+        # 优先使用第一个 list 的 URL 作为入口页
+        entry_url = (
+            (cfg.get("lists") or [{}])[0].get("url")
+            or load_more.get("list_url")
+        )
+        # 文章 URL 正则：优先取第一个 list 的（ECO 的 pattern 定义在 lists[0] 内）
+        entry_pattern = (
+            (cfg.get("lists") or [{}])[0].get("article_url_pattern")
+            or cfg.get("article_url_pattern")
+        )
+        if entry_url:
+            logger.info("[%s] 尝试 load-more 补齐: %s", source_id, entry_url)
+            try:
+                lm_items = discover_from_load_more(
+                    entry_url,
+                    fetcher=fetcher,
+                    load_more=load_more,
+                    article_url_pattern=entry_pattern,
+                    max_items=max_items,
+                )
+                _add(lm_items)
+                logger.info("[%s] load-more 累计发现 %d 条", source_id, len(lm_items))
+            except Exception as exc:
+                logger.warning("[%s] load-more 失败: %s", source_id, exc)
+
+    logger.info("[%s] 合并发现 %d 条候选（去重后）", source_id, len(collected))
+    return collected[:max_items]

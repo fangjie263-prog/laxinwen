@@ -507,6 +507,62 @@ class Storage:
             rows = self._conn.execute(sql, params).fetchall()
         return list(rows)
 
+    def list_articles_with_analysis(
+        self,
+        *,
+        source_id: str | None = None,
+        limit: int = 50,
+    ) -> list[sqlite3.Row]:
+        """列出文章，并附上每条文章的 AI 分析状态（用于 News Archive HTML）。
+
+        返回行包含 articles.* 以及：
+        - ``ai_status``：'ok' / 'failed' / None（无分析）
+        - ``summary_zh`` / ``market_relevance``：若有成功分析则带出
+        按发布日期倒序（COALESCE(published_at, discovered_at)）。
+        """
+        sql = (
+            "SELECT a.*, "
+            "(SELECT x.status FROM article_analysis x "
+            " WHERE x.article_id=a.id AND x.status IN ('ok','success') "
+            " ORDER BY x.updated_at DESC LIMIT 1) AS ai_status, "
+            "(SELECT CASE WHEN EXISTS (SELECT 1 FROM article_analysis f "
+            "   WHERE f.article_id=a.id AND f.status='failed') THEN 1 ELSE 0 END) AS ai_has_failed, "
+            "(SELECT x.summary_zh FROM article_analysis x "
+            " WHERE x.article_id=a.id AND x.status IN ('ok','success') "
+            " ORDER BY x.updated_at DESC LIMIT 1) AS summary_zh, "
+            "(SELECT x.market_relevance FROM article_analysis x "
+            " WHERE x.article_id=a.id AND x.status IN ('ok','success') "
+            " ORDER BY x.updated_at DESC LIMIT 1) AS market_relevance "
+            "FROM articles a"
+        )
+        where: list[str] = []
+        params: list = []
+        if source_id:
+            where.append("a.source_id=?")
+            params.append(source_id)
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY COALESCE(a.published_at, a.discovered_at) DESC LIMIT ?"
+        params.append(limit)
+        with self._conn:
+            rows = self._conn.execute(sql, params).fetchall()
+        return list(rows)
+
+    def get_analysis_for_article(self, article_id: int) -> Optional[sqlite3.Row]:
+        """获取指定文章的 AI 分析记录（优先成功分析）。
+
+        用于 News Archive 单篇页展示完整 AI 详情（摘要/关键观点/主题/实体/相关性）。
+        若没有成功分析，返回失败记录（如果有）。无记录返回 None。
+        """
+        sql = (
+            "SELECT * FROM article_analysis WHERE article_id=? "
+            "ORDER BY CASE status WHEN 'success' THEN 0 WHEN 'ok' THEN 0 ELSE 1 END, "
+            "updated_at DESC LIMIT 1"
+        )
+        with self._conn:
+            row = self._conn.execute(sql, (article_id,)).fetchone()
+        return row if row else None
+
     @staticmethod
     def _row_to_article(row: sqlite3.Row) -> Article:
         import json

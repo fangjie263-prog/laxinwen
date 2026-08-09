@@ -29,6 +29,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "rsshub": None,        # RSSHub route（如 https://rsshub.app/...）
     "lists": [],           # 栏目页列表
     "article_url_pattern": None,  # 文章 URL 正则（供栏目页链接过滤）
+    "load_more": None,    # “加载更多”分页接口配置（如 ECO admin-ajax load-more）
     "requires_js": False,  # 是否需要 JS 渲染
     "extract": {},         # Trafilatura 等提取参数
     "language": "",

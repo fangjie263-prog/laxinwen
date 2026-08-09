@@ -33,7 +33,8 @@
    - 仅当目标站点必须 JS 渲染时才启用（`BaseFetcher` 抽象已预留）。
 
 7. **定时调度**
-   - 用 `cron` 定期执行 `news fetch` + `news process`，无需 Celery。
+   - 用 `cron` 定期执行 `news fetch --site eco --limit 100` + `news process` +
+     `news export --format news-html --limit 100` + `news export --format html`，无需 Celery。
 
 8. **导出分析结果**
    - `news export --format analysis-jsonl`：导出文章 + AI 分析联合数据。
