@@ -110,10 +110,15 @@ class HttpxFetcher(BaseFetcher):
     def fetch(self, url: str, **kwargs) -> str:
         last_exc: Optional[Exception] = None
         last_status: Optional[int] = None
+        # 可选：per-request headers（站点 adapter 可通过 kwargs 覆盖 UA 等）
+        extra_headers = kwargs.get("headers") or {}
         for attempt in range(1, self.options.retries + 1):
             self._throttle(url)
             try:
-                resp = self._client.get(url)
+                if extra_headers:
+                    resp = self._client.get(url, headers=extra_headers)
+                else:
+                    resp = self._client.get(url)
             except (httpx.TimeoutException, httpx.TransportError) as exc:
                 last_exc = exc
                 logger.warning("[%d/%d] %s 网络错误: %s", attempt, self.options.retries, url, exc)

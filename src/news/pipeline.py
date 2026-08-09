@@ -74,13 +74,30 @@ class Pipeline:
         site_extract = cfg.get("extract") or {}
         title_suffixes = cfg.get("title_suffixes") or []
 
+        # 站点 adapter（HKEJ 等）可提供自定义请求头（浏览器 UA 等）
+        custom_headers: dict | None = None
+        if cfg.get("adapter"):
+            from .sources import get_adapter
+
+            adapter = get_adapter(cfg)
+            if adapter is not None:
+                custom_headers = adapter.fetch_custom_headers()
+
         # 1. 发现
         items = discover_for_site(cfg, fetcher=self.fetcher, max_items=self.max_items)
         stats.discovered = len(items)
         logger.info("[%s] 发现 %d 条候选文章", source_id, len(items))
 
         # 2. 逐个：去重 → 下载 → 提取 → 入库
-        ingest = self._ingest_items(items, source_id, source_name, language, site_extract, title_suffixes)
+        ingest = self._ingest_items(
+            items,
+            source_id,
+            source_name,
+            language,
+            site_extract,
+            title_suffixes,
+            fetch_headers=custom_headers,
+        )
         ingest.discovered = len(items)
         return ingest
 
@@ -92,6 +109,7 @@ class Pipeline:
         language: str,
         site_extract: dict | None,
         title_suffixes: list[str],
+        fetch_headers: dict | None = None,
     ) -> FetchStats:
         """处理一批已发现条目：去重 → 下载 → 提取 → 入库。
 
@@ -128,7 +146,10 @@ class Pipeline:
             # 3. 下载正文
             fetched_at = utcnow()
             try:
-                html = self.fetcher.fetch(canon)
+                if fetch_headers:
+                    html = self.fetcher.fetch(canon, headers=fetch_headers)
+                else:
+                    html = self.fetcher.fetch(canon)
                 article.fetched_at = fetched_at
                 article.status = "fetched"
                 stats.fetched_ok += 1
@@ -142,7 +163,13 @@ class Pipeline:
 
             # 4. 正文提取
             try:
-                apply_extraction_to_article(article, html, site_extract=site_extract)
+                if fetch_headers:
+                    # 站点 adapter（HKEJ）用 ResearchReader 已验证的解析逻辑
+                    from .extract import apply_site_adapter_extraction
+
+                    apply_site_adapter_extraction(article, html)
+                else:
+                    apply_extraction_to_article(article, html, site_extract=site_extract)
                 article.fetched_at = fetched_at
                 article.status = "fetched"
                 stats.extracted_ok += 1
@@ -195,11 +222,30 @@ class Pipeline:
             except FileNotFoundError:
                 cfg = {"id": sid, "name": sid}
             site_extract = cfg.get("extract") or {}
+            # 重试同样使用站点 adapter 的自定义请求头（HKEJ 浏览器 UA 等）
+            fetch_headers: dict | None = None
+            if cfg.get("adapter"):
+                try:
+                    from .sources import get_adapter
+
+                    adapter = get_adapter(cfg)
+                    if adapter is not None:
+                        fetch_headers = adapter.fetch_custom_headers()
+                except Exception:
+                    fetch_headers = None
             for art in articles:
                 try:
-                    html = self.fetcher.fetch(art.canonical_url)
+                    if fetch_headers:
+                        html = self.fetcher.fetch(art.canonical_url, headers=fetch_headers)
+                    else:
+                        html = self.fetcher.fetch(art.canonical_url)
                     art.fetched_at = utcnow()
-                    apply_extraction_to_article(art, html, site_extract=site_extract)
+                    if fetch_headers:
+                        from .extract import apply_site_adapter_extraction
+
+                        apply_site_adapter_extraction(art, html)
+                    else:
+                        apply_extraction_to_article(art, html, site_extract=site_extract)
                     art.status = "fetched"
                     self.storage.update_article_body(
                         art.id,  # type: ignore[arg-type]

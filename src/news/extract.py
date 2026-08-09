@@ -200,9 +200,13 @@ def extract_article(html: str, *, url: str = "", site_extract: dict | None = Non
     )
 
 
-def apply_extraction_to_article(article: Article, html: str, site_extract: dict | None = None) -> Article:
-    """用 Trafilatura 提取结果更新 Article 的正文相关字段。"""
-    extracted = extract_article(html, url=article.canonical_url, site_extract=site_extract)
+def apply_extracted(article: Article, extracted: ExtractedArticle) -> Article:
+    """把已提取的 ``ExtractedArticle`` 字段应用到 ``Article``。
+
+    与 :func:`apply_extraction_to_article` 的区别：后者会先从 HTML 调用
+    Trafilatura 提取；本函数只做字段回填，供站点 adapter 提供自定义提取
+    结果时复用（如 HKEJ 复用 ResearchReader 的 article-content 正文逻辑）。
+    """
     if extracted.title:
         article.title = extracted.title
     if extracted.authors:
@@ -219,4 +223,37 @@ def apply_extraction_to_article(article: Article, html: str, site_extract: dict 
         article.canonical_url = extracted.canonical_url
     if extracted.language:
         article.language = extracted.language
+    return article
+
+
+def apply_extraction_to_article(article: Article, html: str, site_extract: dict | None = None) -> Article:
+    """用 Trafilatura 提取结果更新 Article 的正文相关字段。"""
+    extracted = extract_article(html, url=article.canonical_url, site_extract=site_extract)
+    return apply_extracted(article, extracted)
+
+
+def apply_site_adapter_extraction(article: Article, html: str) -> Article:
+    """用站点 adapter 的成熟解析逻辑提取 HKEJ 文章（标题 + 正文 + 作者）。
+
+    这里故意**不走 Trafilatura 通用提取**，而是复用 ResearchReader 已验证的
+    HKEJ-specific 逻辑：
+
+    - 标题 fallback：h1 → og:title → title（ResearchReader ``_extract_title``）；
+    - 正文：``article-content`` 容器内文本（ResearchReader 正文提取逻辑）；
+    - 作者：meta author / .writer 等（宽松提取，无作者文章兼容）。
+
+    Trafilatura 对 HKEJ 的旧式布局（article-content div + 无标准 article 语义）
+    提取效果不稳定；ResearchReader 已经用真实文章验证过上述逻辑，直接复用。
+    """
+    from .sources.hkej import extract_author, extract_body, extract_title as _extract_title
+
+    title = _extract_title(html)
+    if title:
+        article.title = title
+    body = extract_body(html)
+    if body:
+        article.body_text = body
+    authors = extract_author(html)
+    if authors:
+        article.authors = authors
     return article

@@ -1,21 +1,26 @@
-# HKEJ – 信报财经新闻（香港财经媒体）
-# 官方 RSS 需要验证；本文件为第一阶段目标站点预留。
-# 若官方 RSS 不可用，再评估 RSSHub Route 或公开栏目页。
+# HKEJ – 信報財經新聞（香港財經媒體）
+# 使用 Source Adapter（src/news/sources/hkej.py），复用 ResearchReader 已验证的
+# HKEJ 抓取逻辑：列表页 LINK_RE / /instantnews/index?page=N 分页 / 标题 fallback
+# （h1 → og:title → title）/ 正文 article-content。
 
 id: hkej
-name: HKEJ 信报财经新闻
+name: HKEJ 信報財經新聞
 language: zh-HK
 
-# 官方 RSS（需验证可用性；HKEJ 对非浏览器 UA 可能拒绝访问）
-rss: https://www.hkej.com/template/onlinenews/rss/hkej_news.xml
+# 指定使用 hkej Source Adapter（ECO 等未声明 adapter 的站点继续走通用 discover）
+adapter: hkej
 
-# RSSHub 对应 Route（需确认当前可用性）
+# 官方 RSS（可能对非浏览器 UA 拒绝访问；adapter 已自带浏览器 UA + 列表页抓取）
+rss: null
 rsshub: null
 
+# 列表页（adapter 内部使用，不再走通用栏目页发现）
 lists: []
 
+# HKEJ 对非浏览器 UA 拒绝访问，需要浏览器 UA（adapter.fetch_custom_headers 提供）
 requires_js: false
 
+# Trafilatura 提取参数（正文提取仍复用通用 extract 层）
 extract:
   favor_recall: true
 
@@ -23,3 +28,4 @@ title_suffixes:
   - " - 信報"
   - " - 信報財經新聞"
   - " - 香港經濟日報"
+  - " - 信報網站 hkej.com"

@@ -386,14 +386,37 @@ def discover_for_site(
     fetcher: BaseFetcher,
     max_items: int = 50,
 ) -> list[DiscoveredItem]:
-    """按站点配置执行发现流程（RSS → RSSHub → 栏目页 → load-more 补齐）。
+    """按站点配置执行发现流程。
 
-    与旧实现不同：多个来源**合并**而不是遇到一个就 return。
+    1. 若站点配置声明了 ``adapter``（如 HKEJ）→ 交给对应 SourceAdapter
+       （复用 ResearchReader 的 HKEJ 抓取逻辑，见 ``sources/hkej.py``）；
+    2. 否则继续使用通用发现流程（RSS → RSSHub → 栏目页 → load-more 补齐），
+       ECO 等现有站点完全不受影响。
+
+    通用发现与旧实现一致：多个来源**合并**而不是遇到一个就 return。
     目标是把候选文章凑到 ``max_items``（--limit 的语义：最近 N 篇的发现窗口）。
     各来源之间用 canonical URL 去重；load-more 仅在 RSS/栏目页不足时触发。
     """
     source_id = cfg.get("id", "")
     source_name = cfg.get("name", "")
+
+    # Source Adapter 分发：声明了 adapter 的站点（如 HKEJ）直接走 adapter
+    if cfg.get("adapter"):
+        from .sources import get_adapter
+
+        adapter = get_adapter(cfg)
+        if adapter is not None:
+            logger.info(
+                "[%s] 使用 source adapter: %s", source_id, type(adapter).__name__
+            )
+            items = adapter.discover(fetcher=fetcher, max_items=max_items)
+            logger.info(
+                "[%s] adapter 发现 %d 条候选（去重后）", source_id, len(items)
+            )
+            return items[:max_items]
+        raise ValueError(
+            f"站点 {source_id!r} 声明了 adapter={cfg.get('adapter')!r} 但无法加载"
+        )
 
     collected: list[DiscoveredItem] = []
     seen: set[str] = set()
