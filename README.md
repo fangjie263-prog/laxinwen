@@ -24,7 +24,9 @@ SQLite
     ↓
 Markdown / JSONL 导出
     ↓
-（未来）AI 摘要 / 翻译 / 分类 / 研究分析
+AI Processing Layer（第二阶段）
+    ↓
+结构化新闻分析 → SQLite (article_analysis)
 ```
 
 ---
@@ -98,7 +100,8 @@ uv run python -m pytest -m network   # 需要外网的在线测试
 | --- | --- |
 | `news fetch [--site <id>] [--limit N] [--timeout S] [--retries N] [--interval S] [--retry-failed]` | 抓取新闻 |
 | `news list [--source <id>] [--limit N]` | 列出最近新闻 |
-| `news status [--source <id>]` | 显示数据库与抓取状态 |
+| `news status [--source <id>]` | 显示数据库与抓取状态（含 AI 分析统计） |
+| `news process [--site <id>] [--limit N] [--article-id <id>] [--retry-failed]` | AI 处理已入库文章（生成结构化分析） |
 | `news export --format jsonl\|markdown [--source <id>] [--output DIR]` | 导出 |
 
 环境变量（可选）：
@@ -106,6 +109,7 @@ uv run python -m pytest -m network   # 需要外网的在线测试
 - `NEWS_SITES_DIR`：站点配置目录（默认 `./sites`）
 - `NEWS_DB`：SQLite 数据库路径（默认 `./data/news.db`）
 - `NEWS_EXPORTS`：导出目录（默认 `./exports`）
+- AI 相关变量见下方 [AI Processing Layer](#ai-processing-layer) 一节
 
 ---
 
@@ -121,16 +125,23 @@ laxinwen/
 │   └── hkej.yaml           # HKEJ 信报（预留，见“已知问题”）
 ├── src/news/
 │   ├── __init__.py
-│   ├── cli.py              # 命令行入口
+│   ├── cli.py              # 命令行入口（fetch / list / status / process / export）
 │   ├── config.py           # 站点配置加载
 │   ├── model.py            # 统一 Article 数据模型
 │   ├── normalize.py        # URL 规范化 + 标题指纹
-│   ├── storage.py          # SQLite 存储层
+│   ├── storage.py          # SQLite 存储层（articles + article_analysis）
 │   ├── discover.py         # 新闻发现（RSS → RSSHub → 栏目页）
 │   ├── fetch.py            # 下载层（httpx，Fetcher 抽象）
 │   ├── extract.py          # 正文提取（Trafilatura）
 │   ├── pipeline.py         # 抓取 pipeline（串联各阶段）
-│   └── export.py           # JSONL / Markdown 导出
+│   ├── export.py           # JSONL / Markdown 导出
+│   └── ai/                 # AI Processing Layer（第二阶段）
+│       ├── __init__.py
+│       ├── provider.py         # Provider 抽象与配置（环境变量 / .env）
+│       ├── openai_compatible.py# OpenAI-compatible Provider（httpx）
+│       ├── prompts.py          # 版本化 Prompt（事实优先，PROMPT_VERSION）
+│       ├── schema.py           # JSON 解析与 schema 校验
+│       └── processor.py        # Article → AI → 校验 → 入库编排
 ├── tests/                  # 离线单元测试 + 在线冒烟测试
 ├── data/                   # SQLite 数据库（运行时生成）
 └── exports/                # 导出文件（运行时生成）
@@ -199,6 +210,201 @@ title_suffixes:
 - 文章表字段：`id / source_id / source_name / canonical_url / title / authors /
   published_at / discovered_at / fetched_at / body_text / body_html / images /
   lead_image / language / status / title_fp`。
+- 第二阶段新增 `article_analysis` 表，结构与唯一约束见 [AI Processing Layer — 数据库结构](#数据库结构-1)。
+
+---
+
+## AI Processing Layer
+
+第二阶段新增能力：把已经入库的 `Article` 交给一个 **OpenAI-compatible LLM API**，
+生成**结构化新闻分析**（中文摘要、关键事实、主题、实体、市场相关度等），并持久化回 SQLite。
+
+```
+Article
+   ↓
+AI Provider (OpenAI-compatible)
+   ↓
+Structured Analysis (严格 JSON)
+   ↓
+SQLite (article_analysis)
+```
+
+抓取层与 AI 层**完全解耦**：`news fetch` 负责抓新闻，`news process` 负责处理已入库新闻，
+两者可独立运行。单篇 AI 失败不影响其它文章，也不会让 Article 丢失。
+
+### 1. 环境变量配置
+
+AI 配置全部通过环境变量（或项目根 `.env` 文件）提供，**API Key 绝不进入代码 / YAML / Git**。
+
+```bash
+# 通用 OpenAI-compatible Provider（TokenRhythm 示例）
+export AI_PROVIDER=tokenrhythm
+export AI_BASE_URL=https://tokenrhythm.studio/v1
+export AI_API_KEY=your-key
+export AI_MODEL=deepseek-v4-flash
+
+# 可选
+export AI_TIMEOUT=60          # 请求超时（秒），默认 60
+export AI_TEMPERATURE=0.2     # 采样温度，默认 0.2
+export AI_MAX_TOKENS=4000     # 输出最大 token，默认 4000
+```
+
+也可以使用项目根 `.env`（已被 `.gitignore` 排除，不会进入 Git）：
+
+```bash
+# .env
+AI_PROVIDER=tokenrhythm
+AI_BASE_URL=https://tokenrhythm.studio/v1
+AI_API_KEY=your-key
+AI_MODEL=deepseek-v4-flash
+```
+
+> **CNB 流水线内免配置**：在 CNB 流水线环境中运行 `news process` 时，
+> 若未设置 `AI_BASE_URL` / `AI_API_KEY` / `AI_MODEL`，系统会自动回退到
+> CNB AI 网关（`https://api.cnb.cool/<repo>/-/ai` + `CNB_TOKEN`），
+> 无需额外配置即可真实调用（见“真实验收”）。
+
+### 2. 安装
+
+与第一阶段相同：
+
+```bash
+uv sync --extra dev
+```
+
+AI 层只依赖项目已有的 `httpx`，未新增任何第三方依赖。
+
+### 3. process 命令
+
+```bash
+uv run news process --site eco --limit 3
+```
+
+行为：
+
+1. 从 SQLite 找出**已成功抓取但还没有 AI analysis** 的 ECO 文章；
+2. 逐篇调用 AI Provider；
+3. 解析并校验严格 JSON（失败自动有限重试，仍失败则记录 `status='failed'`）；
+4. 保存到 `article_analysis`；
+5. 单篇失败不影响其它文章。
+
+### 4. 单篇处理
+
+```bash
+uv run news process --article-id 12
+```
+
+只处理指定文章 ID（已分析过则跳过）。
+
+### 5. 批量处理
+
+```bash
+# 全站未分析文章，默认最多 5 篇（成本控制）
+uv run news process --limit 5
+
+# 指定站点
+uv run news process --site eco --limit 10
+```
+
+### 6. retry failed
+
+```bash
+uv run news process --site eco --retry-failed --limit 5
+```
+
+重新处理之前 AI 处理失败的记录（`article_analysis.status='failed'`）。
+
+### 7. 切换 OpenAI-compatible Provider
+
+不写死任何厂商/模型，只通过环境变量切换：
+
+```bash
+# 切换到 DeepSeek 官方
+export AI_BASE_URL=https://api.deepseek.com/v1
+export AI_MODEL=deepseek-chat
+export AI_API_KEY=your-deepseek-key
+uv run news process --site eco --limit 3
+
+# 切换到任意 OpenAI-compatible endpoint
+export AI_BASE_URL=https://your-gateway.example/v1
+export AI_MODEL=your-model
+export AI_API_KEY=your-key
+uv run news process --site eco --limit 3
+```
+
+也可通过 CLI 临时覆盖（Key 仍来自环境 / `.env`）：
+
+```bash
+uv run news process --site eco --limit 3 \
+  --ai-provider deepseek --ai-base-url https://api.deepseek.com/v1 \
+  --ai-model deepseek-chat
+```
+
+Provider 名只作为数据库标签保存，不影响调用逻辑。
+
+### 8. 数据库结构
+
+新增表 `article_analysis`（SQLite）：
+
+| 字段 | 说明 |
+| --- | --- |
+| `id` | 主键 |
+| `article_id` | 外键 → `articles.id`（ON DELETE CASCADE） |
+| `provider` | Provider 标识（如 `openai-compatible`） |
+| `model` | 模型名 |
+| `prompt_version` | Prompt 版本（当前 `v1`） |
+| `summary_zh` | 中文摘要 |
+| `key_points_json` | 关键事实（JSON 数组） |
+| `topics_json` | 主题标签（JSON 数组） |
+| `entities_json` | 实体列表（JSON 数组） |
+| `market_relevance` | `high` / `medium` / `low` |
+| `market_relevance_reason` | 理由（1~3 句） |
+| `language` | 原文语言代码（如 `pt` / `en` / `zh`） |
+| `status` | `success` / `failed` |
+| `error` | 失败原因 |
+| `usage_json` | token usage / cost（API 返回时保存） |
+| `created_at` / `updated_at` | 时间戳 |
+
+**唯一约束**：`UNIQUE(article_id, provider, model, prompt_version)`。
+
+设计选择：同一篇文章未来可以用**不同模型 / 不同 Prompt 版本**重新分析并共存
+（方便比较 v1 / v2 / v3 的输出），相同参数的重复分析则覆盖更新，不会产生重复记录。
+
+### 9. 测试方法
+
+```bash
+# 全部离线测试（不依赖任何真实 API）
+uv run python -m pytest
+
+# 仅 AI 相关测试
+uv run python -m pytest tests/test_ai_schema.py tests/test_ai_provider.py tests/test_ai_processor.py
+```
+
+离线测试使用 Mock Provider，覆盖：JSON 解析、schema 校验、malformed JSON、重试、
+Provider 失败、数据库持久化、重复分析去重、批量处理、单篇失败不中断 batch。
+
+真实验收（可选，需要 API 可用）：
+
+```bash
+uv run news fetch --site eco          # 确保数据库有 ECO 文章
+uv run news process --site eco --limit 3   # 真实调用 API
+uv run news status                     # 查看 AI 分析统计
+```
+
+### 10. AI 输出字段
+
+每篇 Article 生成以下结构化字段：
+
+1. `summary_zh` — 中文摘要（3~5 自然段以内，准确描述事实，不添加原文没有的信息）；
+2. `key_points` — 3~5 条关键事实；
+3. `topics` — 主题标签（如 `葡萄牙政治`、`财政政策`、`欧盟`）；
+4. `entities` — 实体列表，区分 `company / person / organization / country / product`；
+5. `market_relevance` — 仅判断“是否可能具有金融市场研究价值”（`high/medium/low`），**不给投资建议**；
+6. `market_relevance_reason` — 1~3 句理由；
+7. `language` — 原文语言代码。
+
+Prompt 强制要求**事实优先**：事实必须来自文章，不虚构，不确定必须标记，
+`market_relevance` 是分析判断而非事实，不允许把“可能影响”写成“已经影响”。
 
 ---
 
@@ -215,16 +421,19 @@ title_suffixes:
 - **HKEJ（信报）**：从当前运行环境（欧洲数据中心）无法建立 TCP 连接（超时），
   属于网络可达性限制而非代码问题。已预留 `sites/hkej.yaml` 配置。
   第一阶段硬性验收以 **ECO** 为准（见下）。
-- 下一步建议：
+- **AI 层已知限制**：`market_relevance` 是模型的分析判断而非事实；
+  当前只生成最小结构化字段，投资建议 / 预测 / RAG / 向量库 / Agent 等均未实现
+  （见 `NEXT_PHASE.md`）。
+- 下一步建议（详细见 `NEXT_PHASE.md`）：
   1. 增加更多财经站点（Reuters/FT/WSJ 等）——每个站点新增一个 YAML；
   2. 为必须 JS 的站点实现 `PlaywrightFetcher`；
   3. 接入 RSSHub 公共实例或自建实例；
-  4. 实现 `news fetch --retry-failed` 的定时调度（`cron` 即可，无需 Celery）；
-  5. 未来 AI 层：摘要 / 翻译 / 分类 / 实体识别 / 市场影响分析（通过 `Article` 模型对接）。
+  4. 用 `cron` 定时调度 `news fetch` + `news process`；
+  5. Prompt v2：多模型对比 / 历史分析比较 / 投资研究标签。
 
 ---
 
-## ECO 端到端验收结果
+## 第一阶段：ECO 端到端验收结果
 
 真实运行验证（`uv run news fetch --site eco`）：
 
@@ -239,3 +448,25 @@ title_suffixes:
 | SQLite 入库 | 15 篇（`status=fetched`） |
 
 > 运行环境差异可能导致每次抓取的数量略有不同（以 RSS 当时条目为准）。
+
+---
+
+## 第二阶段：AI Processing Layer 验收结果
+
+真实运行验证（CNB AI 网关 + `deepseek-v4-flash`，详见 PR 报告）：
+
+| 项目 | 结果 |
+| --- | --- |
+| 离线测试 | 84 项全部通过（含第一阶段 46 项） |
+| Provider | OpenAI-compatible（CNB AI 网关，`AI_PROVIDER=openai-compatible`） |
+| 模型 | `deepseek-v4-flash` |
+| 处理文章 | 20 篇 ECO（分 4 批：3+3+11+3） |
+| AI 成功 | 20 / 20 |
+| AI 失败 | 0 |
+| 二次运行 | 全部跳过（0 篇，不重复调用 API） |
+| 数据库 | `article_analysis` 成功写入 20 条 |
+| token usage | prompt 30,429 / completion 12,791 / total 43,220 |
+| credit/cost | 1.45（CNB AI 网关返回的 credit） |
+| retry-failed | 失败项默认排除；`--retry-failed` 真实重试 3 篇 3/3 成功 |
+
+> 实际数字以本次 PR 的验收运行输出为准。

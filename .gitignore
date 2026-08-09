@@ -10,6 +10,11 @@ build/
 data/
 exports/
 
+# 密钥配置（API Key 等，绝不能进入 Git）
+.env
+.env.*
+!.env.example
+
 # 测试与工具
 .pytest_cache/
 .coverage

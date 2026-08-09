@@ -43,6 +43,33 @@ CREATE INDEX IF NOT EXISTS idx_articles_title_fp
     ON articles(title_fp);
 CREATE INDEX IF NOT EXISTS idx_articles_source
     ON articles(source_id);
+
+-- AI 分析结果表（第二阶段）
+-- 唯一约束选择 (article_id, provider, model, prompt_version)：
+-- 同一篇文章未来可用不同 provider/model/prompt 版本重新分析并共存。
+CREATE TABLE IF NOT EXISTS article_analysis (
+    id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+    article_id              INTEGER NOT NULL REFERENCES articles(id) ON DELETE CASCADE,
+    provider                TEXT    NOT NULL DEFAULT 'openai-compatible',
+    model                   TEXT    NOT NULL,
+    prompt_version          TEXT    NOT NULL,
+    summary_zh              TEXT    NOT NULL,
+    key_points_json         TEXT    NOT NULL DEFAULT '[]',
+    topics_json             TEXT    NOT NULL DEFAULT '[]',
+    entities_json           TEXT    NOT NULL DEFAULT '[]',
+    market_relevance        TEXT    NOT NULL,
+    market_relevance_reason TEXT    NOT NULL,
+    language                TEXT    NOT NULL DEFAULT '',
+    status                  TEXT    NOT NULL DEFAULT 'success',
+    error                   TEXT    NOT NULL DEFAULT '',
+    usage_json              TEXT    NOT NULL DEFAULT '{}',
+    created_at              TEXT    NOT NULL,
+    updated_at              TEXT    NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_analysis_article_provider_model_pv
+    ON article_analysis(article_id, provider, model, prompt_version);
+CREATE INDEX IF NOT EXISTS idx_analysis_status
+    ON article_analysis(status);
 """
 
 
@@ -258,6 +285,193 @@ class Storage:
                 (source_id, title_fp),
             ).fetchone()
         return row is not None
+
+    # ---------- AI 分析（第二阶段） ----------
+
+    def upsert_analysis(
+        self,
+        *,
+        article_id: int,
+        provider: str,
+        model: str,
+        prompt_version: str,
+        summary_zh: str,
+        key_points: list[str],
+        topics: list[str],
+        entities: list[dict],
+        market_relevance: str,
+        market_relevance_reason: str,
+        language: str,
+        status: str = "success",
+        error: str = "",
+        usage: dict | None = None,
+    ) -> int:
+        """插入或更新一条 AI 分析记录。
+
+        唯一约束 (article_id, provider, model, prompt_version)：
+        同参数重新分析时覆盖；不同模型/版本可并存。
+        返回记录 id。
+        """
+        import json
+
+        now = datetime.now(timezone.utc).isoformat()
+        row = (
+            article_id,
+            provider,
+            model,
+            prompt_version,
+            summary_zh,
+            json.dumps(key_points, ensure_ascii=False),
+            json.dumps(topics, ensure_ascii=False),
+            json.dumps(entities, ensure_ascii=False),
+            market_relevance,
+            market_relevance_reason,
+            language,
+            status,
+            error,
+            json.dumps(usage or {}, ensure_ascii=False),
+            now,
+            now,
+        )
+        with self._tx() as conn:
+            conn.execute(
+                """INSERT INTO article_analysis
+                   (article_id, provider, model, prompt_version, summary_zh,
+                    key_points_json, topics_json, entities_json,
+                    market_relevance, market_relevance_reason, language,
+                    status, error, usage_json, created_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(article_id, provider, model, prompt_version)
+                   DO UPDATE SET
+                     summary_zh=excluded.summary_zh,
+                     key_points_json=excluded.key_points_json,
+                     topics_json=excluded.topics_json,
+                     entities_json=excluded.entities_json,
+                     market_relevance=excluded.market_relevance,
+                     market_relevance_reason=excluded.market_relevance_reason,
+                     language=excluded.language,
+                     status=excluded.status,
+                     error=excluded.error,
+                     usage_json=excluded.usage_json,
+                     updated_at=excluded.updated_at""",
+                row,
+            )
+            cur = conn.execute(
+                "SELECT id FROM article_analysis WHERE article_id=? AND provider=? AND model=? AND prompt_version=?",
+                (article_id, provider, model, prompt_version),
+            )
+            found = cur.fetchone()
+            return int(found["id"]) if found else 0
+
+    def analysis_exists(
+        self,
+        article_id: int,
+        *,
+        provider: str | None = None,
+        model: str | None = None,
+        prompt_version: str | None = None,
+    ) -> bool:
+        """判断是否已存在成功分析记录。
+
+        不传 provider/model/prompt_version 时，只要任意一条成功记录即视为已分析。
+        """
+        sql = "SELECT 1 FROM article_analysis WHERE article_id=? AND status='success'"
+        params: list = [article_id]
+        if provider:
+            sql += " AND provider=?"
+            params.append(provider)
+        if model:
+            sql += " AND model=?"
+            params.append(model)
+        if prompt_version:
+            sql += " AND prompt_version=?"
+            params.append(prompt_version)
+        with self._conn:
+            row = self._conn.execute(sql, params).fetchone()
+        return row is not None
+
+    def list_unanalyzed_articles(
+        self,
+        *,
+        source_id: str | None = None,
+        limit: int = 5,
+        include_failed: bool = False,
+    ) -> list[Article]:
+        """列出需要 AI 处理的文章。
+
+        条件：
+        - 已成功抓取（status='fetched'）；
+        - 没有对应的成功 AI 分析；
+        - include_failed=False（默认）：跳过已有失败分析记录的文章（尚未分析过）；
+        - include_failed=True（--retry-failed）：额外包含之前 AI 处理失败的文章，重新处理。
+        """
+        where = [
+            "a.status='fetched'",
+            "NOT EXISTS (SELECT 1 FROM article_analysis x WHERE x.article_id=a.id AND x.status='success')",
+        ]
+        params: list = []
+        if source_id:
+            where.append("a.source_id=?")
+            params.append(source_id)
+        if not include_failed:
+            where.append(
+                "NOT EXISTS (SELECT 1 FROM article_analysis f WHERE f.article_id=a.id AND f.status='failed')"
+            )
+        sql = (
+            "SELECT a.* FROM articles a WHERE "
+            + " AND ".join(where)
+            + " ORDER BY COALESCE(a.published_at, a.discovered_at) DESC LIMIT ?"
+        )
+        params.append(limit)
+        with self._conn:
+            rows = self._conn.execute(sql, params).fetchall()
+        return [self._row_to_article(r) for r in rows]
+
+    def count_analysis(
+        self,
+        *,
+        source_id: str | None = None,
+        status: str | None = None,
+    ) -> int:
+        """统计 article_analysis 记录数。"""
+        sql = (
+            "SELECT COUNT(*) AS c FROM article_analysis x "
+            "JOIN articles a ON a.id=x.article_id"
+        )
+        where: list[str] = []
+        params: list = []
+        if source_id:
+            where.append("a.source_id=?")
+            params.append(source_id)
+        if status:
+            where.append("x.status=?")
+            params.append(status)
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        with self._conn:
+            row = self._conn.execute(sql, params).fetchone()
+        return int(row["c"])
+
+    def list_analysis(
+        self,
+        *,
+        article_id: int | None = None,
+        limit: int = 50,
+    ) -> list[sqlite3.Row]:
+        """列出 AI 分析记录（供 CLI 展示）。"""
+        sql = (
+            "SELECT x.*, a.source_id, a.title FROM article_analysis x "
+            "JOIN articles a ON a.id=x.article_id"
+        )
+        params: list = []
+        if article_id:
+            sql += " WHERE x.article_id=?"
+            params.append(article_id)
+        sql += " ORDER BY x.updated_at DESC LIMIT ?"
+        params.append(limit)
+        with self._conn:
+            rows = self._conn.execute(sql, params).fetchall()
+        return list(rows)
 
     @staticmethod
     def _row_to_article(row: sqlite3.Row) -> Article:

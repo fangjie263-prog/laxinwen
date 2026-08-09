@@ -5,6 +5,7 @@
     news list [--source <id>] [--limit N]
     news export --format jsonl|markdown [--source <id>]
     news status [--source <id>]
+    news process [--site <id>] [--limit N] [--article-id <id>] [--retry-failed]
 """
 
 from __future__ import annotations
@@ -107,9 +108,99 @@ def cmd_status(args: argparse.Namespace) -> int:
         print(f"文章总数: {total}")
         for status, count in sorted(by_status.items()):
             print(f"  - {status}: {count}")
+        # 第二阶段：AI 分析统计
+        print(f"AI 分析记录: {storage.count_analysis(source_id=args.source)}")
+        print(
+            f"  - 成功: {storage.count_analysis(source_id=args.source, status='success')}"
+        )
+        print(
+            f"  - 失败: {storage.count_analysis(source_id=args.source, status='failed')}"
+        )
     finally:
         storage.close()
     return 0
+
+
+def cmd_process(args: argparse.Namespace) -> int:
+    """news process —— 把已入库的文章交给 AI 生成结构化分析并保存。
+
+    默认只处理：已成功抓取、但还没有 AI analysis 的文章。
+    单篇失败不影响其它文章。
+    """
+    from .ai import ArticleProcessor, AIProviderConfig, build_provider, load_dotenv
+
+    load_dotenv()  # 支持项目根 .env（仅当环境未设置时）
+    storage = _open_storage(args.db)
+    processor: Optional[ArticleProcessor] = None
+    try:
+        if args.ai_provider or args.ai_base_url or args.ai_api_key or args.ai_model:
+            # 允许通过 CLI 临时覆盖（便于切换 Provider），Key 仍来自环境变量/.env
+            cfg = AIProviderConfig.from_env()
+            if args.ai_provider:
+                cfg.provider = args.ai_provider
+            if args.ai_base_url:
+                cfg.base_url = args.ai_base_url
+            if args.ai_api_key:
+                cfg.api_key = args.ai_api_key
+            if args.ai_model:
+                cfg.model = args.ai_model
+            provider = build_provider(cfg)
+            processor = ArticleProcessor(storage, provider=provider, config=cfg)
+        else:
+            processor = ArticleProcessor(storage)
+
+        print("AI Provider 配置:")
+        for k, v in processor.config.redacted().items():
+            print(f"  {k}: {v}")
+        print()
+
+        stats = processor.process_batch(
+            source_id=args.site,
+            limit=args.limit,
+            article_id=args.article_id,
+            retry_failed=args.retry_failed,
+        )
+        print(
+            f"处理结果: 共 {stats.total} 篇 | 成功 {stats.ok} | 失败 {stats.failed}"
+        )
+        if stats.errors:
+            print("失败明细:")
+            for err in stats.errors:
+                print(f"  - {err}")
+        # token usage / cost 汇总（若 API 返回）
+        usage_total = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+        }
+        credit_total = 0.0
+        # 从数据库读取本次成功记录的 usage
+        rows = storage.list_analysis(limit=1000)
+        for row in rows:
+            if row["status"] != "success":
+                continue
+            import json as _json
+
+            try:
+                u = _json.loads(row["usage_json"] or "{}")
+            except (ValueError, TypeError):
+                u = {}
+            for key in usage_total:
+                usage_total[key] += int(u.get(key, 0) or 0)
+            credit_total += float(u.get("credit", 0) or 0)
+        print("token usage（累计成功记录）:")
+        for k, v in usage_total.items():
+            print(f"  {k}: {v}")
+        if credit_total:
+            print(f"  credit/cost: {credit_total:.4f}")
+        return 0
+    except Exception as exc:
+        print(f"AI 处理失败: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        if processor is not None:
+            processor.close()
+        storage.close()
 
 
 def cmd_export(args: argparse.Namespace) -> int:
@@ -164,6 +255,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_status.add_argument("--source", help="按站点过滤")
     _add_common_args(p_status)
     p_status.set_defaults(func=cmd_status)
+
+    p_process = sub.add_parser("process", help="AI 处理已入库文章（生成结构化分析）")
+    p_process.add_argument("--site", help="只处理指定站点（默认全部）")
+    p_process.add_argument("--limit", type=int, default=5, help="最多处理篇数（默认 5）")
+    p_process.add_argument("--article-id", type=int, default=None, help="只处理指定文章 ID")
+    p_process.add_argument("--retry-failed", action="store_true", help="重新处理之前 AI 失败的文章")
+    # 临时覆盖 Provider 配置（Key 仍来自环境变量/.env）
+    p_process.add_argument("--ai-provider", default=None, help="临时覆盖 AI_PROVIDER")
+    p_process.add_argument("--ai-base-url", default=None, help="临时覆盖 AI_BASE_URL")
+    p_process.add_argument("--ai-api-key", default=None, help="临时覆盖 AI_API_KEY（仅命令行临时传入，不入代码）")
+    p_process.add_argument("--ai-model", default=None, help="临时覆盖 AI_MODEL")
+    _add_common_args(p_process)
+    p_process.set_defaults(func=cmd_process)
 
     p_export = sub.add_parser("export", help="导出 JSONL / Markdown")
     p_export.add_argument("--format", choices=["jsonl", "markdown"], required=True)
