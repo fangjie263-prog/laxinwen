@@ -1,83 +1,63 @@
-"""Offline test for article extraction from a real-shaped ECO article HTML."""
+"""正文提取测试（Trafilatura 参数、杂讯清理）。"""
 
-from laxinwen.extract import extract_article
+import sys
+from pathlib import Path
 
-ARTICLE_HTML = """<!DOCTYPE html>
-<html lang="pt-PT">
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from news.extract import _apply_clean_patterns, extract_article  # noqa: E402
+
+_HTML = """<!DOCTYPE html>
+<html lang="pt">
 <head>
-  <meta charset="UTF-8">
-  <link rel="canonical" href="https://eco.sapo.pt/2026/08/08/titulo-da-noticia/">
-  <meta property="og:title" content="Título da Notícia">
-  <meta property="og:image" content="https://eco.imgix.net/uploads/2026/06/foto.jpg">
-  <meta property="article:published_time" content="2026-08-08T22:23:34Z">
-  <script type="application/ld+json">
-  {"@type":"NewsArticle","author":[{"@type":"Person","name":"Lusa"}]}
-  </script>
+  <title>Notícia Teste - ECO</title>
+  <meta property="article:published_time" content="2026-08-08T10:00:00+00:00"/>
+  <meta property="og:image" content="https://eco.imgix.net/uploads/x.jpg"/>
+  <link rel="canonical" href="https://eco.sapo.pt/2026/08/08/noticia-teste/"/>
 </head>
 <body>
-  <nav><a href="/">Home</a> <a href="/economia">Economia</a></nav>
   <article>
-    <header>
-      <h1>Título da Notícia</h1>
-      <span class="meta__info">Lusa</span>
-    </header>
-    <div class="entry__content">
-      <p>Primeiro parágrafo da notícia com conteúdo relevante.</p>
-      <p>Segundo parágrafo com mais detalhes sobre o assunto.</p>
-      <p>Terceiro parágrafo concluindo a notícia.</p>
-      <img src="https://eco.imgix.net/uploads/2026/06/foto2.jpg">
-    </div>
-    <aside class="related">Artigo recomendado aqui</aside>
+    <h1>Notícia Teste</h1>
+    <p class="author">Por <a>Maria Silva</a></p>
+    <p>Primeiro parágrafo do corpo da notícia.</p>
+    <p>Segundo parágrafo com mais conteúdo para o teste.</p>
+    <p>Escolha o ECO como fonte preferida no Google</p>
   </article>
 </body>
 </html>
 """
 
 
-def test_extract_article_fields():
-    art = extract_article(
-        "eco", "ECO – Economia Online",
-        "https://eco.sapo.pt/2026/08/08/titulo-da-noticia/",
-        ARTICLE_HTML,
-    )
-    assert art.title == "Título da Notícia"
-    assert art.canonical_url == "https://eco.sapo.pt/2026/08/08/titulo-da-noticia/"
-    assert art.published_at is not None
-    assert art.published_at_iso() == "2026-08-08T22:23:34+00:00"
-    assert "Lusa" in art.authors
-    assert "Primeiro parágrafo" in art.body_text
-    assert "relevante" in art.body_text
-    assert "Terceiro parágrafo" in art.body_text
-    assert art.language == "pt-PT"
-    assert art.lead_image and art.lead_image.startswith("https://eco.imgix.net")
-    assert any("foto2.jpg" in img for img in art.images)
-    assert art.status == "ok"
+class TestCleanPatterns:
+    def test_remove_pattern_line(self):
+        text = "linha 1\nEscolha o ECO como fonte preferida no Google\nlinha 3"
+        out = _apply_clean_patterns(text, ["Escolha o ECO como fonte preferida no Google"])
+        assert "Escolha o ECO" not in out
+        assert "linha 1" in out and "linha 3" in out
+
+    def test_invalid_pattern_ignored(self):
+        text = "linha 1"
+        assert _apply_clean_patterns(text, ["["]) == text  # 非法正则不报错
+
+    def test_empty(self):
+        assert _apply_clean_patterns("", ["x"]) == ""
 
 
-def test_extract_article_fallback_body():
-    html = ARTICLE_HTML.replace('<div class="entry__content">', '<div>').replace(
-        '<p>Primeiro parágrafo da notícia com conteúdo relevante.</p>', ""
-    ).replace('<p>Segundo parágrafo com mais detalhes sobre o assunto.</p>', "")
-    art = extract_article(
-        "eco", "ECO",
-        "https://eco.sapo.pt/2026/08/08/titulo-da-noticia/",
-        html,
-    )
-    # Title still extracted even if body extraction produced little.
-    assert art.title == "Título da Notícia"
+class TestExtractArticle:
+    def test_extract_basic(self):
+        res = extract_article(_HTML, url="https://eco.sapo.pt/2026/08/08/noticia-teste/")
+        assert "Notícia Teste" in res.title
+        assert res.text
+        assert "Primeiro parágrafo" in res.text
+        assert res.published_at is not None
+        assert res.published_at.hour == 10
 
-
-def test_extract_removes_site_chrome_lines():
-    html = ARTICLE_HTML.replace(
-        "<p>Terceiro parágrafo concluindo a notícia.</p>",
-        "<p>Terceiro parágrafo concluindo a notícia.</p>"
-        "<p>Escolha o ECO como fonte preferida no Google</p>",
-    )
-    art = extract_article(
-        "eco", "ECO",
-        "https://eco.sapo.pt/2026/08/08/titulo-da-noticia/",
-        html,
-        site_extract={"exclude_phrases": ["Escolha o ECO como fonte preferida no Google"]},
-    )
-    assert "Escolha o ECO" not in art.body_text
-    assert "Terceiro parágrafo" in art.body_text
+    def test_extract_clean_patterns_from_site_config(self):
+        site_cfg = {
+            "favor_recall": True,
+            "clean_patterns": ["Escolha o ECO como fonte preferida no Google", "Assine o ECO Premium.*"],
+        }
+        res = extract_article(_HTML, url="https://eco.sapo.pt/2026/08/08/noticia-teste/", site_extract=site_cfg)
+        assert "Escolha o ECO" not in res.text

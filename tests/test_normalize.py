@@ -1,75 +1,66 @@
-"""Unit tests for URL canonicalization and title fingerprinting."""
+"""URL 规范化与标题指纹测试。"""
 
-import pytest
+import sys
+from pathlib import Path
 
-from laxinwen.normalize import canonicalize_url, title_fingerprint
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-
-@pytest.mark.parametrize(
-    "raw,expected",
-    [
-        # fragment stripping
-        (
-            "https://eco.sapo.pt/2026/08/08/a/#comments",
-            "https://eco.sapo.pt/2026/08/08/a/",
-        ),
-        # utm params stripped
-        (
-            "https://eco.sapo.pt/x/?utm_source=rss&utm_medium=feed&id=5",
-            "https://eco.sapo.pt/x/?id=5",
-        ),
-        # fbclid / gclid stripped
-        (
-            "https://example.com/a?fbclid=abc&gclid=def&page=2",
-            "https://example.com/a?page=2",
-        ),
-        # host lowercasing + default port removal
-        (
-            "HTTPS://ECO.Sapo.PT:443/2026/08/08/x/",
-            "https://eco.sapo.pt/2026/08/08/x/",
-        ),
-        # trailing slash preserved
-        ("https://eco.sapo.pt/2026/08/08/x", "https://eco.sapo.pt/2026/08/08/x"),
-        # query params sorted deterministically
-        (
-            "https://example.com/a?z=1&a=2",
-            "https://example.com/a?a=2&z=1",
-        ),
-        # empty
-        ("", ""),
-    ],
-)
-def test_canonicalize_url(raw, expected):
-    assert canonicalize_url(raw) == expected
+from news.normalize import canonicalize_url, title_fingerprint  # noqa: E402
 
 
-def test_canonicalize_url_dedup_collision():
-    a = canonicalize_url("https://eco.sapo.pt/x/?utm_source=feed#top")
-    b = canonicalize_url("https://eco.sapo.pt/x/")
-    assert a == b
+class TestCanonicalizeUrl:
+    def test_remove_fragment(self):
+        assert canonicalize_url("https://eco.sapo.pt/a/b/#comments") == (
+            "https://eco.sapo.pt/a/b/"
+        )
+
+    def test_remove_tracking_params(self):
+        url = (
+            "https://eco.sapo.pt/2026/08/08/x/?utm_source=twitter"
+            "&utm_medium=social&fbclid=abc&gclid=def&keep=1"
+        )
+        assert canonicalize_url(url) == "https://eco.sapo.pt/2026/08/08/x/?keep=1"
+
+    def test_domain_lowercase(self):
+        assert canonicalize_url("https://ECO.SAPO.PT/2026/08/08/X/") == (
+            "https://eco.sapo.pt/2026/08/08/X/"
+        )
+
+    def test_default_port_removed(self):
+        assert canonicalize_url("https://eco.sapo.pt:443/a/") == (
+            "https://eco.sapo.pt/a/"
+        )
+
+    def test_trailing_slash_preserved(self):
+        # 不主动加/删尾部斜杠，避免误判不同路径
+        assert canonicalize_url("https://eco.sapo.pt/a") == "https://eco.sapo.pt/a"
+
+    def test_empty(self):
+        assert canonicalize_url("") == ""
+        assert canonicalize_url("   ") == ""
 
 
-@pytest.mark.parametrize(
-    "title,expected",
-    [
-        ("Hello World!", "helloworld"),
-        ("  Hello   World  ", "helloworld"),
-        ("Économie & Finance", "économiefinance"),
-        ("Reuters: Breaking News", "reutersbreakingnews"),
-        ("", ""),
-    ],
-)
-def test_title_fingerprint(title, expected):
-    assert title_fingerprint(title) == expected
+class TestTitleFingerprint:
+    def test_nfkc_and_case(self):
+        # 全角／半角统一 + 大小写
+        fp = title_fingerprint("ＣＡＲＮＥＩＲＯ concorda")
+        assert fp == "carneiro concorda"
 
+    def test_site_suffix_removed(self):
+        assert title_fingerprint("Título da notícia – ECO") == "titulo da noticia"
+        assert title_fingerprint("Título - ECO") == "titulo"
 
-def test_title_fingerprint_strips_site_suffix():
-    assert (
-        title_fingerprint("Some headline - ECO", strip_site_suffix="ECO")
-        == "someheadline"
-    )
+    def test_punctuation_removed(self):
+        assert title_fingerprint("Título: “A & B”!") == "titulo a b"
 
+    def test_whitespace_collapsed(self):
+        assert title_fingerprint("  A   B  ") == "a b"
 
-def test_title_fingerprint_unicode_nfkc():
-    # fullwidth characters normalize via NFKC
-    assert title_fingerprint("Ｈｅｌｌｏ") == "hello"
+    def test_same_story_different_sites_kept(self):
+        # 不同站点对同一故事的标题不同 → 指纹不同，不应误判重复
+        a = title_fingerprint("Trump recorre ao Supremo", site_suffixes=[" - Reuters"])
+        b = title_fingerprint("Trump recorre ao Supremo após bloqueio", site_suffixes=[" | BBC"])
+        assert a != b
+
+    def test_empty(self):
+        assert title_fingerprint("") == ""

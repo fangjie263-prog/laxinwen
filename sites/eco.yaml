@@ -1,25 +1,38 @@
+# ECO – Economia Online（葡萄牙财经媒体）
+# 官方 RSS 可用（含正文），是第一优先发现来源；
+# 栏目页 https://eco.sapo.pt/ultimas/ 作为备选（selectolax 提取卡片链接）。
+
 id: eco
 name: ECO – Economia Online
-url: https://eco.sapo.pt/
 language: pt-PT
-request_interval: 1.0
 
-# Official WordPress RSS feed (verified live on 2026-08-09, ~22 items).
+# 官方 RSS / Atom（已验证可用，RSS 含 content:encoded 完整正文）
 rss: https://eco.sapo.pt/feed/
 
-# Fallback discovery: "Últimas" list page (only used if the RSS feed fails).
+# RSSHub 暂无 ECO 专用 Route，官方 RSS 已满足需求，无需使用。
+rsshub: null
+
+# 栏目页（备选发现来源）
 lists:
   - url: https://eco.sapo.pt/ultimas/
-    type: html
-    link_selector: "article.card-list a h3.card__title"
-    article_url_pattern: "https://eco\\.sapo\\.pt/20\\d{2}/\\d{2}/\\d{2}/[^/]+/"
-    max_items: 50
+    # 实际页面结构：<article class="card-list card card--list"> 内
+    # <a href="..."><h3 class="card__title">...</h3></a> + <a class="link-cover" href="...">
+    link_selector: "article.card-list a.card__title, article.card--list a.link-cover"
+    article_url_pattern: "https://eco\\.sapo\\.pt/(?:[0-9]{4}/[0-9]{2}/[0-9]{2}/|entrevista/|descodificador/|opiniao/|dossiers/|podcast/|videos/)[^/]+/$"
 
-# Site-level extraction tuning (only used if Trafilatura under-performs).
+# 是否无需 JS（普通 HTTP 即可取得正文与列表）
+requires_js: false
+
+# Trafilatura 提取参数
 extract:
-  body_selectors:
-    - ".entry__content"
-    - ".entry-content"
-  # Lines that are page chrome rather than article body (verified on 2026-08-09).
-  exclude_phrases:
+  favor_recall: true
+  # 正文杂讯清理（推广/订阅提示等）
+  clean_patterns:
     - "Escolha o ECO como fonte preferida no Google"
+    - "Assine o ECO Premium.*"
+
+# 标题指纹清洗时附加移除的站点后缀
+title_suffixes:
+  - " – ECO"
+  - " - ECO"
+  - " | ECO"
