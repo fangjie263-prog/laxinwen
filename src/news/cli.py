@@ -3,7 +3,7 @@
 用法：
     news fetch [--site <id>] [--limit N] [--retry-failed]
     news list [--source <id>] [--limit N]
-    news export --format jsonl|markdown [--source <id>]
+    news export --format jsonl|markdown|html [--source <id>] [--article-id <id>]
     news status [--source <id>]
     news process [--site <id>] [--limit N] [--article-id <id>] [--retry-failed]
 """
@@ -20,6 +20,7 @@ from typing import Optional
 
 from .config import list_available_sites, load_site_config
 from .export import export_jsonl, export_markdown
+from .html_export import export_html
 from .fetch import FetcherOptions, HttpxFetcher
 from .pipeline import Pipeline
 from .storage import Storage
@@ -206,13 +207,28 @@ def cmd_process(args: argparse.Namespace) -> int:
 def cmd_export(args: argparse.Namespace) -> int:
     storage = _open_storage(args.db)
     try:
-        output = Path(args.output)
+        if args.format == "html":
+            # HTML 默认输出到 data/export/html/（研究结果展示层专用目录）
+            out_dir = Path(args.output) if args.output else Path("data") / "export" / "html"
+            result = export_html(
+                storage,
+                out_dir,
+                source_id=args.site or args.source,
+                article_id=args.article_id,
+            )
+            print(f"HTML 导出目录：\n{out_dir}/")
+            print(f"成功导出：\n{result.exported}")
+            print(f"跳过：\n{result.skipped}")
+            print(f"失败：\n{result.failed}")
+            return 0
+
+        output = Path(args.output) if args.output else Path(DEFAULT_EXPORTS)
         if args.format == "jsonl":
             path = output / "news.jsonl"
-            n = export_jsonl(storage, path, source_id=args.source)
+            n = export_jsonl(storage, path, source_id=args.site or args.source)
             print(f"已导出 {n} 篇 → {path}")
         elif args.format == "markdown":
-            n = export_markdown(storage, output, source_id=args.source)
+            n = export_markdown(storage, output, source_id=args.site or args.source)
             print(f"已导出 {n} 篇 → {output}/YYYY/MM/")
         else:
             print(f"不支持的格式: {args.format}", file=sys.stderr)
@@ -269,10 +285,12 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common_args(p_process)
     p_process.set_defaults(func=cmd_process)
 
-    p_export = sub.add_parser("export", help="导出 JSONL / Markdown")
-    p_export.add_argument("--format", choices=["jsonl", "markdown"], required=True)
-    p_export.add_argument("--source", help="按站点过滤")
-    p_export.add_argument("--output", default=str(DEFAULT_EXPORTS), help="导出目录")
+    p_export = sub.add_parser("export", help="导出 JSONL / Markdown / HTML")
+    p_export.add_argument("--format", choices=["jsonl", "markdown", "html"], required=True)
+    p_export.add_argument("--site", help="按站点过滤（HTML 导出）")
+    p_export.add_argument("--source", help="按站点过滤（兼容旧参数）")
+    p_export.add_argument("--article-id", type=int, default=None, help="只导出指定文章（HTML）")
+    p_export.add_argument("--output", default=None, help="导出目录（HTML 默认 data/export/html/）")
     _add_common_args(p_export)
     p_export.set_defaults(func=cmd_export)
 

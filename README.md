@@ -27,6 +27,10 @@ Markdown / JSONL 导出
 AI Processing Layer（第二阶段）
     ↓
 结构化新闻分析 → SQLite (article_analysis)
+    ↓
+HTML 研究结果展示层（第三阶段）
+    ↓
+data/export/html/（单篇研究阅读页 + index.html 索引）
 ```
 
 ---
@@ -87,6 +91,12 @@ uv run news export --format jsonl
 uv run news export --format markdown
 uv run news export --format jsonl --source eco --output /path/to/exports
 
+# ---------- HTML 研究结果展示（AI 分析） ----------
+uv run news export --format html                       # 导出全部成功 AI 分析 → data/export/html/
+uv run news export --format html --site eco           # 只导出 ECO
+uv run news export --format html --article-id 1       # 只导出指定文章
+uv run news export --format html --output /tmp/out    # 指定导出目录
+
 # ---------- 测试 ----------
 uv run python -m pytest          # 全部离线测试
 uv run python -m pytest -m network   # 需要外网的在线测试
@@ -102,13 +112,14 @@ uv run python -m pytest -m network   # 需要外网的在线测试
 | `news list [--source <id>] [--limit N]` | 列出最近新闻 |
 | `news status [--source <id>]` | 显示数据库与抓取状态（含 AI 分析统计） |
 | `news process [--site <id>] [--limit N] [--article-id <id>] [--retry-failed]` | AI 处理已入库文章（生成结构化分析） |
-| `news export --format jsonl\|markdown [--source <id>] [--output DIR]` | 导出 |
+| `news export --format jsonl\|markdown [--source <id>] [--output DIR]` | 导出（JSONL / Markdown） |
+| `news export --format html [--site <id>] [--article-id <id>] [--output DIR]` | 导出 AI 研究结果 HTML |
 
 环境变量（可选）：
 
 - `NEWS_SITES_DIR`：站点配置目录（默认 `./sites`）
 - `NEWS_DB`：SQLite 数据库路径（默认 `./data/news.db`）
-- `NEWS_EXPORTS`：导出目录（默认 `./exports`）
+- `NEWS_EXPORTS`：导出目录（默认 `./exports`；HTML 默认输出 `./data/export/html/`）
 - AI 相关变量见下方 [AI Processing Layer](#ai-processing-layer) 一节
 
 ---
@@ -135,6 +146,7 @@ laxinwen/
 │   ├── extract.py          # 正文提取（Trafilatura）
 │   ├── pipeline.py         # 抓取 pipeline（串联各阶段）
 │   ├── export.py           # JSONL / Markdown 导出
+│   ├── html_export.py      # HTML 研究结果展示层（第三阶段）
 │   └── ai/                 # AI Processing Layer（第二阶段）
 │       ├── __init__.py
 │       ├── provider.py         # Provider 抽象与配置（环境变量 / .env）
@@ -408,6 +420,71 @@ Prompt 强制要求**事实优先**：事实必须来自文章，不虚构，不
 
 ---
 
+## HTML 研究结果展示层
+
+第三阶段新增能力：把 SQLite 中**已经成功完成 AI 分析**的记录渲染成适合金融研究员阅读的 HTML。
+
+```
+SQLite (article_analysis, status='ok'/'success')
+   ↓
+HTML 研究阅读页面
+   ↓
+data/export/html/
+   ├── index.html                    # 总索引（按日期倒序 + 成功/失败统计）
+   └── YYYY/MM/0001-<slug>.html     # 每篇文章一个页面
+```
+
+### 用法
+
+```bash
+uv run news export --format html                # 导出全部成功分析
+uv run news export --format html --site eco    # 只导出 ECO
+uv run news export --format html --article-id 1  # 只导出指定文章
+uv run news export --format html --output /tmp/out
+```
+
+默认输出到 `data/export/html/`，按 `YYYY/MM/` 组织。单篇文件名使用安全的
+slug/canonical article id（如 `0001-eclipse-solar-tudo-o-que-precisa-de-saber.html`），
+不会使用未经清理的原标题，也不包含 Windows 非法字符。
+
+### 页面内容
+
+每篇 HTML 包含（自上而下）：
+
+1. **来源徽标 + 标题**；
+2. **原文信息**：作者、发布日期、来源、原文链接；
+3. **AI 中文摘要**（`summary_zh`，完整显示不截断）；
+4. **关键观点**（编号列表，`key_points_json`）；
+5. **主题**（chip 标签，`topics_json`）；
+6. **实体**（表格，`entities_json`，`location` 等合法类型正常显示）；
+7. **市场相关性**（HIGH / MEDIUM / LOW + 理由，明确标注“AI 判断，不代表原文事实”）；
+8. **原文语言**；
+9. **AI Processing Metadata**（provider / model / prompt_version / token usage / cost / created / updated）；
+10. **原文**（“查看原文 →”链接 + 原文正文，与 AI 分析明显分区）。
+
+### 设计约束
+
+- 纯 Python + HTML + CSS，HTML5 / UTF-8；
+- 中文与葡萄牙语重音字符正常显示；
+- **不依赖外部 CDN / 字体 / JS**，可直接双击打开阅读；
+- 页面宽度适合桌面阅读，正文阅读宽度不设过宽；
+- **只导出 `status='ok'/'success'` 的成功分析**；失败记录不出现在正常研究页面，
+  仅由 `index.html` 显示“成功 N / 失败 N”统计；
+- 用户/文章内容全部 **HTML escape**，正文中的 HTML 不会破坏页面结构；
+- 不修改 `article_analysis` schema，不引入 React/Vue/前端构建/Web server/ORM/RAG。
+
+### 测试
+
+```bash
+uv run python -m pytest tests/test_html_export.py -v
+```
+
+覆盖：单篇生成、中文摘要、葡语重音、key_points / topics / entities（含 location）、
+市场相关性、provider/model/prompt version、token usage、cost、canonical_url 链接、
+失败文章不进入正常 HTML、index.html、文件名安全、空字段容错、HTML escape 等。
+
+---
+
 ## 错误处理与抓取礼仪
 
 - 单站失败不影响其它站点；单篇失败不影响其它文章（记录 `status='failed'` 并可重试）。
@@ -424,11 +501,13 @@ Prompt 强制要求**事实优先**：事实必须来自文章，不虚构，不
 - **AI 层已知限制**：`market_relevance` 是模型的分析判断而非事实；
   当前只生成最小结构化字段，投资建议 / 预测 / RAG / 向量库 / Agent 等均未实现
   （见 `NEXT_PHASE.md`）。
+- **HTML 导出已知限制**：只导出 `status='ok'/'success'` 的成功分析；失败文章仅
+  在 `index.html` 显示统计，不出现在正常研究页面（符合设计）。
 - 下一步建议（详细见 `NEXT_PHASE.md`）：
   1. 增加更多财经站点（Reuters/FT/WSJ 等）——每个站点新增一个 YAML；
   2. 为必须 JS 的站点实现 `PlaywrightFetcher`；
   3. 接入 RSSHub 公共实例或自建实例；
-  4. 用 `cron` 定时调度 `news fetch` + `news process`；
+  4. 用 `cron` 定时调度 `news fetch` + `news process` + `news export --format html`；
   5. Prompt v2：多模型对比 / 历史分析比较 / 投资研究标签。
 
 ---

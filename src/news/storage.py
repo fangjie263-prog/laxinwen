@@ -473,6 +473,40 @@ class Storage:
             rows = self._conn.execute(sql, params).fetchall()
         return list(rows)
 
+    def list_analysis_success(
+        self,
+        *,
+        source_id: str | None = None,
+        article_id: int | None = None,
+        limit: int = 10**9,
+    ) -> list[sqlite3.Row]:
+        """列出 AI 分析成功（status='ok'/'success'）的记录，联表带出文章信息。
+
+        用于 HTML 研究结果导出：只返回"成功分析"，失败记录不会出现在正常研究页面。
+        兼容两代 status 约定：``ok``（PR #4 采用）与 ``success``（PR #3/#5 采用）。
+        返回行包含 x.* 与 a.*（source_id/source_name/title/canonical_url/...）。
+        """
+        sql = (
+            "SELECT x.*, a.source_id AS art_source_id, a.source_name, "
+            "a.title AS art_title, a.canonical_url, a.published_at, "
+            "a.discovered_at, a.body_text, a.language AS art_language, "
+            "a.authors AS art_authors "
+            "FROM article_analysis x JOIN articles a ON a.id=x.article_id "
+            "WHERE x.status IN ('ok', 'success')"
+        )
+        params: list = []
+        if source_id:
+            sql += " AND a.source_id=?"
+            params.append(source_id)
+        if article_id is not None:
+            sql += " AND x.article_id=?"
+            params.append(article_id)
+        sql += " ORDER BY COALESCE(a.published_at, a.discovered_at) DESC LIMIT ?"
+        params.append(limit)
+        with self._conn:
+            rows = self._conn.execute(sql, params).fetchall()
+        return list(rows)
+
     @staticmethod
     def _row_to_article(row: sqlite3.Row) -> Article:
         import json
