@@ -1,0 +1,25 @@
+id: eco
+name: ECO – Economia Online
+url: https://eco.sapo.pt/
+language: pt-PT
+request_interval: 1.0
+
+# Official WordPress RSS feed (verified live on 2026-08-09, ~22 items).
+rss: https://eco.sapo.pt/feed/
+
+# Fallback discovery: "Últimas" list page (only used if the RSS feed fails).
+lists:
+  - url: https://eco.sapo.pt/ultimas/
+    type: html
+    link_selector: "article.card-list a h3.card__title"
+    article_url_pattern: "https://eco\\.sapo\\.pt/20\\d{2}/\\d{2}/\\d{2}/[^/]+/"
+    max_items: 50
+
+# Site-level extraction tuning (only used if Trafilatura under-performs).
+extract:
+  body_selectors:
+    - ".entry__content"
+    - ".entry-content"
+  # Lines that are page chrome rather than article body (verified on 2026-08-09).
+  exclude_phrases:
+    - "Escolha o ECO como fonte preferida no Google"

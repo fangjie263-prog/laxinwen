@@ -1,0 +1,30 @@
+[project]
+name = "laxinwen"
+version = "0.1.0"
+description = "Personal financial news collection & research database (MVP)."
+readme = "README.md"
+authors = [
+    { name = "jiefang2026", email = "vfDOaEr4z5dLTARNF9SLQH+jiefang2026@noreply.cnb.cool" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "feedparser>=6.0.14",
+    "httpx>=0.28.1",
+    "pyyaml>=6.0.3",
+    "selectolax>=0.4.11",
+    "trafilatura>=2.2.0",
+    "typer>=0.27.1",
+]
+
+[project.scripts]
+laxinwen = "laxinwen.cli:main"
+news = "laxinwen.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.12.3,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
