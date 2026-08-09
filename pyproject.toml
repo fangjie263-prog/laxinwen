@@ -1,30 +1,40 @@
 [project]
 name = "laxinwen"
 version = "0.1.0"
-description = "Personal financial news collection & research database (MVP)."
+description = "个人金融新闻采集与研究数据库（Personal financial news collection & research database）"
 readme = "README.md"
-authors = [
-    { name = "jiefang2026", email = "vfDOaEr4z5dLTARNF9SLQH+jiefang2026@noreply.cnb.cool" }
-]
 requires-python = ">=3.12"
 dependencies = [
-    "feedparser>=6.0.14",
-    "httpx>=0.28.1",
-    "pyyaml>=6.0.3",
-    "selectolax>=0.4.11",
-    "trafilatura>=2.2.0",
-    "typer>=0.27.1",
+    "feedparser>=6.0.11",
+    "httpx>=0.27.0",
+    "trafilatura>=1.12.0",
+    "selectolax>=0.3.21",
+    "PyYAML>=6.0.1",
+    "python-dateutil>=2.9.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=5.0.0",
 ]
 
 [project.scripts]
-laxinwen = "laxinwen.cli:main"
-news = "laxinwen.cli:main"
+news = "news.cli:main"
 
 [build-system]
-requires = ["uv_build>=0.12.3,<0.13.0"]
-build-backend = "uv_build"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
-[dependency-groups]
-dev = [
-    "pytest>=9.1.1",
+[tool.hatch.build.targets.wheel]
+packages = ["src/news"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+markers = [
+    "network: 需要外部网络访问的在线测试（默认跳过）",
 ]
+
+[tool.uv]
+package = true

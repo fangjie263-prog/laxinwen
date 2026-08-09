@@ -1,21 +1,21 @@
-# Byte-compiled / cache
+# Python
 __pycache__/
 *.py[cod]
 *.egg-info/
 .venv/
-build/
 dist/
+build/
 
-# Tooling
-.ruff_cache/
+# 运行数据（数据库、导出、抓取缓存）
+data/
+exports/
+
+# 测试与工具
 .pytest_cache/
 .coverage
 htmlcov/
 
-# Runtime data (SQLite DB + derived exports)
-data/
-exports/
-
-# OS / editor
+# 编辑器 / 系统
+.idea/
+.vscode/
 .DS_Store
-*.swp
