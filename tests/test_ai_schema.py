@@ -108,6 +108,41 @@ class TestValidateAnalysis:
         analysis = validate_analysis(obj)
         assert analysis.entities == []
 
+    def test_location_entity_valid(self):
+        """location 实体类型合法（第二阶段 TokenRhythm 兼容性修复）。
+
+        DeepSeek V4 Flash 真实返回 ``{"name": "Lisbon", "type": "location"}``，
+        不应再被判为非法。
+        """
+        obj = dict(
+            VALID_OBJ,
+            entities=[
+                {"name": "Lisbon", "type": "location"},
+                {"name": "葡萄牙", "type": "country"},
+            ],
+        )
+        analysis = validate_analysis(obj)
+        assert analysis.entities == [
+            {"name": "Lisbon", "type": "location"},
+            {"name": "葡萄牙", "type": "country"},
+        ]
+
+    def test_all_entity_types_valid(self):
+        """全部合法 entity types 均可通过校验。"""
+        obj = dict(
+            VALID_OBJ,
+            entities=[
+                {"name": "EDP", "type": "company"},
+                {"name": "方捷", "type": "person"},
+                {"name": "欧盟", "type": "organization"},
+                {"name": "葡萄牙", "type": "country"},
+                {"name": "里斯本", "type": "location"},
+                {"name": "电动车", "type": "product"},
+            ],
+        )
+        analysis = validate_analysis(obj)
+        assert len(analysis.entities) == 6
+
     def test_missing_language(self):
         obj = dict(VALID_OBJ)
         del obj["language"]

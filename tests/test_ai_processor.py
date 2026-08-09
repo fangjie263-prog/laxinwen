@@ -305,3 +305,113 @@ class TestProcessResultDataclass:
         assert r.ok is False
         assert r.status == "error"
         assert r.prompt_version == "v1"
+
+
+# ---------------------------------------------------------------------------
+# 第二阶段 TokenRhythm 兼容性修复：SSE/provider 失败有限重试 + 完整校验测试
+# ---------------------------------------------------------------------------
+
+class TestProviderFailureRetry:
+    """SSE parser 失败 / provider 失败应可有限次重试，最终失败记录 status='failed'。"""
+
+    def test_sse_empty_retries_then_records_error(self, storage):
+        """SSE 解析失败（空响应）→ 有限重试 → 最终记录 failed。"""
+        from news.ai.provider import AIProviderError
+
+        aid = _article(storage)
+        art = storage.get_article(aid)
+
+        class AlwaysEmpty(MockProvider):
+            def chat(self, *, system, user):
+                self.calls.append(user)
+                raise AIProviderError("AI 流式响应为空（未解析到任何 content）")
+
+        provider = AlwaysEmpty()
+        proc = ArticleProcessor(storage, provider=provider, max_parse_retries=2)
+        result = proc.process_article(art)
+        assert result.ok is False
+        assert "AI 调用失败" in result.error
+        assert len(provider.calls) == 3  # 1 次原始 + 2 次重试
+        rows = storage.list_analysis(article_id=aid)
+        assert len(rows) == 1
+        assert rows[0]["status"] == "failed"
+        assert rows[0]["error"] != ""
+        proc.close()
+
+    def test_provider_failure_recovers_on_retry(self, storage):
+        """provider 第一次失败、第二次成功 → retry 后成功，不记录 failed。"""
+        from news.ai.provider import AIProviderError
+
+        aid = _article(storage)
+        art = storage.get_article(aid)
+
+        class Flaky(MockProvider):
+            def chat(self, *, system, user):
+                self.calls.append(user)
+                if len(self.calls) == 1:
+                    raise AIProviderError("AI 流式响应为空（未解析到任何 content）")
+                return ProviderResult(content=VALID_JSON, model="mock-model")
+
+        provider = Flaky()
+        proc = ArticleProcessor(storage, provider=provider, max_parse_retries=2)
+        result = proc.process_article(art)
+        assert result.ok is True
+        assert result.status == "success"
+        assert len(provider.calls) == 2  # 1 次失败 + 1 次重试成功
+        rows = storage.list_analysis(article_id=aid)
+        assert rows[0]["status"] == "success"
+        proc.close()
+
+    def test_no_infinite_retry(self, storage):
+        """重试次数受 max_parse_retries 限制，不会无限重试。"""
+        from news.ai.provider import AIProviderError
+
+        aid = _article(storage)
+        art = storage.get_article(aid)
+        provider = MockProvider(raise_error=AIProviderError("boom"))
+        proc = ArticleProcessor(storage, provider=provider, max_parse_retries=1)
+        result = proc.process_article(art)
+        assert result.ok is False
+        assert len(provider.calls) == 2  # 1 次原始 + 1 次重试
+        proc.close()
+
+
+class TestFullValidation:
+    """完整 AI response validation：location entity + 全部字段合法即可通过并入库。"""
+
+    def test_full_response_with_location_entity_persists(self, storage):
+        """含 location entity 的完整合法响应 → 成功入库，entities_json 含 location。"""
+        full = json.dumps(
+            {
+                "summary_zh": "里斯本市政府发布了新的交通规划，涉及多条地铁线路建设。",
+                "key_points": ["新规划涵盖三条地铁线路。", "项目预计 2027 年开工。"],
+                "topics": ["城市交通", "基础设施", "里斯本"],
+                "entities": [
+                    {"name": "Lisbon", "type": "location"},
+                    {"name": "里斯本市政府", "type": "organization"},
+                    {"name": "Metropolitano de Lisboa", "type": "company"},
+                ],
+                "market_relevance": "medium",
+                "market_relevance_reason": "基础设施投资可能影响建筑与工程板块情绪，属分析判断。",
+                "language": "pt",
+            },
+            ensure_ascii=False,
+        )
+        aid = _article(storage)
+        art = storage.get_article(aid)
+        provider = MockProvider(responses=[full])
+        proc = ArticleProcessor(storage, provider=provider)
+        result = proc.process_article(art)
+        assert result.ok is True
+        rows = storage.list_analysis(article_id=aid)
+        row = rows[0]
+        assert row["status"] == "success"
+        entities = json.loads(row["entities_json"])
+        types = {e["type"] for e in entities}
+        assert "location" in types
+        assert "organization" in types
+        assert "company" in types
+        assert row["market_relevance"] == "medium"
+        assert json.loads(row["key_points_json"])
+        assert json.loads(row["topics_json"])
+        proc.close()

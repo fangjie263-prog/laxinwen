@@ -89,7 +89,13 @@ class ArticleProcessor:
     # ---------- 单篇处理 ----------
 
     def process_article(self, article: Article) -> ProcessResult:
-        """处理单篇文章。失败返回 error 记录，不抛异常。"""
+        """处理单篇文章。失败返回 error 记录，不抛异常。
+
+        retry 策略（受 ``self.max_parse_retries`` 限制，不会无限重试）：
+        - Provider 层失败（网络 / HTTP / SSE 解析 / JSON 解析 / 空响应）会重试；
+        - JSON 解析 / schema 校验失败会重试（追加错误说明重新调用模型）；
+        - 最终仍失败则记录 ``status='failed'`` + error，并返回。
+        """
         system = SYSTEM_PROMPT
         user = build_user_prompt(article)
         result = ProcessResult(article_id=article.id or 0)
@@ -98,6 +104,13 @@ class ArticleProcessor:
             try:
                 provider_result = self.provider.chat(system=system, user=user)
             except AIProviderError as exc:
+                # Provider / SSE / 空响应失败：有限次重试
+                if attempt < self.max_parse_retries:
+                    logger.warning(
+                        "[#%s] 第 %d 次 AI 调用失败，重试: %s",
+                        article.id, attempt + 1, exc,
+                    )
+                    continue
                 result.error = f"AI 调用失败: {exc}"
                 logger.error("[#%s] %s", article.id, result.error)
                 self._save_failure(article, result.error, result.model)

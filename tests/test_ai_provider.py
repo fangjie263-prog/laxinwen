@@ -152,3 +152,144 @@ class TestPayload:
         _, payload, _ = client.posted[0]
         assert "temperature" not in payload
         assert "max_tokens" not in payload
+
+
+# ---------------------------------------------------------------------------
+# SSE parser 回归测试（第二阶段 TokenRhythm 兼容性修复）
+# 使用固定 fixture 模拟真实 OpenAI-compatible SSE 格式，不依赖真实 API。
+# ---------------------------------------------------------------------------
+
+from tests.sse_fixtures import (  # noqa: E402,F401
+    SSE_DONE_ONLY,
+    SSE_GARBAGE,
+    SSE_LATE_CONTENT,
+    SSE_MALFORMED_MIDDLE,
+    SSE_MULTI_CONTENT,
+    SSE_NO_CONTENT,
+    SSE_NO_SPACE_NO_BLANK,
+    SSE_STANDARD,
+    SSE_USAGE_LAST,
+    SSE_WITH_COMMENTS,
+)
+
+
+class TestSseRegression:
+    """针对真实 TokenRhythm SSE 解析问题的回归测试。"""
+
+    def test_standard_sse_concatenates_content(self):
+        """Case A：多个正常 content chunks → 正确拼接。"""
+        p = _provider(client=FakeClient(FakeResponse(text=SSE_STANDARD)))
+        result = p.chat(system="s", user="u")
+        assert result.content == "你好"
+        assert result.model == "deepseek-v4-flash"
+        assert result.usage["total_tokens"] == 98
+
+    def test_multi_content_chunks(self):
+        """Case A：无空行分隔的多个 content chunks 拼接。"""
+        p = _provider(client=FakeClient(FakeResponse(text=SSE_MULTI_CONTENT)))
+        result = p.chat(system="s", user="u")
+        assert result.content == "Hello world!"
+
+    def test_late_content_not_treated_as_empty(self):
+        """Case B：前几个 chunk 没有 content，后续有 content → 成功。"""
+        p = _provider(client=FakeClient(FakeResponse(text=SSE_LATE_CONTENT)))
+        result = p.chat(system="s", user="u")
+        assert result.content == "成功内容"
+
+    def test_done_marker(self):
+        """Case C：data: [DONE] 正常结束。"""
+        # 有正常 content 后遇到 [DONE] 正常收尾
+        p = _provider(client=FakeClient(FakeResponse(text=SSE_MULTI_CONTENT)))
+        result = p.chat(system="s", user="u")
+        assert result.content == "Hello world!"
+
+    def test_http200_no_content_fails(self):
+        """Case D：HTTP 200 但整个 SSE 没有 content → 正确失败。"""
+        p = _provider(client=FakeClient(FakeResponse(text=SSE_NO_CONTENT)))
+        with pytest.raises(AIProviderError, match="流式响应为空"):
+            p.chat(system="s", user="u")
+
+    def test_usage_in_last_chunk(self):
+        """Case E：最后一个 chunk 包含 usage → 正确解析 usage。"""
+        p = _provider(client=FakeClient(FakeResponse(text=SSE_USAGE_LAST)))
+        result = p.chat(system="s", user="u")
+        assert result.content == "分析完成"
+        assert result.usage["prompt_tokens"] == 120
+        assert result.usage["completion_tokens"] == 30
+        assert result.usage["total_tokens"] == 150
+        assert result.usage["credit"] == 0.0123
+
+    def test_no_space_after_data_colon(self):
+        """兼容 data:{...}（无空格）的网关变体。"""
+        p = _provider(client=FakeClient(FakeResponse(text=SSE_NO_SPACE_NO_BLANK)))
+        result = p.chat(system="s", user="u")
+        assert result.content == "Hi there"
+
+    def test_comments_and_event_field_ignored(self):
+        """注释行 / event: 字段不影响解析。"""
+        p = _provider(client=FakeClient(FakeResponse(text=SSE_WITH_COMMENTS)))
+        result = p.chat(system="s", user="u")
+        assert result.content == "你好"
+
+    def test_malformed_chunk_in_middle_is_skipped(self):
+        """malformed SSE：中间坏 chunk 跳过，不整体失败。"""
+        p = _provider(client=FakeClient(FakeResponse(text=SSE_MALFORMED_MIDDLE)))
+        result = p.chat(system="s", user="u")
+        assert result.content == "good result"
+
+    def test_garbage_body_fails(self):
+        """malformed SSE：完全不是 SSE → 正确失败。"""
+        p = _provider(client=FakeClient(FakeResponse(text=SSE_GARBAGE)))
+        with pytest.raises(AIProviderError, match="流式响应为空"):
+            p.chat(system="s", user="u")
+
+    def test_done_only_no_data(self):
+        """只有 data: [DONE]，没有任何 data 事件 → 正确失败。"""
+        p = _provider(client=FakeClient(FakeResponse(text=SSE_DONE_ONLY)))
+        with pytest.raises(AIProviderError, match="流式响应为空"):
+            p.chat(system="s", user="u")
+
+    def test_empty_body_fails(self):
+        """空 body → 正确失败。"""
+        p = _provider(client=FakeClient(FakeResponse(text="")))
+        with pytest.raises(AIProviderError, match="流式响应为空"):
+            p.chat(system="s", user="u")
+
+    def test_usage_in_same_chunk_as_content(self):
+        """usage 与 content 在同一 chunk（部分实现把 usage 放在最后一条带内容的事件）。"""
+        body = (
+            'data: {"choices":[{"delta":{"content":"Done"}}],'
+            '"usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4}}\n'
+            "data: [DONE]\n"
+        )
+        p = _provider(client=FakeClient(FakeResponse(text=body)))
+        result = p.chat(system="s", user="u")
+        assert result.content == "Done"
+        assert result.usage["total_tokens"] == 4
+
+    def test_choices_as_dict(self):
+        """宽松兼容：choices 直接是对象而非数组。"""
+        body = (
+            'data: {"choices":{"delta":{"content":"Hi"}}}\n'
+            "data: [DONE]\n"
+        )
+        p = _provider(client=FakeClient(FakeResponse(text=body)))
+        result = p.chat(system="s", user="u")
+        assert result.content == "Hi"
+
+    def test_content_null_chunks_ignored(self):
+        """delta.content 为 null 的 chunk 不参与拼接，也不失败。"""
+        body = (
+            'data: {"choices":[{"delta":{"content":null}}]}\n'
+            'data: {"choices":[{"delta":{"content":"Hi"}}]}\n'
+            "data: [DONE]\n"
+        )
+        p = _provider(client=FakeClient(FakeResponse(text=body)))
+        result = p.chat(system="s", user="u")
+        assert result.content == "Hi"
+
+    def test_model_from_stream(self):
+        """模型名从流式 chunk 中提取。"""
+        p = _provider(client=FakeClient(FakeResponse(text=SSE_STANDARD)))
+        result = p.chat(system="s", user="u")
+        assert result.model == "deepseek-v4-flash"

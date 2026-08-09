@@ -398,7 +398,7 @@ uv run news status                     # 查看 AI 分析统计
 1. `summary_zh` — 中文摘要（3~5 自然段以内，准确描述事实，不添加原文没有的信息）；
 2. `key_points` — 3~5 条关键事实；
 3. `topics` — 主题标签（如 `葡萄牙政治`、`财政政策`、`欧盟`）；
-4. `entities` — 实体列表，区分 `company / person / organization / country / product`；
+4. `entities` — 实体列表，区分 `company / person / organization / country / location / product`；
 5. `market_relevance` — 仅判断“是否可能具有金融市场研究价值”（`high/medium/low`），**不给投资建议**；
 6. `market_relevance_reason` — 1~3 句理由；
 7. `language` — 原文语言代码。

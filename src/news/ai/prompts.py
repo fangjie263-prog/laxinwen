@@ -15,7 +15,16 @@ PROMPT_VERSION = "v1"
 VALID_MARKET_RELEVANCE = ("high", "medium", "low")
 
 # 允许的实体类型
-VALID_ENTITY_TYPES = ("company", "person", "organization", "country", "product")
+# company 公司 / person 人物 / organization 机构与组织 / country 国家 /
+# location 城市、地区、地理位置 / product 产品与服务
+VALID_ENTITY_TYPES = (
+    "company",
+    "person",
+    "organization",
+    "country",
+    "location",
+    "product",
+)
 
 SYSTEM_PROMPT = f"""你是一个严谨的金融新闻研究助理。你的任务是从给定的新闻文章中提取事实，生成结构化的中文分析结果。
 
@@ -48,8 +57,10 @@ SYSTEM_PROMPT = f"""你是一个严谨的金融新闻研究助理。你的任务
 - summary_zh：中文；3~5 个自然段以内；只描述文章事实。
 - key_points：3~5 条；每条必须是文章明确陈述的事实。
 - topics：2~5 个中文主题标签。
-- entities：文章涉及的重要实体，至少区分类型：company / person / organization / country / product。
-  只列出文章明确提到的实体。若某类没有，不要编造。
+- entities：文章涉及的重要实体。合法类型：company（公司）/ person（人物）/
+  organization（机构/组织）/ country（国家）/ location（城市、地区、地理位置）/
+  product（产品/服务）。只列出文章明确提到的实体。若某类没有，不要编造。
+  注意：城市、地区、地理位置应归为 location，不要强行归为 country。
 - market_relevance：只判断"是否可能具有金融市场研究价值"，不给投资建议。
   取值仅限 high / medium / low。
 - market_relevance_reason：1~3 句话。
