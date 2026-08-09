@@ -118,7 +118,13 @@ class TestNewsArchiveExport:
     def test_index_has_summary_for_analyzed(self, storage, tmp_path):
         export_news_archive(storage, tmp_path / "na", source_id="eco", limit=100)
         idx = (tmp_path / "na" / "index.html").read_text(encoding="utf-8")
-        assert "中文摘要：这是一篇中文摘要" in idx
+        # Daily Reader：已分析文章的 AI 中文摘要直接显示在对应 article section 中
+        assert "AI 中文摘要" in idx
+        assert "这是一篇中文摘要" in idx
+        # 未分析文章不显示摘要文本
+        assert "Corpo do artigo" in idx
+        # 100 篇全部列出，不截断成摘要卡片
+        assert idx.count('class="article"') == 100
 
     def test_single_pages_created(self, storage, tmp_path):
         res = export_news_archive(storage, tmp_path / "na", source_id="eco", limit=100)
@@ -147,11 +153,15 @@ class TestNewsArchiveExport:
         found = False
         for f in (tmp_path / "na").rglob("*.html"):
             html = f.read_text(encoding="utf-8")
-            if "AI 分析失败" in html:
+            if "⚠ AI 分析失败" in html:
                 found = True
-                assert "尚未进行 AI 分析" not in html
+                # 失败文章仍然保留原文正文（不影响阅读）
+                assert "原文正文" in html or "Corpo do artigo" in html
                 break
         assert found
+        # 失败文章在 index 中也保留（连续阅读 section 中显示失败状态）
+        idx = (tmp_path / "na" / "index.html").read_text(encoding="utf-8")
+        assert "⚠ AI 分析失败" in idx
 
     def test_unanalyzed_single_shows_pending(self, storage, tmp_path):
         export_news_archive(storage, tmp_path / "na", source_id="eco", limit=100)

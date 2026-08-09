@@ -30,6 +30,8 @@ from typing import Optional
 import tkinter as tk
 from tkinter import messagebox, ttk
 
+from .reader_server import ReaderServer
+
 
 # ---------- 路径 / 默认值 ----------
 
@@ -45,6 +47,9 @@ DEFAULT_DB = Path(
 # News Archive（阅读目录）与 AI Research（研究结果）导出目录
 DEFAULT_NEWS_ARCHIVE_DIR = _PROJECT_ROOT / "data" / "export" / "news-html"
 DEFAULT_RESEARCH_DIR = _PROJECT_ROOT / "data" / "export" / "html"
+
+# 本地 HTTP 阅读模式：静态根目录（同时提供 news-html/ 与 html/）
+DEFAULT_EXPORT_ROOT = _PROJECT_ROOT / "data" / "export"
 
 _QUICK_LIMITS = (50, 100, 200)
 _DEFAULT_LIMIT = 100
@@ -79,6 +84,8 @@ class _NewsReaderApp:
         open_url=None,
         news_archive_dir: str | Path = DEFAULT_NEWS_ARCHIVE_DIR,
         research_dir: str | Path = DEFAULT_RESEARCH_DIR,
+        export_root: str | Path = DEFAULT_EXPORT_ROOT,
+        server_factory=None,
     ):
         self.root = root
         self.db_path = Path(db_path)
@@ -86,8 +93,12 @@ class _NewsReaderApp:
         self.site_name = site_name
         self.news_archive_dir = Path(news_archive_dir)
         self.research_dir = Path(research_dir)
+        self.export_root = Path(export_root)
 
         # 依赖注入（默认走真实实现；测试可替换为假实现）
+        self._server_factory = server_factory or _default_server_factory
+        self._http_server = None
+        self._server_lock = threading.Lock()
         self._storage_factory = storage_factory or _default_storage_factory
         self._pipeline_factory = pipeline_factory or _default_pipeline_factory
         self._processor_factory = processor_factory or _default_processor_factory
@@ -109,6 +120,27 @@ class _NewsReaderApp:
 
         self.root.after(100, self._poll_queue)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    # ------------------------------------------------------------------ HTTP server
+
+    def _ensure_http_server(self) -> None:
+        """确保本地 HTTP 阅读服务器已启动（幂等，端口被占用自动换端口）。"""
+        with self._server_lock:
+            if self._http_server is not None:
+                return
+            server = self._server_factory(self.export_root)
+            server.start()
+            self._http_server = server
+            self._bg_log(
+                "本地 HTTP 阅读模式已启动（仅供本机访问，127.0.0.1）：\n"
+                f"http://127.0.0.1:{server.port}/"
+            )
+
+    def _http_url_for(self, rel_path: str) -> str:
+        """把相对路径转换为 http://127.0.0.1:<port>/<rel>（确保 server 已启动）。"""
+        self._ensure_http_server()
+        assert self._http_server is not None
+        return self._http_server.url_for(rel_path)
 
     # ------------------------------------------------------------------ UI
 
@@ -291,6 +323,14 @@ class _NewsReaderApp:
                 "退出", "后台任务仍在运行，确定要退出吗？"
             ):
                 return
+        # GUI 关闭时自动停止本地 HTTP 阅读服务器（生命周期跟随 GUI）
+        with self._server_lock:
+            if self._http_server is not None:
+                try:
+                    self._http_server.stop()
+                except Exception as exc:
+                    logging.getLogger("news.gui").warning("停止 HTTP 服务器失败: %s", exc)
+                self._http_server = None
         self.root.destroy()
 
     def _status_text(self, value: str) -> str:
@@ -489,8 +529,10 @@ class _NewsReaderApp:
             f"News Archive 导出完成：{result.exported} 篇（已分析 {result.analyzed_ok} / "
             f"失败 {result.analyzed_failed} / 未分析 {result.unanalyzed}）"
         )
-        self._open_url(index.as_uri())
-        self._bg_log(f"已在默认浏览器打开：{index}")
+        # 本地 HTTP 阅读模式：打开 http://127.0.0.1:<port>/news-html/<site>/index.html
+        url = self._http_url_for(f"news-html/{self.site}/index.html")
+        self._bg_log(f"新闻库已启动：\n{url}")
+        self._open_url(url)
 
     def _run_research(self) -> None:
         out_dir = self.research_dir
@@ -505,8 +547,10 @@ class _NewsReaderApp:
         self._bg_log(
             f"AI 研究结果导出完成：成功 {result.analysis_ok} / 失败 {result.analysis_failed}"
         )
-        self._open_url(index.as_uri())
-        self._bg_log(f"已在默认浏览器打开：{index}")
+        # 本地 HTTP 阅读模式：打开 http://127.0.0.1:<port>/html/index.html
+        url = self._http_url_for("html/index.html")
+        self._bg_log(f"AI 研究结果已启动：\n{url}")
+        self._open_url(url)
 
 
 # ---------- 默认实现（真实逻辑；测试可注入假实现） ----------
@@ -549,6 +593,11 @@ def _default_research_export(storage, out_dir, *, source_id):
 
 def _default_open_url(url: str) -> None:
     webbrowser.open(url)
+
+
+def _default_server_factory(export_root: str | Path):
+    """默认本地 HTTP 阅读服务器（仅 127.0.0.1，端口被占用自动换）。"""
+    return ReaderServer(export_root)
 
 
 # ---------- 启动入口 ----------

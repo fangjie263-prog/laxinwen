@@ -120,14 +120,20 @@ def _make_app(
     pipeline_exc=None,
     processor_stats=None,
     processor_exc=None,
+    use_real_server: bool = False,
 ):
-    """构造带全部假实现的 app，返回 (app, ctx)。"""
+    """构造带全部假实现的 app，返回 (app, ctx)。
+
+    ``use_real_server=False`` 时使用假 server（不真正监听端口）；
+    ``use_real_server=True`` 时使用真实 ReaderServer（验证 http://127.0.0.1）。
+    """
     db = db or (tmp_path / "gui.db")
     pipeline_calls: list[FakePipeline] = []
     processor_calls: list[FakeProcessor] = []
     opened_urls: list[str] = []
     archive_dir = tmp_path / "export" / "news-html"
     research_dir = tmp_path / "export" / "html"
+    export_root = tmp_path / "export"
 
     def storage_factory(path):
         return Storage(path)
@@ -163,6 +169,28 @@ def _make_app(
     def open_url(url: str):
         opened_urls.append(url)
 
+    class _FakeServer:
+        """假 HTTP server：记录 URL 生成，不真正监听端口（离线测试用）。"""
+
+        def __init__(self, root_dir):
+            self.root_dir = Path(root_dir)
+            self.port = 8765
+            self.stopped = False
+
+        def start(self):
+            return self
+
+        def stop(self):
+            self.stopped = True
+
+        def url_for(self, rel_path: str) -> str:
+            return f"http://127.0.0.1:{self.port}/{rel_path.lstrip('/')}"
+
+    def fake_server_factory(export_root):
+        return _FakeServer(export_root)
+
+    server_factory = None if use_real_server else fake_server_factory
+
     app = _NewsReaderApp(
         root,
         db_path=db,
@@ -176,6 +204,8 @@ def _make_app(
         open_url=open_url,
         news_archive_dir=archive_dir,
         research_dir=research_dir,
+        export_root=export_root,
+        server_factory=server_factory,
     )
     ctx = {
         "db": db,
@@ -184,6 +214,8 @@ def _make_app(
         "opened_urls": opened_urls,
         "archive_dir": archive_dir,
         "research_dir": research_dir,
+        "export_root": export_root,
+        "app": app,
     }
     return app, ctx
 
@@ -314,7 +346,7 @@ class TestPipelineCall:
 
 
 class TestNewsArchiveButton:
-    def test_opens_correct_html(self, root, tmp_path):
+    def test_opens_http_localhost_not_file(self, root, tmp_path):
         app, ctx = _make_app(root, tmp_path)
         app.limit_var.set("100")
         app._on_open_news_archive()
@@ -322,26 +354,58 @@ class TestNewsArchiveButton:
 
         assert len(ctx["opened_urls"]) == 1
         url = ctx["opened_urls"][0]
-        assert url.startswith("file://")
+        # 必须打开 http://127.0.0.1，而不是 file://
+        assert url.startswith("http://127.0.0.1:")
+        assert "file://" not in url
         assert "news-html/eco/index.html" in url
         index = ctx["archive_dir"] / "eco" / "index.html"
         assert index.exists()
         assert index.read_text(encoding="utf-8") == "archive eco 100"
+        # 日志中明确显示本地 HTTP 地址
+        log = _log_text(app)
+        assert "新闻库已启动" in log
+        assert url in log
+
+    def test_opens_via_real_http_server(self, root, tmp_path):
+        """真实 ReaderServer：浏览器打开 http://127.0.0.1 且文件可通过 HTTP 读取。"""
+        app, ctx = _make_app(root, tmp_path, use_real_server=True)
+        app.limit_var.set("100")
+        app._on_open_news_archive()
+        assert _pump_until(app, lambda: not app._busy)
+
+        assert len(ctx["opened_urls"]) == 1
+        url = ctx["opened_urls"][0]
+        assert url.startswith("http://127.0.0.1:")
+        assert "file://" not in url
+        assert "news-html/eco/index.html" in url
+        # 通过 HTTP 实际可读
+        import urllib.request
+
+        body = urllib.request.urlopen(url, timeout=5).read().decode("utf-8")
+        assert "archive eco 100" in body
+        # 关闭 GUI（走 WM_DELETE_WINDOW 协议）后服务器停止
+        app._on_close()
+        assert app._http_server is None or not app._http_server.running
 
 
 class TestAIResearchButton:
-    def test_opens_correct_html(self, root, tmp_path):
+    def test_opens_http_localhost_not_file(self, root, tmp_path):
         app, ctx = _make_app(root, tmp_path)
         app._on_open_research()
         assert _pump_until(app, lambda: not app._busy)
 
         assert len(ctx["opened_urls"]) == 1
         url = ctx["opened_urls"][0]
-        assert url.startswith("file://")
-        assert "export/html/index.html" in url
+        # 必须打开 http://127.0.0.1，而不是 file://
+        assert url.startswith("http://127.0.0.1:")
+        assert "file://" not in url
+        assert "html/index.html" in url
         index = ctx["research_dir"] / "index.html"
         assert index.exists()
         assert index.read_text(encoding="utf-8") == "research eco"
+        log = _log_text(app)
+        assert "AI 研究结果已启动" in log
+        assert url in log
 
 
 class TestAIProcess:

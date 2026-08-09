@@ -130,6 +130,34 @@ def cmd_gui(args: argparse.Namespace) -> int:
     return run_gui(db_path=args.db, site=args.site)
 
 
+def cmd_serve(args: argparse.Namespace) -> int:
+    """news serve —— 启动本地 HTTP 阅读服务器（仅 127.0.0.1）。
+
+    把 ``data/export/`` 作为静态目录，让浏览器扩展（如 Immersive Translate）
+    能像处理普通网页一样处理本地 News Archive / AI Research 页面。
+    端口被占用时自动选择可用端口；Ctrl+C 停止。
+    """
+    from .reader_server import ReaderServer
+
+    export_root = Path(args.export_root)
+    server = ReaderServer(export_root)
+    server.start()
+    print(f"本地 HTTP 阅读模式已启动：http://127.0.0.1:{server.port}/ （仅本机 127.0.0.1）")
+    try:
+        print("  新闻库：   http://127.0.0.1:%d/news-html/eco/index.html" % server.port)
+        print("  AI 研究：  http://127.0.0.1:%d/html/index.html" % server.port)
+        print("按 Ctrl+C 停止……")
+        while True:
+            import time
+
+            time.sleep(3600)
+    except KeyboardInterrupt:
+        print("\n正在停止……")
+    finally:
+        server.stop()
+    return 0
+
+
 def cmd_process(args: argparse.Namespace) -> int:
     """news process —— 把已入库的文章交给 AI 生成结构化分析并保存。
 
@@ -321,6 +349,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_gui.add_argument("--site", default="eco", help="站点 id（当前仅 ECO）")
     _add_common_args(p_gui)
     p_gui.set_defaults(func=cmd_gui)
+
+    p_serve = sub.add_parser(
+        "serve",
+        help="启动本地 HTTP 阅读服务器（仅 127.0.0.1，端口自动选择）",
+    )
+    p_serve.add_argument(
+        "--export-root",
+        default=str(Path("data") / "export"),
+        help="静态目录（默认 data/export）",
+    )
+    _add_common_args(p_serve)
+    p_serve.set_defaults(func=cmd_serve)
 
     p_process = sub.add_parser("process", help="AI 处理已入库文章（生成结构化分析）")
     p_process.add_argument("--site", help="只处理指定站点（默认全部）")

@@ -152,10 +152,10 @@ uv run news gui
 | 新闻网站 | 下拉框（当前仅 ECO，未来可扩展） |
 | 抓取数量 | 数字输入框（默认 100，无上限）+ 快捷按钮 `[50] [100] [200]` |
 | 抓取最新新闻 | 等价 `news fetch --site eco --limit N`，**异步执行**不卡界面 |
-| 📖 打开新闻库 | 导出 News Archive（`news export --format news-html --site eco --limit N`）并自动用默认浏览器打开 |
+| 📖 打开新闻库 | 导出 News Archive（`news export --format news-html --site eco --limit N`），通过**本地 HTTP 阅读模式**用默认浏览器打开 `http://127.0.0.1:<port>/news-html/eco/index.html` |
 | 🤖 AI 分析 | 输入分析数量（默认 3），复用现有 `news process` 的 AI processing 逻辑 |
-| 📊 打开 AI 研究结果 | 导出 `news export --format html --site eco` 并打开 `data/export/html/index.html` |
-| 日志区 | 实时显示抓取/AI/导出过程与结果（发现/重复/新增/失败） |
+| 📊 打开 AI 研究结果 | 导出 `news export --format html --site eco`，通过**本地 HTTP 阅读模式**打开 `http://127.0.0.1:<port>/html/index.html` |
+| 日志区 | 实时显示抓取/AI/导出过程与结果（发现/重复/新增/失败），并明确显示 `新闻库已启动：http://127.0.0.1:<port>/...` |
 | 状态区 | 数据库路径、ECO 新闻数、AI 已分析/失败、最后抓取时间（从现有 storage/status 读取，不硬编码） |
 
 ### 与 CLI 的对应关系
@@ -163,10 +163,16 @@ uv run news gui
 | GUI 按钮 | 等价 CLI |
 | --- | --- |
 | 抓取最新新闻 | `uv run news fetch --site eco --limit N` |
-| 📖 打开新闻库 | `uv run news export --format news-html --site eco --limit N` → 浏览器打开 `data/export/news-html/eco/index.html` |
+| 📖 打开新闻库 | `uv run news export --format news-html --site eco --limit N` → 浏览器打开 `http://127.0.0.1:<port>/news-html/eco/index.html` |
 | 🤖 AI 分析 | `uv run news process --site eco --limit N`（复用现有 AI provider） |
-| 📊 打开 AI 研究结果 | `uv run news export --format html --site eco` → 浏览器打开 `data/export/html/index.html` |
+| 📊 打开 AI 研究结果 | `uv run news export --format html --site eco` → 浏览器打开 `http://127.0.0.1:<port>/html/index.html` |
 
+> **本地 HTTP 阅读模式**：GUI 启动一个轻量级 localhost HTTP 静态服务器
+> （Python 标准库 `http.server`，**只监听 127.0.0.1**，端口被占用自动选择可用端口），
+> 把 `data/export/` 作为静态目录提供。GUI 关闭时服务器自动停止。
+> 这样浏览器扩展（如 Immersive Translate）能像处理普通网页一样处理本地阅读页面
+> （`file://` 下扩展无法可靠工作）。
+>
 > 去重保证：GUI 的“抓取最新新闻”调用现有 `discover → deduplicate → fetch → extract → storage`
 > 完整 pipeline。数据库已有 100 篇时再次抓取最近 100 篇，结果为 `发现 100 / 重复 100 / 新增 0`，
 > 绝不重新下载已入库文章。
@@ -181,8 +187,8 @@ xvfb-run -a uv run python -m pytest
 ```
 
 GUI 测试覆盖：默认抓取数量 100、快捷按钮 50/100/200、非法数量拦截、调用正确 pipeline、
-新闻库/研究按钮打开正确 HTML、AI 分析复用现有 processor、pipeline 出错不崩溃且按钮恢复、
-status 读取数据库统计。
+新闻库/研究按钮打开 `http://127.0.0.1`（不是 `file://`）、AI 分析复用现有 processor、
+pipeline 出错不崩溃且按钮恢复、status 读取数据库统计、GUI 关闭时 HTTP 服务器自动停止。
 
 ---
 
@@ -191,6 +197,7 @@ status 读取数据库统计。
 | 命令 | 说明 |
 | --- | --- |
 | `news gui [--site <id>] [--db PATH]` | 启动 Windows 桌面 GUI（ECO News Reader） |
+| `news serve [--export-root DIR]` | 启动本地 HTTP 阅读服务器（仅 127.0.0.1，端口自动选择，Ctrl+C 停止） |
 | `news fetch [--site <id>] [--limit N] [--timeout S] [--retries N] [--interval S] [--retry-failed]` | 抓取新闻（`--limit` = 最近 N 篇发现窗口） |
 | `news list [--source <id>] [--limit N]` | 列出最近新闻 |
 | `news status [--source <id>]` | 显示数据库与抓取状态（含 AI 分析统计） |
@@ -233,7 +240,8 @@ laxinwen/
 │   ├── pipeline.py         # 抓取 pipeline（串联各阶段）
 │   ├── export.py           # JSONL / Markdown 导出
 │   ├── html_export.py      # HTML 研究结果展示层（第三阶段）
-│   ├── news_archive.py     # News Archive HTML 阅读目录（第三阶段）
+│   ├── news_archive.py     # News Archive Daily Reader（第三+五阶段）
+│   ├── reader_server.py    # 本地 HTTP 阅读模式（第五阶段，仅 127.0.0.1）
 │   ├── gui.py              # Windows 桌面 GUI（ECO News Reader，第四阶段，tkinter）
 │   └── ai/                 # AI Processing Layer（第二阶段）
 │       ├── __init__.py
@@ -615,6 +623,12 @@ uv run news export --format news-html --site eco --limit 200
 
 默认输出到 `data/export/news-html/<site>/`，`index.html` 是阅读入口。
 
+> **第五阶段升级：Daily Reader 阅读器**。`index.html` 采用与项目 daily HTML
+> 一致的标准阅读器设计语言：窄版居中（约 720px 白色阅读区）、衬线正文、
+> 顶部 `ECO News — Daily Reader` 标题区、Table of Contents、每篇一个
+> `<section id="article-N">` 连续阅读、已读/收藏/阅读进度/J·K 快捷键/阅读模式切换，
+> 阅读状态保存在 `localStorage`。
+
 ### 与 AI Research HTML 的区别
 
 | | News Archive（news-html） | AI Research（html） |
@@ -627,14 +641,16 @@ uv run news export --format news-html --site eco --limit 200
 
 ### 页面内容
 
-`index.html`（按 `published_at DESC`）：
+`index.html`（按 `published_at DESC`，**Daily Reader 风格**）：
 
-- 日期 / 时间 / 来源 / 标题 / 作者；
-- 中文摘要（如有成功分析）；
+- 顶部标题区：`ECO News — Daily Reader` / 日期 / `N articles · ECO – Economia Online`；
+- **Table of Contents**：N 篇新闻全部列出，点击标题跳转到对应 `<section id="article-N">`；
+- 每篇 section 连续阅读：标题 / 发布时间 / 来源 / 作者 / AI 中文摘要（如已分析）/ 原文正文 / 原文链接 / `↑ Back to Contents`；
 - **AI 状态三态**：`✓ AI 已分析` / `⚠ AI 分析失败` / `○ 尚未分析`（绝不把失败伪装成成功）；
-- 原文链接 + AI Research 链接（如有成功分析，链接到 `data/export/html/` 对应研究页）。
+- **阅读器交互**（`localStorage` 保存）：已读 `□/✓`、收藏 `☆/★`、阅读进度条、
+  `J/K` 上下篇快捷键、Day/Sepia/Night 阅读模式切换。
 
-单篇页（`YYYY/MM/0001-<slug>.html`）：
+单篇页（`YYYY/MM/0001-<slug>.html`，同样 Daily Reader 风格）：
 
 - 有 AI：AI 中文摘要 / 关键观点 / 主题 / 实体 / 市场相关性 / 原文语言 + 原文正文；
 - 无 AI：显示“尚未进行 AI 分析” + 原文正文；
@@ -642,20 +658,40 @@ uv run news export --format news-html --site eco --limit 200
 
 ### 设计约束
 
-- 纯 Python + HTML + CSS，HTML5 / UTF-8，无外部 CDN / 字体 / JS；
+- 纯 Python + HTML + CSS + 少量内嵌 JS，HTML5 / UTF-8，无外部 CDN / 字体；
+- **浏览器扩展兼容**：正文是标准 HTML DOM 文本（`article/section/p/h1/h2`），
+  不塞进 canvas/iframe/图片、不用 shadow DOM、不依赖外部 CDN、不用复杂 JS 框架；
+  原文葡语可被浏览器扩展（如 Immersive Translate）正常识别和翻译，
+  AI 中文摘要保持中文不重复翻译；
 - 全部内容 HTML escape；
 - `--limit` 从 SQLite 按 `published_at DESC` 取最近 N 篇（数据库可以有 5000 篇，
-  `--limit 100` 只显示最近 100 篇）；
+  `--limit 100` 只显示最近 100 篇）；对 50/100/200 篇都保持可读，不截断成摘要卡片；
 - 不修改 `article_analysis` schema，不引入复杂前端。
+
+### 本地 HTTP 阅读模式
+
+GUI“打开新闻库 / 打开 AI 研究结果”使用 Python 标准库 `http.server` 启动
+**只监听 `127.0.0.1`** 的轻量级静态服务器，把 `data/export/` 作为静态目录：
+
+```
+http://127.0.0.1:<port>/news-html/eco/index.html   # 新闻库
+http://127.0.0.1:<port>/html/index.html            # AI 研究结果
+```
+
+- 端口被占用时自动选择可用端口；GUI 关闭时服务器自动停止；
+- 禁止监听 `0.0.0.0`，不会把本地新闻数据库暴露到局域网；
+- 不实现翻译引擎、不把 Immersive Translate 硬编码进 HTML。
 
 ### 测试
 
 ```bash
-uv run python -m pytest tests/test_news_archive.py -v
+uv run python -m pytest tests/test_news_archive.py tests/test_reader.py -v
 ```
 
-覆盖：不要求 AI 成功、三态显示、limit 50/100、Research 链接、失败/未分析仍显示、
-HTML escape、原有 `--format html` 无回归等。
+覆盖：daily 风格 HTML（窄版居中/衬线/标题区/目录/anchor）、100 篇目录与
+`article-N` 锚点、已读/收藏/localStorage、中文摘要/葡语正文/HTML escape、
+localhost server 可启动、只监听 `127.0.0.1`、端口占用自动换端口、
+GUI 打开 `http://127.0.0.1`（不是 `file://`）、原有 `--format html` 无回归等。
 
 ---
 
@@ -764,12 +800,37 @@ HTML escape、原有 `--format html` 无回归等。
 | 抓取数量 | 默认 100，支持 50/100/200 快捷按钮，可输入任意正整数（无上限） |
 | 第一次“抓取最新新闻”（limit=100） | 发现 **100** / 重复 **0** / 新增 **100** / 失败 0 |
 | 第二次“抓取最新新闻”（limit=100） | 发现 **100** / 重复 **100** / 新增 **0**（完美去重，不重复下载） |
-| 📖 打开新闻库 | 导出 News Archive 100 篇 → `data/export/news-html/eco/index.html`，浏览器打开 |
+| 📖 打开新闻库 | 导出 News Archive 100 篇 → 本地 HTTP 阅读模式 `http://127.0.0.1:<port>/news-html/eco/index.html`（非 file://），浏览器打开 |
 | 🤖 AI 分析（数量 3） | 复用现有 AI processing（CNB AI 网关），**成功 3 / 失败 0** |
-| 📊 打开 AI 研究结果 | 导出 `data/export/html/index.html`（成功 3 / 失败 0），浏览器打开 |
+| 📊 打开 AI 研究结果 | 导出 `data/export/html/index.html`（成功 3 / 失败 0），本地 HTTP 阅读模式 `http://127.0.0.1:<port>/html/index.html` 打开 |
 | 状态区 | 数据库、ECO 新闻 100、AI 已分析 3、AI 失败 0、最后抓取时间（真实数据） |
 | 错误处理 | pipeline HTTP 500 / AI HTTP 401 均在日志显示“XX 失败”，GUI 不崩溃、按钮恢复可再点 |
 | 是否引入新依赖 | ❌ 仅 Python 标准库 `tkinter/ttk/threading/queue` |
 
 > 去重验收结论：数据库从 0 → 100 后，再次抓取最近 100 篇结果为
 > **发现 100 / 重复 100 / 新增 0**，完整走 `discover → deduplicate → fetch → extract → storage` pipeline。
+
+---
+
+## 第五阶段：News Archive Daily Reader + 本地 HTTP 阅读模式 验收结果
+
+| 项目 | 结果 |
+| --- | --- |
+| 离线测试 | **197 项全部通过**（原 179 + 新增 18） |
+| News Archive 新版 daily 风格 | ✅ 窄版居中 720px 白色阅读区、浅灰背景、衬线正文、宽行距 |
+| 顶部标题区 | ✅ `ECO News — Daily Reader` / 日期 / `N articles · ECO – Economia Online` |
+| Table of Contents | ✅ 100 篇全部列出，点击标题跳转到 `#article-N` |
+| 连续阅读 section | ✅ `<section id="article-N">`，非卡片列表；含标题/时间/来源/作者/AI摘要/原文正文/原文链接/Back to Contents |
+| AI 三态 | ✅ ✓ 已分析 / ⚠ 失败 / ○ 未分析，失败/未分析不影响原文阅读 |
+| 阅读器交互 | ✅ 已读 □/✓、收藏 ☆/★、阅读进度条、localStorage、Back to Contents、J/K 快捷键、Day/Sepia/Night 阅读模式 |
+| 50/100/200 篇可读性 | ✅ 不截断成摘要卡片 |
+| 本地 HTTP 阅读模式 | ✅ GUI 打开 `http://127.0.0.1:<port>/news-html/eco/index.html` 与 `http://127.0.0.1:<port>/html/index.html`（非 file://） |
+| 只监听 127.0.0.1 | ✅ 禁止 0.0.0.0（有测试覆盖） |
+| 端口被占用自动换端口 | ✅ 有测试覆盖 |
+| GUI 关闭自动停止服务器 | ✅ 有测试覆盖 |
+| 浏览器扩展兼容 | ✅ 标准 UTF-8、语义化 article/section/p/h1/h2、无 canvas/iframe/shadow DOM、无外部 CDN、无复杂 JS 框架 |
+| 不实现翻译引擎 | ✅ 不把 Immersive Translate 硬编码进 HTML |
+
+> 说明：daily HTML 参考文件 `daily(20260809-204743).html` 未在仓库/Issue 附件中获取到，
+> 因此严格按其列出的"标准阅读器设计语言"实现：窄版居中、衬线正文、标题区、Table of Contents、
+> `article-N` section、已读/收藏/进度/localStorage/J·K/阅读模式、Back to Contents。
