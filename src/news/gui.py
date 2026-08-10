@@ -77,6 +77,7 @@ _DONE_SENTINELS = {
     "__RESEARCH_DONE__": "打开 AI 研究结果",
     "__PORTABLE_HTML_DONE__": "导出独立 HTML",
     "__PORTABLE_PKG_DONE__": "导出 HTML 新闻包",
+    "__PORTABLE_READER_DONE__": "导出便携阅读包",
 }
 
 
@@ -97,6 +98,7 @@ class _NewsReaderApp:
         research_export=None,
         portable_html_export=None,
         portable_package_export=None,
+        portable_reader_export=None,
         open_url=None,
         news_archive_dir: str | Path = DEFAULT_NEWS_ARCHIVE_DIR,
         research_dir: str | Path = DEFAULT_RESEARCH_DIR,
@@ -124,6 +126,7 @@ class _NewsReaderApp:
         self._research_export = research_export or _default_research_export
         self._portable_html_export = portable_html_export or _default_portable_html_export
         self._portable_package_export = portable_package_export or _default_portable_package_export
+        self._portable_reader_export = portable_reader_export or _default_portable_reader_export
         self._open_url = open_url or _default_open_url
 
         # 后台线程 → GUI 消息队列
@@ -281,6 +284,11 @@ class _NewsReaderApp:
         )
         self.portable_pkg_btn.pack(side="left", padx=(10, 0))
 
+        self.portable_reader_btn = ttk.Button(
+            row3, text="📦 导出便携阅读包", command=self._on_export_portable_reader
+        )
+        self.portable_reader_btn.pack(side="left", padx=(10, 0))
+
         # ---- 状态卡片 ----
         self.status_card = ttk.LabelFrame(outer, text="状态", padding=10)
         self.status_card.pack(fill="x", pady=(10, 0))
@@ -385,6 +393,7 @@ class _NewsReaderApp:
         self.research_btn.configure(state=state)
         self.portable_html_btn.configure(state=state)
         self.portable_pkg_btn.configure(state=state)
+        self.portable_reader_btn.configure(state=state)
         self.site_combo.configure(state="disabled" if busy else "readonly")
         for e in (self.limit_entry, self.ai_limit_entry, self.export_limit_entry):
             e.configure(state=state)
@@ -592,6 +601,26 @@ class _NewsReaderApp:
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def _on_export_portable_reader(self) -> None:
+        """【📦 导出便携阅读包】—— 生成给他人使用的本地阅读包（含 Open-Reader.bat）。"""
+        if self._busy:
+            self.log("已有任务运行中，请等待完成。")
+            return
+        limit = self._parse_limit(self.export_limit_var.get(), what="导出")
+        if limit is None:
+            return
+        self._set_busy(True, run="导出便携阅读包")
+
+        def worker() -> None:
+            try:
+                self._run_export_portable_reader(limit)
+            except Exception as exc:
+                self._bg_log(f"导出便携阅读包失败：\n{exc}")
+            finally:
+                self._queue.put("__PORTABLE_READER_DONE__")
+
+        threading.Thread(target=worker, daemon=True).start()
+
     def _bg_log(self, msg: str) -> None:
         """后台线程安全地追加日志。"""
         self._queue.put(msg)
@@ -746,6 +775,33 @@ class _NewsReaderApp:
                 self._bg_log(f"📚 HTML 新闻包目录：\n{out_dir}")
                 self._bg_log("可复制整个目录到其它电脑，双击 index.html 阅读。")
 
+    def _run_export_portable_reader(self, limit: int) -> None:
+        """导出便携阅读包（给他人使用：双击 Open-Reader.bat，经 localhost 打开）。"""
+        site_ids = self._selected_site_ids()
+        research_root = self.research_dir
+        with self._storage_factory(self.db_path) as storage:
+            for sid in site_ids:
+                out_dir = self.portable_dir / f"Laxinwen-{sid.upper()}-{datetime.now().strftime('%Y-%m-%d')}"
+                self._bg_log(
+                    f"正在导出 {self._source_display(sid)} 便携阅读包（最近 {limit} 篇）→ {out_dir}"
+                )
+                result = self._portable_reader_export(
+                    storage, out_dir, source_id=sid, limit=limit, research_root=research_root
+                )
+                bat = out_dir / "Open-Reader.bat"
+                if not (out_dir / "index.html").exists() or not bat.exists():
+                    raise FileNotFoundError(f"便携阅读包未生成：{out_dir}")
+                self._bg_log(
+                    f"{self._source_display(sid)} 便携阅读包导出完成：{result.exported} 篇"
+                    f"（已分析 {result.analyzed_ok} / 失败 {result.analyzed_failed} / 未分析 {result.unanalyzed}）"
+                )
+                self._bg_log(f"📦 便携阅读包目录：\n{out_dir}")
+                self._bg_log(
+                    "给他人使用：复制整个目录，双击 Open-Reader.bat，"
+                    "浏览器将通过 http://127.0.0.1 打开（而非 file://），"
+                    "沉浸式翻译等扩展可正常工作。无需安装 laxinwen。"
+                )
+
 
 # ---------- 默认实现（真实逻辑；测试可注入假实现） ----------
 
@@ -797,6 +853,14 @@ def _default_portable_package_export(storage, out_dir, *, source_id, limit, rese
     from .portable import export_portable_package
 
     return export_portable_package(
+        storage, out_dir, source_id=source_id, limit=limit, research_root=research_root
+    )
+
+
+def _default_portable_reader_export(storage, out_dir, *, source_id, limit, research_root=None):
+    from .portable import export_portable_reader_package
+
+    return export_portable_reader_package(
         storage, out_dir, source_id=source_id, limit=limit, research_root=research_root
     )
 

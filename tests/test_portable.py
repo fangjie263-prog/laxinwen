@@ -10,6 +10,7 @@
 """
 
 import sys
+import signal
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -19,8 +20,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from news.model import Article  # noqa: E402
 from news.portable import (  # noqa: E402
+    _OPEN_READER_BAT,
+    _PORTABLE_SERVER_PY,
     export_independent_html,
     export_portable_package,
+    export_portable_reader_package,
     render_independent_html,
 )
 from news.storage import Storage  # noqa: E402
@@ -249,3 +253,130 @@ class TestRenderIndependent:
         assert "中文摘要" in html_doc
         assert "查看单篇页" in html_doc
         assert "articles/001.html" in html_doc
+
+
+class TestPortableReaderPackage:
+    """【📦 导出便携阅读包】测试。"""
+
+    def test_structure(self, storage, tmp_path):
+        pkg = tmp_path / "Laxinwen-ECO-2026-08-10"
+        export_portable_reader_package(storage, pkg, source_id="eco", limit=100)
+        # 核心结构：index.html + articles/ + server.py + Open-Reader.bat
+        assert (pkg / "index.html").exists()
+        assert (pkg / "Open-Reader.bat").exists()
+        assert (pkg / "server.py").exists()
+        articles = sorted(f.name for f in (pkg / "articles").glob("*.html"))
+        assert len(articles) == 10
+        assert articles[0] == "001.html"
+
+    def test_index_self_contained(self, storage, tmp_path):
+        pkg = tmp_path / "Laxinwen-ECO-2026-08-10"
+        export_portable_reader_package(storage, pkg, source_id="eco", limit=100)
+        body = (pkg / "index.html").read_text(encoding="utf-8")
+        assert "<style>" in body and "<script>" in body
+        assert "查看单篇页" in body
+        assert "articles/001.html" in body
+        # 不依赖 laxinwen / localhost / 外部 CDN
+        assert "localhost" not in body
+        assert "127.0.0.1" not in body
+
+    def test_bat_exists_and_no_api_key(self, storage, tmp_path):
+        pkg = tmp_path / "Laxinwen-ECO-2026-08-10"
+        export_portable_reader_package(storage, pkg, source_id="eco", limit=100)
+        bat = (pkg / "Open-Reader.bat").read_text(encoding="utf-8")
+        # 不含任何 API Key 形态（sk- / 具体 token / secret / key 赋值）
+        assert "sk-" not in bat.lower()
+        assert "secret" not in bat.lower()
+        assert "token" not in bat.lower()
+        # 不含绝对路径 / 不绑定某台电脑
+        assert "D:" not in bat.upper()
+        assert "AIProjects" not in bat
+        assert "C:" not in bat.upper()
+        # 使用相对定位 %~dp0
+        assert "%~dp0" in bat
+        # 检测 Python 并给出提示
+        assert "python" in bat.lower()
+        assert "找不到" in bat or "[错误]" in bat
+
+    def test_bat_no_absolute_path(self, storage, tmp_path):
+        pkg = tmp_path / "Laxinwen-ECO-2026-08-10"
+        export_portable_reader_package(storage, pkg, source_id="eco", limit=100)
+        bat = (pkg / "Open-Reader.bat").read_text(encoding="utf-8")
+        import re
+        assert not re.search(r"[A-Za-z]:\\", bat)
+
+    def test_server_listens_127_only_and_auto_port(self, storage, tmp_path):
+        pkg = tmp_path / "Laxinwen-ECO-2026-08-10"
+        export_portable_reader_package(storage, pkg, source_id="eco", limit=100)
+        srv = (pkg / "server.py").read_text(encoding="utf-8")
+        # 只监听 127.0.0.1
+        assert 'HOST = "127.0.0.1"' in srv
+        assert "0.0.0.0" not in srv
+        # 自动选择空闲端口
+        assert "range(8000, 8010)" in srv
+        assert "serve_forever" in srv
+        assert "server_close" in srv
+
+    def test_http_access_and_port_release(self, storage, tmp_path):
+        """index.html 可通过 HTTP 访问；关闭后端口释放。"""
+        import socket
+        import subprocess
+        import sys
+        import time
+        import urllib.request
+
+        pkg = tmp_path / "Laxinwen-ECO-2026-08-10"
+        export_portable_reader_package(storage, pkg, source_id="eco", limit=100)
+
+        # 找一个空闲端口
+        probe = socket.socket()
+        probe.bind(("127.0.0.1", 0))
+        free_port = probe.getsockname()[1]
+        probe.close()
+
+        proc = subprocess.Popen(
+            [sys.executable, str(pkg / "server.py"), str(pkg), str(free_port)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            time.sleep(1.5)
+            with urllib.request.urlopen(
+                f"http://127.0.0.1:{free_port}/index.html", timeout=5
+            ) as resp:
+                body = resp.read().decode("utf-8")
+            assert "便携阅读器" in body
+            # 文章链接可访问
+            with urllib.request.urlopen(
+                f"http://127.0.0.1:{free_port}/articles/001.html", timeout=5
+            ) as resp:
+                assert "Corpo do artigo 0" in resp.read().decode("utf-8")
+        finally:
+            proc.send_signal(signal.SIGINT)  # 模拟用户关闭窗口 (Ctrl+C)
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                proc.kill()
+        time.sleep(0.5)
+        # 关闭后端口应释放（进程已退出；用 SO_REUSEADDR 探测可再次绑定）
+        released = False
+        for _ in range(20):
+            sock = socket.socket()
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                sock.bind(("127.0.0.1", free_port))
+                sock.close()
+                released = True
+                break
+            except OSError:
+                sock.close()
+                time.sleep(0.15)
+        if not released:
+            pytest.fail("关闭 server 后端口仍被占用")
+
+    def test_default_reader_path(self, storage, tmp_path):
+        from news.portable import default_reader_path
+        p = default_reader_path("eco")
+        assert "Laxinwen" in p.name
+        assert "ECO" in p.name

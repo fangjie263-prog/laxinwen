@@ -184,6 +184,15 @@ def _make_app(
         portable_calls.append(("pkg", source_id, limit))
         return SimpleNamespace(index_path=idx, exported=limit, analyzed_ok=0, analyzed_failed=0, unanalyzed=limit)
 
+    def portable_reader_export(storage, out_dir, *, source_id, limit, research_root=None):
+        out_dir = Path(out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        idx = out_dir / "index.html"
+        idx.write_text(f"reader {source_id} {limit}", encoding="utf-8")
+        (out_dir / "Open-Reader.bat").write_text("@echo off", encoding="utf-8")
+        portable_calls.append(("reader", source_id, limit))
+        return SimpleNamespace(index_path=idx, exported=limit, analyzed_ok=0, analyzed_failed=0, unanalyzed=limit)
+
     def open_url(url: str):
         opened_urls.append(url)
 
@@ -221,6 +230,7 @@ def _make_app(
         research_export=research_export,
         portable_html_export=portable_html_export,
         portable_package_export=portable_package_export,
+        portable_reader_export=portable_reader_export,
         open_url=open_url,
         news_archive_dir=archive_dir,
         research_dir=research_dir,
@@ -707,12 +717,18 @@ class TestMultiSourceResearch:
 
 
 class TestPortableExportButtons:
-    """GUI 便携导出按钮（独立 HTML / HTML 新闻包）。"""
+    """GUI 便携导出按钮（独立 HTML / HTML 新闻包 / 便携阅读包）。"""
 
     def test_buttons_present(self, root, tmp_path):
         app, _ = _make_app(root, tmp_path)
-        buttons = _find_buttons(app.root, {"📦 导出独立 HTML", "📚 导出 HTML 新闻包"})
-        assert {b.cget("text") for b in buttons} == {"📦 导出独立 HTML", "📚 导出 HTML 新闻包"}
+        buttons = _find_buttons(
+            app.root, {"📦 导出独立 HTML", "📚 导出 HTML 新闻包", "📦 导出便携阅读包"}
+        )
+        assert {b.cget("text") for b in buttons} == {
+            "📦 导出独立 HTML",
+            "📚 导出 HTML 新闻包",
+            "📦 导出便携阅读包",
+        }
 
     def test_independent_html_export(self, root, tmp_path):
         app, ctx = _make_app(root, tmp_path)
@@ -736,6 +752,18 @@ class TestPortableExportButtons:
         assert "导出 HTML 新闻包" in log
         assert "index.html" in log
 
+    def test_portable_reader_export(self, root, tmp_path):
+        app, ctx = _make_app(root, tmp_path)
+        app.export_limit_var.set("30")
+        app._on_export_portable_reader()
+        assert _pump_until(app, lambda: not app._busy)
+
+        assert ctx["portable_calls"] == [("reader", "eco", 30)]
+        log = _log_text(app)
+        assert "导出便携阅读包" in log
+        assert "Open-Reader.bat" in log
+        assert "127.0.0.1" in log
+
     def test_invalid_limit_rejected(self, root, tmp_path):
         app, ctx = _make_app(root, tmp_path)
         app.export_limit_var.set("abc")
@@ -757,6 +785,19 @@ class TestPortableExportButtons:
         assert _pump_until(app, lambda: not app._busy)
         assert "导出独立 HTML 失败" in _log_text(app)
         assert str(app.portable_html_btn.cget("state")) == "normal"
+
+    def test_reader_error_does_not_crash(self, root, tmp_path):
+        app, _ = _make_app(root, tmp_path)
+
+        def boom(*a, **k):
+            raise RuntimeError("write error")
+
+        app._portable_reader_export = boom
+        app.export_limit_var.set("100")
+        app._on_export_portable_reader()
+        assert _pump_until(app, lambda: not app._busy)
+        assert "导出便携阅读包失败" in _log_text(app)
+        assert str(app.portable_reader_btn.cget("state")) == "normal"
 
     def test_all_source_exports_both(self, root, tmp_path):
         app, ctx = _make_app(root, tmp_path)

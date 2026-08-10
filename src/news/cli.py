@@ -274,7 +274,7 @@ def cmd_export(args: argparse.Namespace) -> int:
                         file=sys.stderr,
                     )
                     return 2
-            from .portable import default_independent_path, default_package_path
+            from .portable import default_independent_path, default_package_path, default_reader_path
 
             research_root = Path("data") / "export" / "html"
             if args.format == "portable":
@@ -310,6 +310,42 @@ def cmd_export(args: argparse.Namespace) -> int:
             print(f"HTML 新闻包导出目录：\n{out}/")
             print(f"共 {result.exported} 篇（已分析 {result.analyzed_ok} / 失败 {result.analyzed_failed} / 未分析 {result.unanalyzed}）")
             print("可直接复制整个目录到其它电脑，双击 index.html 阅读。")
+            return 0
+
+        if args.format in ("reader", "portable-reader"):
+            # 便携阅读包：index + articles + server.py + Open-Reader.bat
+            site = args.site or args.source
+            if not site:
+                sites = list_available_sites()
+                if len(sites) == 1:
+                    site = sites[0]
+                else:
+                    print(
+                        "便携阅读包导出需要指定站点：--site <id>（当前可用："
+                        + ", ".join(sites)
+                        + "）",
+                        file=sys.stderr,
+                    )
+                    return 2
+            from .portable import export_portable_reader_package, default_reader_path
+
+            research_root = Path("data") / "export" / "html"
+            out = (
+                Path(args.output)
+                if args.output
+                else default_reader_path(site)
+            )
+            result = export_portable_reader_package(
+                storage,
+                out,
+                source_id=site,
+                limit=args.limit,
+                research_root=research_root,
+            )
+            print(f"便携阅读包导出目录：\n{out}/")
+            print(f"共 {result.exported} 篇（已分析 {result.analyzed_ok} / 失败 {result.analyzed_failed} / 未分析 {result.unanalyzed}）")
+            print("给他人使用：复制整个目录，双击 Open-Reader.bat，")
+            print("浏览器将通过 http://127.0.0.1 打开（而非 file://），沉浸式翻译等扩展可正常工作。")
             return 0
 
         if args.format == "news-html":
@@ -435,7 +471,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_export.add_argument(
         "--format",
-        choices=["jsonl", "markdown", "html", "news-html", "portable", "package"],
+        choices=["jsonl", "markdown", "html", "news-html", "portable", "package", "reader"],
         required=True,
     )
     p_export.add_argument("--site", help="按站点过滤（HTML / news-html 导出）")
