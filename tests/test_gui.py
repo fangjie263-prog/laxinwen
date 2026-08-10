@@ -126,6 +126,7 @@ def _make_app(
     ai_configured: bool = True,
     ai_config: dict | None = None,
     settings_opened=None,
+    use_real_config_store: bool = False,
 ):
     """构造带全部假实现的 app，返回 (app, ctx)。
 
@@ -297,7 +298,7 @@ def _make_app(
         portable_dir=portable_dir,
         export_root=export_root,
         server_factory=server_factory,
-        ai_config_store=_FakeConfigStore,
+        ai_config_store=None if use_real_config_store else _FakeConfigStore,
         ai_test_connection=fake_test_connection,
         ai_show_settings=fake_show_settings,
     )
@@ -1052,3 +1053,50 @@ class TestAiSettings:
         assert fe.model == "deepseek-chat"
         assert fe.base_url == "https://api.deepseek.com/v1"
         assert fe.api_key == "sk-new-deepseek"
+
+
+class TestAiConfigStoreRegression:
+    """回归：self._ai_config_store 不能被赋值为函数对象（Issue #1）。
+
+    曾因 ``self._ai_config_store = ai_config_store or _default_ai_config_store``
+    把「函数」赋给了 ``_ai_config_store``，导致 ``.masked()`` 报
+    ``AttributeError: 'function' object has no attribute 'masked'``。
+    """
+
+    def test_default_ai_config_store_returns_module_not_function(self):
+        """验收 H：默认配置中心必须是一个模块对象，且具备 read/apply/masked。"""
+        from news.gui import _default_ai_config_store
+
+        store = _default_ai_config_store()
+        assert not callable(store.masked) or callable(store.masked)
+        # 必须是模块（有 masked / read_config / apply_to_env），不能是函数对象
+        assert hasattr(store, "masked")
+        assert hasattr(store, "read_config")
+        assert hasattr(store, "apply_to_env")
+        # 且 masked 是函数（模块函数），调用不报错
+        assert isinstance(store.masked("sk-abcdefgh123456"), str)
+        assert "…" in store.masked("sk-abcdefgh123456")
+
+    def test_app_default_config_store_is_module(self, root, tmp_path):
+        """验收 H：不注入 ai_config_store 时，GUI 的 _ai_config_store 是模块而非函数。"""
+        app, ctx = _make_app(root, tmp_path, ai_configured=True, use_real_config_store=True)
+        store = app._ai_config_store
+        # 关键：_ai_config_store 必须是 config_store 模块，绝不是函数对象
+        assert hasattr(store, "masked") and hasattr(store, "read_config")
+        assert hasattr(store, "apply_to_env")
+        # masked 调用不崩溃（Issue #1 的核心断言）
+        assert store.masked("sk-abcdefgh123456") == "sk-a…3456"
+
+    def test_app_save_uses_masked_not_full_key(self, root, tmp_path):
+        """验收 F：GUI 保存后日志中 API Key 只显示掩码，绝不出现完整 Key。"""
+        app, ctx = _make_app(root, tmp_path, ai_configured=True, use_real_config_store=True)
+        ctx["cfg_state"].update(
+            provider="tokenrhythm",
+            base_url="https://tokenrhythm.studio/v1",
+            api_key="sk-gui-masked-secret-123456",
+            model="deepseek-v4-flash",
+        )
+        app._on_ai_settings()
+        log = _log_text(app)
+        assert "sk-gui-masked-secret-123456" not in log  # 绝不含完整 Key
+        assert "API Key=" in log

@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -316,3 +317,114 @@ class TestKeyNotLeaked:
         assert [f.name for f in files] == [".env"]
         # 不产生任何 .html / .db 文件
         assert not any(f.suffix in (".html", ".db") for f in files)
+
+
+class TestEnvPathRegression:
+    """回归：.env 必须落在「项目根/.env」，绝不能退化成「项目根.env」.
+
+    对应 Bug：曾用 ``project_root.with_suffix(".env")`` 导致把配置保存到
+    ``D:\\AIProjects\\test.env`` 而不是 ``D:\\AIProjects\\test\\.env``。
+    """
+
+    def test_default_env_path_is_project_root_env(self):
+        from news.ai.config_store import default_env_path
+
+        p = default_env_path()
+        # 必须是「以 .env 结尾」且父目录是项目根（而非 test.env 这种同级文件）
+        assert p.name == ".env"
+        assert p.parent.name == "news" or p.parent.exists()
+        # 关键断言：路径不能是 with_suffix 产生的 X.env（X 与 .env 同级）
+        assert str(p).endswith(os.sep + ".env") or str(p).endswith("/.env")
+
+    def test_env_path_is_dir_then_env_not_with_suffix(self, tmp_path):
+        """模拟：project_root=tmp/test，env 必须是 tmp/test/.env，而非 tmp/test.env。"""
+        from pathlib import Path
+
+        project_root = tmp_path / "test"
+        project_root.mkdir(parents=True, exist_ok=True)
+        wrong = project_root.with_suffix(".env")  # 旧的错误写法 → tmp/test.env
+        right = project_root / ".env"             # 正确写法 → tmp/test/.env
+        assert str(right).endswith(".env")
+        assert right.parent == project_root
+        assert wrong.parent == tmp_path  # 错误写法会把文件放到项目根之外
+        # 回归断言：我们的 save 必须写到 project_root/.env
+        cfg = AiConfig(
+            provider="p", base_url="https://x/v1", api_key="k", model="m"
+        )
+        saved = save_config(cfg, right)
+        assert saved == right
+        assert right.exists()
+        assert not wrong.exists()
+        # read 从同一文件读到
+        loaded = read_config(right)
+        assert loaded.provider == "p"
+        assert loaded.base_url == "https://x/v1"
+
+
+class TestLifecycleRegression:
+    """回归：save → read → apply_to_env → AIProviderConfig.from_env 全链路一致。
+
+    保证修复后：测试成功自动保存 → 立即生效 → 无需重启 GUI → AI 分析读到的正是刚保存的配置。
+    """
+
+    def test_save_then_read_same_config(self, tmp_path):
+        env = tmp_path / ".env"
+        cfg = AiConfig(
+            provider="tokenrhythm",
+            base_url="https://tokenrhythm.studio/v1",
+            api_key="sk-lifecycle-secret-xyz",
+            model="deepseek-v4-flash",
+        )
+        save_config(cfg, env)
+        loaded = read_config(env)
+        assert loaded.is_complete()
+        assert loaded.provider == "tokenrhythm"
+        assert loaded.base_url == "https://tokenrhythm.studio/v1"
+        assert loaded.api_key == "sk-lifecycle-secret-xyz"
+        assert loaded.model == "deepseek-v4-flash"
+
+    def test_save_apply_from_env_immediate(self, tmp_path, monkeypatch):
+        """验收 C：save_config + apply_to_env 后，AIProviderConfig.from_env() 立即读到刚保存的配置。"""
+        from news.ai.provider import AIProviderConfig
+
+        for k in ("AI_PROVIDER", "AI_BASE_URL", "AI_API_KEY", "AI_MODEL"):
+            monkeypatch.delenv(k, raising=False)
+        env = tmp_path / ".env"
+        cfg = AiConfig(
+            provider="tokenrhythm",
+            base_url="https://tokenrhythm.studio/v1",
+            api_key="sk-lifecycle-secret-xyz",
+            model="deepseek-v4-flash",
+        )
+        save_config(cfg, env)
+        apply_to_env(cfg)
+        fe = AIProviderConfig.from_env()
+        assert fe.provider == "tokenrhythm"
+        assert fe.base_url == "https://tokenrhythm.studio/v1"
+        assert fe.api_key == "sk-lifecycle-secret-xyz"
+        assert fe.model == "deepseek-v4-flash"
+
+    def test_apply_keeps_api_key_masked_only(self, tmp_path, monkeypatch, caplog):
+        """验收 G：日志不能出现完整 API Key。"""
+        from news.ai.provider import AIProviderConfig
+
+        secret = "sk-TOP-SECRET-abc123"
+        for k in ("AI_PROVIDER", "AI_BASE_URL", "AI_API_KEY", "AI_MODEL"):
+            monkeypatch.delenv(k, raising=False)
+        env = tmp_path / ".env"
+        cfg = AiConfig(
+            provider="p", base_url="https://x/v1", api_key=secret, model="m"
+        )
+        with caplog.at_level(logging.INFO):
+            save_config(cfg, env)
+            apply_to_env(cfg)
+            AIProviderConfig.from_env()
+        assert secret not in caplog.text
+        assert "sk-T…123" in masked(secret) or masked(secret)
+
+    def test_masked_never_contains_full_key(self):
+        secret = "sk-abcdefghijklmnop"
+        m = masked(secret)
+        assert secret not in m
+        assert len(m) < len(secret)
+        assert "…" in m

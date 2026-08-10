@@ -138,7 +138,11 @@ class _NewsReaderApp:
         self._portable_package_export = portable_package_export or _default_portable_package_export
         self._portable_reader_export = portable_reader_export or _default_portable_reader_export
         self._open_url = open_url or _default_open_url
-        self._ai_config_store = ai_config_store or _default_ai_config_store
+        # 注意：_default_ai_config_store 是「返回 config_store 模块」的函数，
+        # 必须调用它拿到模块对象，否则 self._ai_config_store 会变成函数对象，
+        # 导致 .read_config()/.masked()/.apply_to_env() 触发
+        # ``AttributeError: 'function' object has no attribute 'masked'``。
+        self._ai_config_store = ai_config_store or _default_ai_config_store()
         self._ai_test_connection = ai_test_connection or _default_ai_test_connection
         self._ai_show_settings = ai_show_settings or _default_ai_show_settings
 
