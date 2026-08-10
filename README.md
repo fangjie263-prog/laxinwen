@@ -177,12 +177,12 @@ uv run news gui --site all          # 初始来源全部
 | 抓取数量 | 数字输入框（默认 100，支持任意正整数如 20/50/100/200/500，自动拦截 0/-1/abc）+ 快捷按钮 `[50] [100] [200]` |
 | 抓取最新新闻 | ECO→`news fetch --site eco --limit N`；HKEJ→`news fetch --site hkej --limit N`；全部→两者分别执行。**异步执行**不卡界面 |
 | 📖 打开新闻库 | 按当前来源导出 News Archive（`news export --format news-html --site <id> --limit N`），通过**本地 HTTP 阅读模式**用默认浏览器打开 `http://127.0.0.1:<port>/news-html/<id>/index.html`（全部→分别打开 ECO 与 HKEJ） |
-| 🤖 AI 分析 | 输入分析数量（默认 3），按当前来源复用现有 `news process --site <id>` 的 AI processing 逻辑 |
+| 🤖 AI 分析 | 输入分析数量（默认 3），按当前来源复用现有 `news process --site <id>` 的 AI processing 逻辑。**若未配置 AI，自动提示进入“⚙ AI 设置”** |
+| ⚙ AI 设置 | 打开独立设置窗口，配置 Provider / API Base URL / API Key / Model，提供「测试连接」「保存」；保存后立即生效，无需重启 |
 | 📊 打开 AI 研究结果 | 按当前来源导出 `news export --format html --site <id>`，通过**本地 HTTP 阅读模式**打开 `http://127.0.0.1:<port>/html/<id>/index.html` |
-| 导出数量 | 数字输入框（默认 100），用于下方三个便携导出按钮 |
-| 📦 导出独立 HTML | 按当前来源生成**单个 self-contained HTML**（CSS/JS 全内嵌，双击即可阅读，无需 laxinwen/Python/服务器）→ `data/export/portable/<site>-<date>.html` |
-| 📚 导出 HTML 新闻包 | 按当前来源生成**可复制到其它电脑的 HTML 新闻包目录**（`index.html` + `articles/NNN.html`）→ `data/export/portable/<site>-<date>/` |
-| 📦 导出便携阅读包 | 按当前来源生成**给他人使用的便携阅读包**（`index.html` + `articles/NNN.html` + `server.py` + `Open-Reader.bat`），他人双击 `Open-Reader.bat` 经 `http://127.0.0.1` 打开（而非 `file://`），沉浸式翻译等浏览器扩展可正常工作 → `data/export/portable/Laxinwen-<SITE>-<date>/` |
+| 导出数量 | 数字输入框（默认 100），用于下方“导出”按钮 |
+| 导出方式 | 下拉框：**📦 便携阅读包 / 📄 独立 HTML / 📚 HTML 新闻包**（**默认 = 便携阅读包**） |
+| 导出 | **单一导出按钮**：根据「导出方式」下拉调用对应的现有导出器（便携阅读包 / 独立 HTML / HTML 新闻包），三种能力全部保留，只是 GUI 层统一为下拉选择 + 一个按钮 |
 | 日志区 | 实时显示抓取/AI/导出过程与结果（发现/重复/新增/失败），全部来源时分别显示 `[ECO]` 与 `[HKEJ]`；并明确显示 `新闻库已启动：http://127.0.0.1:<port>/...` |
 | 状态区 | 数据库路径、ECO 新闻数、HKEJ 新闻数、AI 已分析/失败、当前来源、最后操作、最后抓取时间（从现有 storage/status 读取，不硬编码） |
 
@@ -194,9 +194,9 @@ uv run news gui --site all          # 初始来源全部
 | 📖 打开新闻库 | `uv run news export --format news-html --site eco|hkej --limit N` → 浏览器打开 `http://127.0.0.1:<port>/news-html/<id>/index.html` |
 | 🤖 AI 分析 | `uv run news process --site eco|hkej --limit N`（复用现有 AI provider） |
 | 📊 打开 AI 研究结果 | `uv run news export --format html --site eco|hkej` → 浏览器打开 `http://127.0.0.1:<port>/html/<id>/index.html` |
-| 📦 导出独立 HTML | `uv run news export --format portable --site eco|hkej --limit N`（单个自包含 HTML，双击可读） |
-| 📚 导出 HTML 新闻包 | `uv run news export --format package --site eco|hkej --limit N`（index.html + articles/NNN.html） |
-| 📦 导出便携阅读包 | `uv run news export --format reader --site eco|hkej --limit N`（index.html + articles + server.py + Open-Reader.bat） |
+| 导出（📦 便携阅读包） | `uv run news export --format reader --site eco|hkej --limit N`（index.html + articles + server.py + Open-Reader.bat） |
+| 导出（📄 独立 HTML） | `uv run news export --format portable --site eco|hkej --limit N`（单个自包含 HTML，双击可读） |
+| 导出（📚 HTML 新闻包） | `uv run news export --format package --site eco|hkej --limit N`（index.html + articles/NNN.html） |
 
 > **本地 HTTP 阅读模式**：GUI 启动一个轻量级 localhost HTTP 静态服务器
 > （Python 标准库 `http.server`，**只监听 127.0.0.1**，端口被占用自动选择可用端口），
@@ -220,6 +220,103 @@ xvfb-run -a uv run python -m pytest
 GUI 测试覆盖：默认抓取数量 100、快捷按钮 50/100/200、非法数量拦截、调用正确 pipeline、
 新闻库/研究按钮打开 `http://127.0.0.1`（不是 `file://`）、AI 分析复用现有 processor、
 pipeline 出错不崩溃且按钮恢复、status 读取数据库统计、GUI 关闭时 HTTP 服务器自动停止。
+
+本阶段新增的 GUI 测试（`tests/test_gui.py::TestPortableExportButtons` / `TestAiSettings`
+与 `tests/test_ai_config_store.py`）覆盖：
+
+- 导出：默认导出方式 = 📦 便携阅读包；下拉选择 portable → 调用 portable reader、
+  independent HTML → 调用独立 HTML、package → 调用 HTML 新闻包；非法数量拦截；导出失败不崩溃；
+- AI 配置：未配置时点「AI 分析」→ 提示进入「⚙ AI 设置」；填写配置 → 保存 → 配置可被 provider 读取；
+  修改配置 → 保存 → 新配置立即生效；API Key 只显示掩码、日志不出现 API Key；
+- 测试连接：401 → 显示 API Key 无效；404/model_not_found → 显示 Model 错误；网络错误 → 显示连接错误；
+  （`tests/test_ai_config_store.py`，全部离线 mock，不访问真实网络）
+
+---
+
+## 三种 HTML 导出方式
+
+Laxinwen 提供三种 HTML 导出方式，底层三个导出器全部保留，GUI 通过「导出方式」下拉选择 + 单一「导出」按钮调用。
+
+### 1. 📦 便携阅读包 —— 推荐
+
+**推荐日常使用。**
+
+输出目录：`data/export/portable/Laxinwen-<SITE>-<date>/`
+
+```
+Laxinwen-ECO-2026-08-10/
+├── index.html
+├── articles/
+├── server.py
+└── Open-Reader.bat
+```
+
+- 最适合日常使用；
+- 可以**整个文件夹复制到另一台电脑**；
+- 不需要安装 Laxinwen；
+- 通过 `127.0.0.1` 本地 HTTP 打开（`Open-Reader.bat` 自动起服务器）；
+- 浏览器把它视为正常网页，**最适合沉浸式翻译等浏览器扩展**；
+- Windows 用户可以双击 `Open-Reader.bat`；
+- 目标电脑需要 Python 3；
+- 不包含 API Key；
+- 不依赖 Laxinwen SQLite 数据库。
+
+### 2. 📄 独立 HTML
+
+输出文件：`data/export/portable/<site>-<date>.html`（如 `eco-2026-08-10.html`）
+
+- 只有一个文件；
+- CSS / JS / 新闻内容全部内嵌；
+- 不需要 Laxinwen；
+- 最方便发送、存档；
+- 可以直接双击打开；
+- 但是使用 `file://` 打开时，部分浏览器扩展可能无法正常工作，
+  **因此不作为沉浸式翻译的首选方案**。
+
+> 适合快速分享和单文件存档。
+
+### 3. 📚 HTML 新闻包
+
+输出目录：`data/export/portable/<site>-<date>/`
+
+```
+eco-2026-08-10/
+├── index.html
+└── articles/
+    ├── 001.html
+    ├── 002.html
+    └── ...
+```
+
+- 新闻按照多个 HTML 文件保存；
+- 适合长期归档；
+- 方便后续单独处理文章；
+- 不需要 Laxinwen；
+- 直接打开 `index.html` 通常是 `file://`，
+  **因此沉浸式翻译兼容性不如便携阅读包**。
+
+> 适合完整新闻档案保存。
+
+---
+
+## AI 配置（GUI 内置设置中心）
+
+普通用户**无需打开 PowerShell**，直接在 GUI 内完成 AI 配置：
+
+1. 点击主界面「**⚙ AI 设置**」；
+2. 填写 **Provider / API Base URL / API Key / Model**（Provider 不限于下拉，任意 OpenAI-compatible 均可手输）；
+3. 点击「**测试连接**」真正发送一次极短模型请求，验证 Base URL + API Key + Model 是否可用；
+4. 测试成功后点击「**保存**」，配置立即生效，无需重启；
+5. 直接点击「**🤖 AI 分析**」即可使用。
+
+若尚未配置 AI 就点击「AI 分析」，程序会提示进入「AI 设置」（而不是只显示“缺少 AI_MODEL”）。
+
+**API Key 安全**：
+
+- API Key 仅用于本地 AI 请求，**不写入新闻数据库、HTML 导出文件或日志**；
+- 配置保存到项目根 `.env`（`gitignore` 已排除 `.env`，**不会进入 Git**）；
+- 保存时逐字段更新 / 追加，**保留其它未知配置、不删除 CNB_TOKEN**；
+- GUI 状态只显示掩码（如 `sk-****abcd`）。
 
 ---
 

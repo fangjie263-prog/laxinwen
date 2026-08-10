@@ -75,10 +75,17 @@ _DONE_SENTINELS = {
     "__AI_DONE__": "AI 分析",
     "__ARCHIVE_DONE__": "打开新闻库",
     "__RESEARCH_DONE__": "打开 AI 研究结果",
-    "__PORTABLE_HTML_DONE__": "导出独立 HTML",
-    "__PORTABLE_PKG_DONE__": "导出 HTML 新闻包",
-    "__PORTABLE_READER_DONE__": "导出便携阅读包",
+    "__PORTABLE_EXPORT_DONE__": "导出",
 }
+
+# 导出方式选项：(内部 id, 显示名)
+_EXPORT_OPTIONS = (
+    ("reader", "📦 便携阅读包"),
+    ("html", "📄 独立 HTML"),
+    ("package", "📚 HTML 新闻包"),
+)
+# 默认导出方式 = 便携阅读包
+_DEFAULT_EXPORT_MODE = "reader"
 
 
 class _NewsReaderApp:
@@ -105,6 +112,9 @@ class _NewsReaderApp:
         portable_dir: str | Path = DEFAULT_PORTABLE_DIR,
         export_root: str | Path = DEFAULT_EXPORT_ROOT,
         server_factory=None,
+        ai_config_store=None,
+        ai_test_connection=None,
+        ai_show_settings=None,
     ):
         self.root = root
         self.db_path = Path(db_path)
@@ -128,6 +138,9 @@ class _NewsReaderApp:
         self._portable_package_export = portable_package_export or _default_portable_package_export
         self._portable_reader_export = portable_reader_export or _default_portable_reader_export
         self._open_url = open_url or _default_open_url
+        self._ai_config_store = ai_config_store or _default_ai_config_store
+        self._ai_test_connection = ai_test_connection or _default_ai_test_connection
+        self._ai_show_settings = ai_show_settings or _default_ai_show_settings
 
         # 后台线程 → GUI 消息队列
         self._queue: "queue.Queue[str]" = queue.Queue()
@@ -265,7 +278,12 @@ class _NewsReaderApp:
         )
         self.research_btn.pack(side="left", padx=(10, 0))
 
-        # ---- 便携导出卡片（独立 HTML / HTML 新闻包） ----
+        self.ai_settings_btn = ttk.Button(
+            row2, text="⚙ AI 设置", command=self._on_ai_settings
+        )
+        self.ai_settings_btn.pack(side="left", padx=(10, 0))
+
+        # ---- 导出卡片（导出方式下拉 + 单一导出按钮） ----
         row3 = ttk.Frame(card)
         row3.pack(fill="x", pady=(10, 0))
 
@@ -274,20 +292,23 @@ class _NewsReaderApp:
         self.export_limit_entry = ttk.Entry(row3, textvariable=self.export_limit_var, width=8)
         self.export_limit_entry.pack(side="left", padx=4)
 
-        self.portable_html_btn = ttk.Button(
-            row3, text="📦 导出独立 HTML", command=self._on_export_independent_html
+        ttk.Label(row3, text="导出方式：").pack(side="left", padx=(16, 4))
+        # 默认 = 便携阅读包
+        default_label = dict(_EXPORT_OPTIONS)[_DEFAULT_EXPORT_MODE]
+        self.export_mode_var = tk.StringVar(value=default_label)
+        self.export_mode_combo = ttk.Combobox(
+            row3,
+            textvariable=self.export_mode_var,
+            state="readonly",
+            width=16,
         )
-        self.portable_html_btn.pack(side="left", padx=(10, 0))
+        self.export_mode_combo["values"] = [label for _, label in _EXPORT_OPTIONS]
+        self.export_mode_combo.pack(side="left", padx=(4, 10))
 
-        self.portable_pkg_btn = ttk.Button(
-            row3, text="📚 导出 HTML 新闻包", command=self._on_export_portable_package
+        self.export_btn = ttk.Button(
+            row3, text="导出", style="Accent.TButton", command=self._on_export
         )
-        self.portable_pkg_btn.pack(side="left", padx=(10, 0))
-
-        self.portable_reader_btn = ttk.Button(
-            row3, text="📦 导出便携阅读包", command=self._on_export_portable_reader
-        )
-        self.portable_reader_btn.pack(side="left", padx=(10, 0))
+        self.export_btn.pack(side="left")
 
         # ---- 状态卡片 ----
         self.status_card = ttk.LabelFrame(outer, text="状态", padding=10)
@@ -296,7 +317,8 @@ class _NewsReaderApp:
         grid = ttk.Frame(self.status_card)
         grid.pack(fill="x")
         for i, key in enumerate(
-            ("db", "eco_count", "hkej_count", "ai_ok", "ai_failed", "current_source", "last_action", "last_fetch")
+            ("db", "eco_count", "hkej_count", "ai_ok", "ai_failed",
+             "ai_status", "current_source", "last_action", "last_fetch")
         ):
             lbl = ttk.Label(grid, text="")
             lbl.grid(row=i // 2, column=(i % 2) * 2, sticky="w", padx=(0, 24), pady=1)
@@ -391,10 +413,9 @@ class _NewsReaderApp:
         self.export_btn.configure(state=state)
         self.ai_btn.configure(state=state)
         self.research_btn.configure(state=state)
-        self.portable_html_btn.configure(state=state)
-        self.portable_pkg_btn.configure(state=state)
-        self.portable_reader_btn.configure(state=state)
+        self.ai_settings_btn.configure(state=state)
         self.site_combo.configure(state="disabled" if busy else "readonly")
+        self.export_mode_combo.configure(state="disabled" if busy else "readonly")
         for e in (self.limit_entry, self.ai_limit_entry, self.export_limit_entry):
             e.configure(state=state)
         if busy:
@@ -447,6 +468,17 @@ class _NewsReaderApp:
             logging.getLogger("news.gui").warning("读取最后抓取时间失败: %s", exc)
             return None
 
+    def _ai_status_label(self) -> str:
+        """返回 AI 状态标签：🟢 已配置 / 🔴 配置存在但测试失败 / ⚪ 未配置。"""
+        try:
+            cfg = self._ai_config_store.read_config()
+        except Exception:
+            cfg = None
+        if cfg is None or not cfg.is_complete():
+            return "⚪ 未配置"
+        # 有完整配置即视为已配置（测试失败通过“测试连接”状态单独提示）
+        return "🟢 已配置"
+
     def _read_analysis_status(self, storage, site_ids: tuple[str, ...]) -> tuple[int, int]:
         try:
             ok = sum(storage.count_analysis(source_id=sid, status="success") for sid in site_ids)
@@ -479,6 +511,7 @@ class _NewsReaderApp:
             "hkej_count": f"HKEJ 新闻：{hkej_count}",
             "ai_ok": f"AI 已分析：{ai_ok}",
             "ai_failed": f"AI 失败：{ai_failed}",
+            "ai_status": f"AI 状态：{self._ai_status_label()}",
             "current_source": f"当前来源：{self._source_display(current)}",
             "last_action": f"最后操作：{self.last_action}",
             "last_fetch": f"最后抓取：{self._status_text(self._last_fetch_at)}",
@@ -513,6 +546,10 @@ class _NewsReaderApp:
             return
         limit = self._parse_limit(self.ai_limit_var.get(), what="AI 分析")
         if limit is None:
+            return
+        # 情况 B：AI 没有配置 → 提示用户进入 AI 设置（而不是只显示错误）
+        if not self._is_ai_configured():
+            self._prompt_configure_ai()
             return
         self._set_busy(True, run="AI 分析")
 
@@ -561,65 +598,103 @@ class _NewsReaderApp:
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _on_export_independent_html(self) -> None:
-        """【📦 导出独立 HTML】—— 生成单个 self-contained HTML 文件。"""
+    def _selected_export_mode(self) -> str:
+        """返回当前导出方式内部 id（reader / html / package）。"""
+        label = self.export_mode_var.get()
+        for mid, mlabel in _EXPORT_OPTIONS:
+            if mlabel == label:
+                return mid
+        return _DEFAULT_EXPORT_MODE
+
+    def _export_mode_label(self) -> str:
+        for mid, label in _EXPORT_OPTIONS:
+            if mid == self._selected_export_mode():
+                return label
+        return dict(_EXPORT_OPTIONS)[_DEFAULT_EXPORT_MODE]
+
+    def _on_export(self) -> None:
+        """【导出】统一入口 —— 根据「导出方式」下拉调用对应的现有导出器。
+
+        底层三个导出器（portable_reader / portable_html / portable_package）
+        全部保留，这里只是 GUI 层的统一入口（默认便携阅读包）。
+        """
         if self._busy:
             self.log("已有任务运行中，请等待完成。")
             return
         limit = self._parse_limit(self.export_limit_var.get(), what="导出")
         if limit is None:
             return
-        self._set_busy(True, run="导出独立 HTML")
+        mode = self._selected_export_mode()
+        mode_label = self._export_mode_label()
+        self._set_busy(True, run="导出")
 
         def worker() -> None:
             try:
-                self._run_export_independent_html(limit)
+                if mode == "reader":
+                    self._run_export_portable_reader(limit)
+                elif mode == "html":
+                    self._run_export_independent_html(limit)
+                else:
+                    self._run_export_portable_package(limit)
             except Exception as exc:
-                self._bg_log(f"导出独立 HTML 失败：\n{exc}")
+                self._bg_log(f"导出（{mode_label}）失败：\n{exc}")
             finally:
-                self._queue.put("__PORTABLE_HTML_DONE__")
+                self._queue.put("__PORTABLE_EXPORT_DONE__")
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _on_export_portable_package(self) -> None:
-        """【📚 导出 HTML 新闻包】—— 生成可复制的独立 HTML 新闻包目录。"""
+    def _is_ai_configured(self) -> bool:
+        """判断 AI 是否已配置（基于配置中心当前读取到的完整配置）。"""
+        try:
+            cfg = self._ai_config_store.read_config()
+        except Exception:
+            cfg = None
+        return bool(cfg is not None and cfg.is_complete())
+
+    def _prompt_configure_ai(self) -> None:
+        """情况 B：AI 未配置时提示用户进入 AI 设置（而非只显示错误）。"""
+        if not messagebox.askyesno(
+            "需要配置 AI",
+            "当前尚未配置 AI。\n\n"
+            "AI 分析需要：\n"
+            "· Provider\n"
+            "· API Base URL\n"
+            "· API Key\n"
+            "· Model\n\n"
+            "是否现在打开 AI 设置？",
+            parent=self.root,
+        ):
+            self.log("已取消 AI 分析（尚未配置 AI）。")
+            return
+        self._open_ai_settings()
+
+    def _on_ai_settings(self) -> None:
+        """【⚙ AI 设置】—— 打开独立的 AI 设置窗口。"""
         if self._busy:
             self.log("已有任务运行中，请等待完成。")
             return
-        limit = self._parse_limit(self.export_limit_var.get(), what="导出")
-        if limit is None:
-            return
-        self._set_busy(True, run="导出 HTML 新闻包")
+        self._open_ai_settings()
 
-        def worker() -> None:
+    def _open_ai_settings(self) -> None:
+        """打开 AI 设置对话框；保存后立即刷新配置并更新状态。"""
+        def _on_saved(cfg) -> None:
+            # 保存后立即生效：强制重载 .env 到环境变量，供后续 AI 分析使用
             try:
-                self._run_export_portable_package(limit)
-            except Exception as exc:
-                self._bg_log(f"导出 HTML 新闻包失败：\n{exc}")
-            finally:
-                self._queue.put("__PORTABLE_PKG_DONE__")
+                from .ai.provider import load_dotenv
+                load_dotenv()
+            except Exception:
+                pass
+            self.log(
+                f"AI 配置已保存并立即生效：Provider={cfg.provider or '—'} "
+                f"Model={cfg.model or '—'} API Key={self._ai_config_store.masked(cfg.api_key) or '未配置'}"
+            )
+            self._refresh_status()
 
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _on_export_portable_reader(self) -> None:
-        """【📦 导出便携阅读包】—— 生成给他人使用的本地阅读包（含 Open-Reader.bat）。"""
-        if self._busy:
-            self.log("已有任务运行中，请等待完成。")
-            return
-        limit = self._parse_limit(self.export_limit_var.get(), what="导出")
-        if limit is None:
-            return
-        self._set_busy(True, run="导出便携阅读包")
-
-        def worker() -> None:
-            try:
-                self._run_export_portable_reader(limit)
-            except Exception as exc:
-                self._bg_log(f"导出便携阅读包失败：\n{exc}")
-            finally:
-                self._queue.put("__PORTABLE_READER_DONE__")
-
-        threading.Thread(target=worker, daemon=True).start()
+        try:
+            cfg = self._ai_config_store.read_config()
+        except Exception:
+            cfg = None
+        self._ai_show_settings(self.root, current=cfg, on_save=_on_saved)
 
     def _bg_log(self, msg: str) -> None:
         """后台线程安全地追加日志。"""
@@ -827,6 +902,27 @@ def _default_processor_factory(storage):
 
     load_dotenv()  # 支持项目根 .env（不覆盖已有环境变量）
     return ArticleProcessor(storage)
+
+
+def _default_ai_config_store():
+    """默认 AI 配置存取（.env 读写 / 掩码）。"""
+    from .ai import config_store
+
+    return config_store
+
+
+def _default_ai_test_connection(config):
+    """默认「测试连接」：真正调用一次极短模型请求。"""
+    from .ai.provider import test_connection
+
+    return test_connection(config)
+
+
+def _default_ai_show_settings(parent, *, current=None, on_save=None):
+    """默认 AI 设置窗口入口。"""
+    from .ai_settings_dialog import show_ai_settings
+
+    show_ai_settings(parent, current=current, on_save=on_save)
 
 
 def _default_news_archive_export(storage, out_dir, *, source_id, limit):

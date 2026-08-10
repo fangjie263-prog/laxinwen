@@ -30,7 +30,9 @@ from tkinter import ttk  # noqa: E402
 
 from news.gui import (  # noqa: E402
     _DEFAULT_AI_LIMIT,
+    _DEFAULT_EXPORT_MODE,
     _DEFAULT_LIMIT,
+    _EXPORT_OPTIONS,
     _QUICK_LIMITS,
     _NewsReaderApp,
 )
@@ -121,6 +123,9 @@ def _make_app(
     processor_stats=None,
     processor_exc=None,
     use_real_server: bool = False,
+    ai_configured: bool = True,
+    ai_config: dict | None = None,
+    settings_opened=None,
 ):
     """构造带全部假实现的 app，返回 (app, ctx)。
 
@@ -218,6 +223,55 @@ def _make_app(
 
     server_factory = None if use_real_server else fake_server_factory
 
+    # ---- 假 AI 配置中心 ----------------
+    ai_config = ai_config or {}
+    cfg_state = {
+        "provider": ai_config.get("provider", "openai-compatible"),
+        "base_url": ai_config.get("base_url", "https://api.example.com/v1" if ai_configured else ""),
+        "api_key": ai_config.get("api_key", "sk-fake-key" if ai_configured else ""),
+        "model": ai_config.get("model", "test-model" if ai_configured else ""),
+    }
+    if settings_opened is None:
+        settings_opened = []
+    test_calls: list[dict] = []
+
+    class _FakeConfigStore:
+        @staticmethod
+        def read_config():
+            from news.ai.config_store import AiConfig
+            return AiConfig(**cfg_state)
+
+        @staticmethod
+        def save_config(cfg):
+            cfg_state.update(
+                provider=cfg.provider, base_url=cfg.base_url,
+                api_key=cfg.api_key, model=cfg.model,
+            )
+            return Path(tmp_path) / ".env"
+
+        @staticmethod
+        def masked(value):
+            from news.ai.config_store import masked as _m
+            return _m(value)
+
+    def fake_test_connection(config):
+        from news.ai.provider import TestConnectionResult
+        test_calls.append(config)
+        return TestConnectionResult(ok=True, message="✅ 测试成功", kind="ok",
+                                    provider=config.provider, model=config.model)
+
+    def fake_show_settings(parent, *, current=None, on_save=None):
+        settings_opened.append(current)
+        # 调用 on_save 模拟用户在对话框里点击“保存”
+        if on_save is not None:
+            from news.ai.config_store import AiConfig
+            on_save(AiConfig(
+                provider=cfg_state["provider"],
+                base_url=cfg_state["base_url"],
+                api_key=cfg_state["api_key"],
+                model=cfg_state["model"],
+            ))
+
     app = _NewsReaderApp(
         root,
         db_path=db,
@@ -237,6 +291,9 @@ def _make_app(
         portable_dir=portable_dir,
         export_root=export_root,
         server_factory=server_factory,
+        ai_config_store=_FakeConfigStore,
+        ai_test_connection=fake_test_connection,
+        ai_show_settings=fake_show_settings,
     )
     ctx = {
         "db": db,
@@ -248,6 +305,7 @@ def _make_app(
         "portable_dir": portable_dir,
         "export_root": export_root,
         "portable_calls": portable_calls,
+        "settings_opened": settings_opened,
         "app": app,
     }
     return app, ctx
@@ -717,63 +775,88 @@ class TestMultiSourceResearch:
 
 
 class TestPortableExportButtons:
-    """GUI 便携导出按钮（独立 HTML / HTML 新闻包 / 便携阅读包）。"""
+    """导出方式下拉 + 单一导出按钮（便携阅读包 / 独立 HTML / HTML 新闻包）。"""
 
-    def test_buttons_present(self, root, tmp_path):
+    def _set_mode(self, app, mode: str):
+        """通过下拉选择导出方式（mode: reader/html/package）。"""
+        label = dict(_EXPORT_OPTIONS)[mode]
+        app.export_mode_var.set(label)
+
+    def test_export_dropdown_options_and_default(self, root, tmp_path):
         app, _ = _make_app(root, tmp_path)
-        buttons = _find_buttons(
-            app.root, {"📦 导出独立 HTML", "📚 导出 HTML 新闻包", "📦 导出便携阅读包"}
+        assert app.export_mode_combo["values"] == (
+            "📦 便携阅读包",
+            "📄 独立 HTML",
+            "📚 HTML 新闻包",
         )
-        assert {b.cget("text") for b in buttons} == {
-            "📦 导出独立 HTML",
-            "📚 导出 HTML 新闻包",
-            "📦 导出便携阅读包",
-        }
+        # 默认导出方式 = 便携阅读包
+        assert app.export_mode_var.get() == "📦 便携阅读包"
+        assert _DEFAULT_EXPORT_MODE == "reader"
+        assert app._selected_export_mode() == "reader"
 
-    def test_independent_html_export(self, root, tmp_path):
+    def test_default_export_calls_portable_reader(self, root, tmp_path):
+        """验收 A：默认导出方式=便携阅读包，点击「导出」调用 portable reader。"""
         app, ctx = _make_app(root, tmp_path)
         app.export_limit_var.set("100")
-        app._on_export_independent_html()
+        app._on_export()
         assert _pump_until(app, lambda: not app._busy)
-
-        assert ctx["portable_calls"] == [("html", "eco", 100)]
+        assert ctx["portable_calls"] == [("reader", "eco", 100)]
         log = _log_text(app)
-        assert "导出独立 HTML" in log
-        assert "双击即可阅读" in log
-
-    def test_portable_package_export(self, root, tmp_path):
-        app, ctx = _make_app(root, tmp_path)
-        app.export_limit_var.set("50")
-        app._on_export_portable_package()
-        assert _pump_until(app, lambda: not app._busy)
-
-        assert ctx["portable_calls"] == [("pkg", "eco", 50)]
-        log = _log_text(app)
-        assert "导出 HTML 新闻包" in log
-        assert "index.html" in log
-
-    def test_portable_reader_export(self, root, tmp_path):
-        app, ctx = _make_app(root, tmp_path)
-        app.export_limit_var.set("30")
-        app._on_export_portable_reader()
-        assert _pump_until(app, lambda: not app._busy)
-
-        assert ctx["portable_calls"] == [("reader", "eco", 30)]
-        log = _log_text(app)
-        assert "导出便携阅读包" in log
+        assert "便携阅读包" in log
         assert "Open-Reader.bat" in log
         assert "127.0.0.1" in log
+
+    def test_select_reader_calls_portable_reader(self, root, tmp_path):
+        app, ctx = _make_app(root, tmp_path)
+        self._set_mode(app, "reader")
+        app.export_limit_var.set("30")
+        app._on_export()
+        assert _pump_until(app, lambda: not app._busy)
+        assert ctx["portable_calls"] == [("reader", "eco", 30)]
+
+    def test_select_html_calls_independent_html(self, root, tmp_path):
+        """验收 B：选择「独立 HTML」→ 调用 portable html。"""
+        app, ctx = _make_app(root, tmp_path)
+        self._set_mode(app, "html")
+        app.export_limit_var.set("100")
+        app._on_export()
+        assert _pump_until(app, lambda: not app._busy)
+        assert ctx["portable_calls"] == [("html", "eco", 100)]
+        log = _log_text(app)
+        assert "独立 HTML" in log
+        assert "双击即可阅读" in log
+
+    def test_select_package_calls_package(self, root, tmp_path):
+        """验收 B：选择「HTML 新闻包」→ 调用 package。"""
+        app, ctx = _make_app(root, tmp_path)
+        self._set_mode(app, "package")
+        app.export_limit_var.set("50")
+        app._on_export()
+        assert _pump_until(app, lambda: not app._busy)
+        assert ctx["portable_calls"] == [("pkg", "eco", 50)]
+        log = _log_text(app)
+        assert "HTML 新闻包" in log
+        assert "index.html" in log
+
+    def test_export_all_source_both(self, root, tmp_path):
+        app, ctx = _make_app(root, tmp_path)
+        app.site_combo.set("all")
+        app._on_source_changed()
+        self._set_mode(app, "html")
+        app.export_limit_var.set("100")
+        app._on_export()
+        assert _pump_until(app, lambda: not app._busy)
+        assert ctx["portable_calls"] == [("html", "eco", 100), ("html", "hkej", 100)]
 
     def test_invalid_limit_rejected(self, root, tmp_path):
         app, ctx = _make_app(root, tmp_path)
         app.export_limit_var.set("abc")
-        app._on_export_independent_html()
-        app._on_export_portable_package()
+        app._on_export()
         assert not ctx["portable_calls"]
         assert "无效的导出数量" in _log_text(app)
 
     def test_error_does_not_crash(self, root, tmp_path):
-        # 覆盖 _portable_html_export 抛错：GUI 不崩溃、按钮恢复
+        # 覆盖导出抛错：GUI 不崩溃、按钮恢复
         app, _ = _make_app(root, tmp_path)
 
         def boom(*a, **k):
@@ -781,10 +864,11 @@ class TestPortableExportButtons:
 
         app._portable_html_export = boom
         app.export_limit_var.set("100")
-        app._on_export_independent_html()
+        self._set_mode(app, "html")
+        app._on_export()
         assert _pump_until(app, lambda: not app._busy)
-        assert "导出独立 HTML 失败" in _log_text(app)
-        assert str(app.portable_html_btn.cget("state")) == "normal"
+        assert "导出（📄 独立 HTML）失败" in _log_text(app)
+        assert str(app.export_btn.cget("state")) == "normal"
 
     def test_reader_error_does_not_crash(self, root, tmp_path):
         app, _ = _make_app(root, tmp_path)
@@ -794,19 +878,10 @@ class TestPortableExportButtons:
 
         app._portable_reader_export = boom
         app.export_limit_var.set("100")
-        app._on_export_portable_reader()
+        app._on_export()  # 默认 reader
         assert _pump_until(app, lambda: not app._busy)
-        assert "导出便携阅读包失败" in _log_text(app)
-        assert str(app.portable_reader_btn.cget("state")) == "normal"
-
-    def test_all_source_exports_both(self, root, tmp_path):
-        app, ctx = _make_app(root, tmp_path)
-        app.site_combo.set("all")
-        app._on_source_changed()
-        app.export_limit_var.set("100")
-        app._on_export_independent_html()
-        assert _pump_until(app, lambda: not app._busy)
-        assert ctx["portable_calls"] == [("html", "eco", 100), ("html", "hkej", 100)]
+        assert "导出（📦 便携阅读包）失败" in _log_text(app)
+        assert str(app.export_btn.cget("state")) == "normal"
 
 
 class TestMultiSourceErrors:
@@ -840,3 +915,63 @@ class TestMultiSourceErrors:
         assert _pump_until(app, lambda: not app._busy)
         assert str(app.ai_btn.cget("state")) == "normal"
         assert "AI 分析失败" in _log_text(app)
+
+
+class TestAiSettings:
+    """AI 设置入口 + 未配置时的引导。"""
+
+    def test_ai_settings_button_opens_settings(self, root, tmp_path):
+        app, ctx = _make_app(root, tmp_path, ai_configured=True)
+        app._on_ai_settings()
+        assert len(ctx["settings_opened"]) == 1
+        assert ctx["settings_opened"][0].provider == "openai-compatible"
+
+    def test_ai_settings_save_updates_config(self, root, tmp_path):
+        app, ctx = _make_app(root, tmp_path)
+        app._on_ai_settings()
+        # 假对话框 on_save 使用当前 cfg_state；这里验证保存后日志含掩码、无明文 Key
+        log = _log_text(app)
+        assert "AI 配置已保存并立即生效" in log
+        assert "sk-fake-key" not in log  # 日志绝不含完整 Key
+        assert "API Key=" in log
+
+    def test_ai_status_label_unconfigured(self, root, tmp_path):
+        app, _ = _make_app(root, tmp_path, ai_configured=False)
+        assert "⚪ 未配置" in app._ai_status_label()
+        assert "⚪ 未配置" in app.status_labels["ai_status"].cget("text")
+
+    def test_ai_status_label_configured(self, root, tmp_path):
+        app, _ = _make_app(root, tmp_path, ai_configured=True)
+        assert "🟢 已配置" in app._ai_status_label()
+
+    def test_ai_analyze_unconfigured_prompts_settings(self, root, tmp_path, monkeypatch):
+        """验收 C：无 AI 配置时点 AI 分析 → 提示进入 AI 设置。"""
+        app, ctx = _make_app(root, tmp_path, ai_configured=False)
+        answers = iter([True])
+        monkeypatch.setattr(
+            "news.gui.messagebox.askyesno", lambda *a, **k: next(answers)
+        )
+        app.ai_limit_var.set("3")
+        app._on_ai_analyze()
+        assert len(ctx["settings_opened"]) == 1  # 已打开 AI 设置
+        assert not ctx["processor_calls"]  # 未直接执行 AI 分析
+
+    def test_ai_analyze_unconfigured_cancel_no_processor(self, root, tmp_path, monkeypatch):
+        app, ctx = _make_app(root, tmp_path, ai_configured=False)
+        monkeypatch.setattr(
+            "news.gui.messagebox.askyesno", lambda *a, **k: False
+        )
+        app.ai_limit_var.set("3")
+        app._on_ai_analyze()
+        assert not ctx["settings_opened"]
+        assert not ctx["processor_calls"]
+        assert "尚未配置 AI" in _log_text(app)
+
+    def test_ai_analyze_configured_runs_processor(self, root, tmp_path):
+        """情况 A：AI 已配置则正常执行 AI 分析。"""
+        app, ctx = _make_app(root, tmp_path, ai_configured=True)
+        app.ai_limit_var.set("3")
+        app._on_ai_analyze()
+        assert _pump_until(app, lambda: not app._busy)
+        assert len(ctx["processor_calls"]) == 1
+        assert not ctx["settings_opened"]

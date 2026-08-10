@@ -16,17 +16,29 @@
 from .openai_compatible import OpenAICompatibleProvider
 from .processor import ArticleProcessor, BatchStats, ProcessResult
 from .prompts import PROMPT_VERSION
-from .provider import AIProviderConfig, AIProviderError, BaseProvider, ProviderResult, build_provider, load_dotenv
+from .provider import (
+    AIProviderConfig,
+    AIProviderError,
+    BaseProvider,
+    ProviderResult,
+    TestConnectionResult,
+    build_provider,
+    load_dotenv,
+    test_connection,
+)
 from .schema import AnalysisValidationError, extract_json_object, validate_analysis
+from .config_store import AiConfig, read_config, save_config, masked
 
 __all__ = [
     "AIProviderConfig",
     "AIProviderError",
     "BaseProvider",
     "ProviderResult",
+    "TestConnectionResult",
     "OpenAICompatibleProvider",
     "build_provider",
     "load_dotenv",
+    "test_connection",
     "ArticleProcessor",
     "BatchStats",
     "ProcessResult",
@@ -34,4 +46,8 @@ __all__ = [
     "AnalysisValidationError",
     "extract_json_object",
     "validate_analysis",
+    "AiConfig",
+    "read_config",
+    "save_config",
+    "masked",
 ]

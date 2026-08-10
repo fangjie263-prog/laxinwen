@@ -171,6 +171,128 @@ def build_provider(config: Optional[AIProviderConfig] = None) -> BaseProvider:
     return OpenAICompatibleProvider(cfg)
 
 
+@dataclass
+class TestConnectionResult:
+    """「测试连接」的规范化结果（用于 GUI 展示，不含任何 API Key）。"""
+
+    ok: bool = False
+    message: str = ""
+    kind: str = ""          # ok / auth / model / connection / config / unknown
+    provider: str = ""
+    model: str = ""
+
+
+# 「测试连接」发送的极短请求（不走正常新闻 AI 分析，成本最小）
+_TEST_PROMPT = "请回复：OK"
+
+
+def test_connection(config: Optional[AIProviderConfig] = None) -> TestConnectionResult:
+    """真正调用一次当前 Provider 的极短请求，验证 Base URL + API Key + Model。
+
+    这是「测试连接」的**真实请求路径**，而非仅测试 URL 是否能打开：
+    只有真正走一遍当前 Provider 的请求链路，才能发现 model_not_found / 503 /
+    401 这类「服务器能连上但模型/鉴权不对」的问题。
+
+    - 复用现有 ``build_provider`` + ``BaseProvider.chat``（OpenAI-compatible /chat/completions）；
+    - 只发送一个极短 prompt（“请回复：OK”），不做正常新闻 AI 分析；
+    - 不假设所有 Provider 都支持 /models；
+    - 错误被映射为用户可读文案，不把 Python exception 原样扔给用户；
+    - 绝不打印 / 返回 API Key。
+    """
+    try:
+        cfg = config or AIProviderConfig.from_env()
+        cfg.validate()
+    except AIProviderError as exc:
+        return TestConnectionResult(
+            ok=False,
+            message=str(exc),
+            kind="config",
+            provider=config.provider if config else "",
+            model=config.model if config else "",
+        )
+
+    provider = build_provider(cfg)
+    try:
+        try:
+            result = provider.chat(system="", user=_TEST_PROMPT)
+        except AIProviderError as exc:
+            message = _map_test_error(cfg, str(exc))
+            return TestConnectionResult(
+                ok=False, message=message, kind=_classify_error(cfg, str(exc)),
+                provider=cfg.provider, model=cfg.model,
+            )
+        if not result.content:
+            return TestConnectionResult(
+                ok=False,
+                message="❌ 测试失败\n\n模型返回了空内容，请检查 AI_MODEL 是否正确。",
+                kind="model",
+                provider=cfg.provider,
+                model=cfg.model,
+            )
+        return TestConnectionResult(
+            ok=True,
+            message=(
+                "✅ 测试成功\n\n"
+                f"Provider：{cfg.provider}\n"
+                f"Model：{cfg.model}\n"
+                "API Key：有效\n"
+                "连接：正常"
+            ),
+            kind="ok",
+            provider=cfg.provider,
+            model=cfg.model,
+        )
+    finally:
+        close = getattr(provider, "close", None)
+        if callable(close):
+            close()
+
+
+def _classify_error(cfg: AIProviderConfig, err: str) -> str:
+    """根据错误文本粗略分类（auth / model / connection / unknown）。"""
+    e = err.lower()
+    if "401" in e or "403" in e or "unauthorized" in e or "invalid api key" in e:
+        return "auth"
+    if "404" in e or "model_not_found" in e or "model not found" in e:
+        return "model"
+    if "timeout" in e or "network" in e or "connection" in e or "connect" in e:
+        return "connection"
+    return "unknown"
+
+
+def _map_test_error(cfg: AIProviderConfig, err: str) -> str:
+    """把 Provider 层的错误文本映射成普通用户能看懂的中文提示。"""
+    e = err.lower()
+    if "401" in e or "403" in e or "unauthorized" in e or "invalid api key" in e:
+        return (
+            "❌ 测试失败\n\n"
+            "HTTP 401\n"
+            "API Key 无效或未授权。\n"
+            "请检查 API Key 是否正确，或该 Key 是否有权限访问此 Base URL。"
+        )
+    if "404" in e or "model_not_found" in e or "model not found" in e:
+        return (
+            "❌ 测试失败\n\n"
+            "HTTP 404\n"
+            "Model 不存在，请检查 AI_MODEL。\n"
+            f"当前 Model：{cfg.model or '（未填写）'}"
+        )
+    if "timeout" in e:
+        return (
+            "❌ 测试失败\n\n"
+            "连接超时。\n"
+            "无法连接 API Base URL，请检查网络或 Base URL。"
+        )
+    if "network" in e or "connection" in e or "connect" in e:
+        return (
+            "❌ 测试失败\n\n"
+            "无法连接 API Base URL。\n"
+            "请检查网络或 Base URL 是否正确。"
+        )
+    # 其它错误（如 503）：给出可读提示并附带精简原因（已去除任何 Key 风险）
+    return f"❌ 测试失败\n\n{err[:300]}"
+
+
 def load_dotenv(path: str | Path | None = None) -> None:
     """轻量 .env 加载器（不引入 python-dotenv 依赖）。
 
