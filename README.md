@@ -108,7 +108,7 @@ uv run news export --format html --site eco           # 只导出 ECO
 uv run news export --format html --article-id 1       # 只导出指定文章
 uv run news export --format html --output /tmp/out    # 指定导出目录
 
-# ---------- Windows 桌面 GUI（ECO News Reader） ----------
+# ---------- Windows 桌面 GUI（Laxinwen News Reader） ----------
 # 轻量级 tkinter 桌面窗口（Python 标准库，零额外依赖）
 uv run news gui
 
@@ -119,9 +119,10 @@ uv run python -m pytest -m network   # 需要外网的在线测试
 
 ---
 
-## Windows 桌面 GUI（ECO News Reader）
+## Windows 桌面 GUI（Laxinwen News Reader）
 
 > 第四阶段新增：把 CLI 的完整能力包成普通用户可直接双击使用的 Windows 桌面窗口。
+> 新闻来源可在 **ECO / HKEJ / 全部** 之间切换，后台统一复用现有 pipeline / processor / export。
 > **GUI 只是用户界面层**：抓取 / 去重 / AI 分析 / HTML 导出全部调用现有
 > pipeline / processor / export，**绝不重新实现**一套抓取逻辑，也不破坏去重。
 
@@ -130,7 +131,9 @@ uv run python -m pytest -m network   # 需要外网的在线测试
 **方式一：命令行**
 
 ```bash
-uv run news gui
+uv run news gui                     # 默认初始来源 ECO
+uv run news gui --site hkej         # 初始来源 HKEJ
+uv run news gui --site all          # 初始来源全部
 ```
 
 **方式二：Windows 双击**
@@ -149,23 +152,23 @@ uv run news gui
 
 | 区域 | 说明 |
 | --- | --- |
-| 新闻网站 | 下拉框（当前仅 ECO，未来可扩展） |
-| 抓取数量 | 数字输入框（默认 100，无上限）+ 快捷按钮 `[50] [100] [200]` |
-| 抓取最新新闻 | 等价 `news fetch --site eco --limit N`，**异步执行**不卡界面 |
-| 📖 打开新闻库 | 导出 News Archive（`news export --format news-html --site eco --limit N`），通过**本地 HTTP 阅读模式**用默认浏览器打开 `http://127.0.0.1:<port>/news-html/eco/index.html` |
-| 🤖 AI 分析 | 输入分析数量（默认 3），复用现有 `news process` 的 AI processing 逻辑 |
-| 📊 打开 AI 研究结果 | 导出 `news export --format html --site eco`，通过**本地 HTTP 阅读模式**打开 `http://127.0.0.1:<port>/html/index.html` |
-| 日志区 | 实时显示抓取/AI/导出过程与结果（发现/重复/新增/失败），并明确显示 `新闻库已启动：http://127.0.0.1:<port>/...` |
-| 状态区 | 数据库路径、ECO 新闻数、AI 已分析/失败、最后抓取时间（从现有 storage/status 读取，不硬编码） |
+| 新闻来源 | 下拉框：**ECO / HKEJ / 全部**。选择后所有按钮按当前来源执行；选择“全部”= ECO + HKEJ 分别执行 |
+| 抓取数量 | 数字输入框（默认 100，支持任意正整数如 20/50/100/200/500，自动拦截 0/-1/abc）+ 快捷按钮 `[50] [100] [200]` |
+| 抓取最新新闻 | ECO→`news fetch --site eco --limit N`；HKEJ→`news fetch --site hkej --limit N`；全部→两者分别执行。**异步执行**不卡界面 |
+| 📖 打开新闻库 | 按当前来源导出 News Archive（`news export --format news-html --site <id> --limit N`），通过**本地 HTTP 阅读模式**用默认浏览器打开 `http://127.0.0.1:<port>/news-html/<id>/index.html`（全部→分别打开 ECO 与 HKEJ） |
+| 🤖 AI 分析 | 输入分析数量（默认 3），按当前来源复用现有 `news process --site <id>` 的 AI processing 逻辑 |
+| 📊 打开 AI 研究结果 | 按当前来源导出 `news export --format html --site <id>`，通过**本地 HTTP 阅读模式**打开 `http://127.0.0.1:<port>/html/<id>/index.html` |
+| 日志区 | 实时显示抓取/AI/导出过程与结果（发现/重复/新增/失败），全部来源时分别显示 `[ECO]` 与 `[HKEJ]`；并明确显示 `新闻库已启动：http://127.0.0.1:<port>/...` |
+| 状态区 | 数据库路径、ECO 新闻数、HKEJ 新闻数、AI 已分析/失败、当前来源、最后操作、最后抓取时间（从现有 storage/status 读取，不硬编码） |
 
 ### 与 CLI 的对应关系
 
 | GUI 按钮 | 等价 CLI |
 | --- | --- |
-| 抓取最新新闻 | `uv run news fetch --site eco --limit N` |
-| 📖 打开新闻库 | `uv run news export --format news-html --site eco --limit N` → 浏览器打开 `http://127.0.0.1:<port>/news-html/eco/index.html` |
-| 🤖 AI 分析 | `uv run news process --site eco --limit N`（复用现有 AI provider） |
-| 📊 打开 AI 研究结果 | `uv run news export --format html --site eco` → 浏览器打开 `http://127.0.0.1:<port>/html/index.html` |
+| 抓取最新新闻 | `uv run news fetch --site eco|hkej --limit N`；全部→分别执行 ECO 与 HKEJ |
+| 📖 打开新闻库 | `uv run news export --format news-html --site eco|hkej --limit N` → 浏览器打开 `http://127.0.0.1:<port>/news-html/<id>/index.html` |
+| 🤖 AI 分析 | `uv run news process --site eco|hkej --limit N`（复用现有 AI provider） |
+| 📊 打开 AI 研究结果 | `uv run news export --format html --site eco|hkej` → 浏览器打开 `http://127.0.0.1:<port>/html/<id>/index.html` |
 
 > **本地 HTTP 阅读模式**：GUI 启动一个轻量级 localhost HTTP 静态服务器
 > （Python 标准库 `http.server`，**只监听 127.0.0.1**，端口被占用自动选择可用端口），
@@ -196,7 +199,7 @@ pipeline 出错不崩溃且按钮恢复、status 读取数据库统计、GUI 关
 
 | 命令 | 说明 |
 | --- | --- |
-| `news gui [--site <id>] [--db PATH]` | 启动 Windows 桌面 GUI（ECO News Reader） |
+| `news gui [--site <id>] [--db PATH]` | 启动 Windows 桌面 GUI（Laxinwen News Reader，来源 ECO/HKEJ/全部） |
 | `news serve [--export-root DIR]` | 启动本地 HTTP 阅读服务器（仅 127.0.0.1，端口自动选择，Ctrl+C 停止） |
 | `news fetch [--site <id>] [--limit N] [--timeout S] [--retries N] [--interval S] [--retry-failed]` | 抓取新闻（`--limit` = 最近 N 篇发现窗口） |
 | `news list [--source <id>] [--limit N]` | 列出最近新闻 |
@@ -242,7 +245,7 @@ laxinwen/
 │   ├── html_export.py      # HTML 研究结果展示层（第三阶段）
 │   ├── news_archive.py     # News Archive Daily Reader（第三+五阶段）
 │   ├── reader_server.py    # 本地 HTTP 阅读模式（第五阶段，仅 127.0.0.1）
-│   ├── gui.py              # Windows 桌面 GUI（ECO News Reader，第四阶段，tkinter）
+│   ├── gui.py              # Windows 桌面 GUI（Laxinwen News Reader，第四+六阶段，tkinter）
 │   └── ai/                 # AI Processing Layer（第二阶段）
 │       ├── __init__.py
 │       ├── provider.py         # Provider 抽象与配置（环境变量 / .env）
@@ -788,27 +791,28 @@ GUI 打开 `http://127.0.0.1`（不是 `file://`）、原有 `--format html` 无
 
 ---
 
-## 第四阶段：Windows 桌面 GUI（ECO News Reader）验收结果
+## 第六阶段：ECO + HKEJ 整合进 Windows GUI 验收结果
 
 真实运行验证（本次 PR，Xvfb 虚拟显示下运行真实 tkinter 窗口）：
 
 | 项目 | 结果 |
 | --- | --- |
-| 离线测试 | **179 项全部通过**（原 164 + 新增 15 项 GUI 测试） |
-| `uv run news gui` | 正常启动 GUI（标题 “ECO News Reader”） |
-| 新闻网站下拉框 | 仅 ECO（未来可扩展） |
-| 抓取数量 | 默认 100，支持 50/100/200 快捷按钮，可输入任意正整数（无上限） |
-| 第一次“抓取最新新闻”（limit=100） | 发现 **100** / 重复 **0** / 新增 **100** / 失败 0 |
-| 第二次“抓取最新新闻”（limit=100） | 发现 **100** / 重复 **100** / 新增 **0**（完美去重，不重复下载） |
-| 📖 打开新闻库 | 导出 News Archive 100 篇 → 本地 HTTP 阅读模式 `http://127.0.0.1:<port>/news-html/eco/index.html`（非 file://），浏览器打开 |
-| 🤖 AI 分析（数量 3） | 复用现有 AI processing（CNB AI 网关），**成功 3 / 失败 0** |
-| 📊 打开 AI 研究结果 | 导出 `data/export/html/index.html`（成功 3 / 失败 0），本地 HTTP 阅读模式 `http://127.0.0.1:<port>/html/index.html` 打开 |
-| 状态区 | 数据库、ECO 新闻 100、AI 已分析 3、AI 失败 0、最后抓取时间（真实数据） |
-| 错误处理 | pipeline HTTP 500 / AI HTTP 401 均在日志显示“XX 失败”，GUI 不崩溃、按钮恢复可再点 |
+| 离线测试 | **248 项全部通过**（新增多来源 GUI 测试） |
+| `uv run news gui` | 正常启动 GUI（标题 “Laxinwen News Reader”） |
+| 新闻来源下拉框 | **ECO / HKEJ / 全部** 三选一（默认 ECO，可切换） |
+| 抓取数量 | 默认 100，支持 50/100/200 快捷按钮，可输入任意正整数（20/500 等，拦截 0/-1/abc） |
+| ECO 抓取（limit=50） | 调用 `pipeline.run_site("eco")`（等价 `news fetch --site eco --limit 50`） |
+| HKEJ 抓取（limit=50） | 调用 `pipeline.run_site("hkej")`（复用现有 HKEJ adapter，等价 `news fetch --site hkej --limit 50`） |
+| 全部抓取（limit=50） | ECO 与 HKEJ 分别执行 limit=50，日志分别显示 `[ECO] 发现` / `[HKEJ] 发现` |
+| 📖 打开新闻库 | ECO→`/news-html/eco/index.html`；HKEJ→`/news-html/hkej/index.html`；全部→两者分别导出并打开（非 file://，本地 HTTP 阅读模式） |
+| 🤖 AI 分析（数量 3） | ECO→`process_batch(source_id="eco")`；HKEJ→`process_batch(source_id="hkej")`；全部→两者分别执行（复用现有 AI processing） |
+| 📊 打开 AI 研究结果 | ECO→`html/eco/index.html`；HKEJ→`html/hkej/index.html`（`news export --format html --site <id>`，本地 HTTP 阅读模式） |
+| 状态区 | 数据库、ECO 新闻、HKEJ 新闻、AI 已分析、AI 失败、当前来源、最后操作、最后抓取时间（从 SQLite 真实读取，不硬编码） |
+| 错误处理 | ECO HTTP 500 / HKEJ HTTP 500 / AI HTTP 401 均在日志显示“XX 失败”，GUI 不崩溃、按钮恢复可再点 |
+| 是否修改 HKEJ adapter | ❌ 本 PR 未改 `sources/hkej.py`、`sites/hkej.yaml` |
+| 是否修改 Daily Reader | ❌ 本 PR 未改 `news_archive.py`、`reader_server.py` |
+| 是否修改 AI / schema | ❌ 未改 `processor.py` / `provider.py` / `schema.py` / 数据库 schema |
 | 是否引入新依赖 | ❌ 仅 Python 标准库 `tkinter/ttk/threading/queue` |
-
-> 去重验收结论：数据库从 0 → 100 后，再次抓取最近 100 篇结果为
-> **发现 100 / 重复 100 / 新增 0**，完整走 `discover → deduplicate → fetch → extract → storage` pipeline。
 
 ---
 

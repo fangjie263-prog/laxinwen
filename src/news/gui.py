@@ -1,18 +1,19 @@
-"""ECO News Reader —— 轻量级 Windows 桌面 GUI（tkinter / ttk）。
+"""Laxinwen News Reader —— 轻量级 Windows 桌面 GUI（tkinter / ttk）。
 
 设计目标：
 - 只是现有 CLI / pipeline 的**用户界面层**，不重新实现任何抓取逻辑；
+- 新闻来源可在 ECO / HKEJ / 全部 之间切换，后台统一复用现有 pipeline；
 - 抓取 / AI 分析都调用现有 ``Pipeline`` / ``ArticleProcessor`` / ``export_*``；
 - 全程异步执行，网络请求不阻塞 GUI 主线程；
 - 错误不崩溃：任何阶段失败都在日志区显示，并恢复按钮状态；
-- 第一版零新依赖：Python 标准库 ``tkinter / ttk / threading / queue``。
+- 零新依赖：Python 标准库 ``tkinter / ttk / threading / queue``。
 
 启动方式：
     uv run news gui
     双击 NewsReader.bat（Windows）
 
 命令行选项：
-    news gui [--db PATH] [--site eco]
+    news gui [--db PATH] [--site eco|hkej]
 """
 
 from __future__ import annotations
@@ -55,7 +56,16 @@ _QUICK_LIMITS = (50, 100, 200)
 _DEFAULT_LIMIT = 100
 _DEFAULT_AI_LIMIT = 3
 
-_APP_TITLE = "ECO News Reader"
+_APP_TITLE = "Laxinwen News Reader"
+
+# 来源选项：(内部 id, 显示名, 说明)
+_SOURCE_OPTIONS = (
+    ("eco", "ECO"),
+    ("hkej", "HKEJ"),
+    ("all", "全部"),
+)
+# 全部来源实际对应的站点 id（顺序保持：ECO 在前）
+_ALL_SOURCE_IDS = ("eco", "hkej")
 
 # 后台线程完成哨兵 → 恢复提示文案
 _DONE_SENTINELS = {
@@ -75,7 +85,7 @@ class _NewsReaderApp:
         *,
         db_path: str | Path = DEFAULT_DB,
         site: str = "eco",
-        site_name: str = "ECO",
+        site_name: str | None = None,
         storage_factory=None,
         pipeline_factory=None,
         processor_factory=None,
@@ -90,7 +100,7 @@ class _NewsReaderApp:
         self.root = root
         self.db_path = Path(db_path)
         self.site = site
-        self.site_name = site_name
+        self.site_name = site_name or _site_display_name(site)
         self.news_archive_dir = Path(news_archive_dir)
         self.research_dir = Path(research_dir)
         self.export_root = Path(export_root)
@@ -109,11 +119,14 @@ class _NewsReaderApp:
         # 后台线程 → GUI 消息队列
         self._queue: "queue.Queue[str]" = queue.Queue()
         self._busy = False
+        self._active_source = site
+        self.last_action = "—"
 
         # 初始化时先建好数据库（含 schema），后续线程各自打开独立连接
         with self._storage_factory(self.db_path) as storage:
-            self._last_fetch_at = self._read_last_fetch_at(storage)
-            self._analysis_status = self._read_analysis_status(storage)
+            init_ids = self._site_ids_for(site)
+            self._last_fetch_at = self._read_last_fetch_at(storage, init_ids)
+            self._analysis_status = self._read_analysis_status(storage, init_ids)
 
         self._build_ui()
         self._refresh_status()
@@ -142,6 +155,27 @@ class _NewsReaderApp:
         assert self._http_server is not None
         return self._http_server.url_for(rel_path)
 
+    # ------------------------------------------------------------------ 来源
+
+    def _site_ids_for(self, selection: str) -> tuple[str, ...]:
+        """来源值 → 站点 id 列表（不依赖 site_var，用于初始化阶段）。"""
+        if selection == "all":
+            return _ALL_SOURCE_IDS
+        if selection == "hkej":
+            return ("hkej",)
+        return ("eco",)
+
+    def _selected_site_ids(self) -> tuple[str, ...]:
+        """返回当前来源对应的站点 id 列表（全部 → (eco, hkej)）。"""
+        return self._site_ids_for(self.site_var.get())
+
+    def _source_display(self, site_id: str) -> str:
+        """站点 id → 显示名（ECO / HKEJ / 全部）。"""
+        for sid, label in _SOURCE_OPTIONS:
+            if sid == site_id:
+                return label
+        return site_id.upper()
+
     # ------------------------------------------------------------------ UI
 
     def _build_ui(self) -> None:
@@ -169,12 +203,13 @@ class _NewsReaderApp:
 
         row1 = ttk.Frame(card)
         row1.pack(fill="x")
-        ttk.Label(row1, text="新闻网站：").pack(side="left")
+        ttk.Label(row1, text="新闻来源：").pack(side="left")
         self.site_var = tk.StringVar(value=self.site)
         self.site_combo = ttk.Combobox(
             row1, textvariable=self.site_var, state="readonly", width=14
         )
-        self.site_combo["values"] = [self.site]
+        self.site_combo["values"] = [sid for sid, _ in _SOURCE_OPTIONS]
+        self.site_combo.bind("<<ComboboxSelected>>", self._on_source_changed)
         self.site_combo.pack(side="left", padx=(4, 20))
 
         ttk.Label(row1, text="抓取数量：").pack(side="left")
@@ -224,7 +259,7 @@ class _NewsReaderApp:
         grid = ttk.Frame(self.status_card)
         grid.pack(fill="x")
         for i, key in enumerate(
-            ("db", "eco_count", "ai_ok", "ai_failed", "last_fetch")
+            ("db", "eco_count", "hkej_count", "ai_ok", "ai_failed", "current_source", "last_action", "last_fetch")
         ):
             lbl = ttk.Label(grid, text="")
             lbl.grid(row=i // 2, column=(i % 2) * 2, sticky="w", padx=(0, 24), pady=1)
@@ -251,15 +286,25 @@ class _NewsReaderApp:
 
         self._sep = "─" * 58
         self.log(
-            f"ECO News Reader 已就绪 · 数据库：{self.db_path}\n"
-            f"发现→去重→下载→提取→入库 使用现有 pipeline，"
-            "不会绕过去重逻辑。"
+            f"Laxinwen News Reader 已就绪 · 数据库：{self.db_path}\n"
+            f"新闻来源：{self._source_display(self.site)}。"
+            "发现→去重→下载→提取→入库 使用现有 pipeline，不会绕过去重逻辑。"
         )
 
     # ------------------------------------------------------------------ 工具
 
     def _set_limit(self, value: int) -> None:
         self.limit_var.set(str(value))
+
+    def _on_source_changed(self, _event=None) -> None:
+        """切换来源后刷新状态栏与当前来源显示。"""
+        if self._busy:
+            self.log("任务运行中，暂不支持切换来源，请等待完成。")
+            # 恢复为任务开始前的来源
+            self.site_var.set(self._active_source)
+            return
+        self.log(f"已切换新闻来源 → {self._source_display(self.site_var.get())}")
+        self._refresh_status()
 
     def _parse_limit(self, raw: Optional[str], *, what: str) -> Optional[int]:
         """把字符串解析为正整数；非法返回 None 并在日志提示。"""
@@ -313,9 +358,12 @@ class _NewsReaderApp:
         for e in (self.limit_entry, self.ai_limit_entry):
             e.configure(state=state)
         if busy:
+            self._active_source = self.site_var.get()
             self.log(f"⏳ {run} 进行中，请稍候……")
         else:
+            self.last_action = run
             self.log(f"✅ {run} 结束，按钮已恢复。")
+            self._refresh_status()
 
     def _on_close(self) -> None:
         if self._busy:
@@ -344,21 +392,25 @@ class _NewsReaderApp:
             return value
         return "—"
 
-    def _read_last_fetch_at(self, storage) -> Optional[str]:
+    def _read_last_fetch_at(self, storage, site_ids: tuple[str, ...]) -> Optional[str]:
         try:
-            arts = storage.list_articles(source_id=self.site, limit=1)
-            if not arts:
-                return None
-            fetched = arts[0].fetched_at or arts[0].discovered_at
-            return fetched.isoformat() if fetched else None
+            latest: Optional[datetime] = None
+            for sid in site_ids:
+                arts = storage.list_articles(source_id=sid, limit=1)
+                if not arts:
+                    continue
+                fetched = arts[0].fetched_at or arts[0].discovered_at
+                if fetched and (latest is None or fetched > latest):
+                    latest = fetched
+            return latest.isoformat() if latest else None
         except Exception as exc:  # 只读统计，失败不影响界面
             logging.getLogger("news.gui").warning("读取最后抓取时间失败: %s", exc)
             return None
 
-    def _read_analysis_status(self, storage) -> tuple[int, int]:
+    def _read_analysis_status(self, storage, site_ids: tuple[str, ...]) -> tuple[int, int]:
         try:
-            ok = storage.count_analysis(source_id=self.site, status="success")
-            failed = storage.count_analysis(source_id=self.site, status="failed")
+            ok = sum(storage.count_analysis(source_id=sid, status="success") for sid in site_ids)
+            failed = sum(storage.count_analysis(source_id=sid, status="failed") for sid in site_ids)
             return ok, failed
         except Exception as exc:
             logging.getLogger("news.gui").warning("读取 AI 状态失败: %s", exc)
@@ -367,21 +419,28 @@ class _NewsReaderApp:
     # ------------------------------------------------------------------ 状态
 
     def _refresh_status(self) -> None:
+        site_ids = self._selected_site_ids()
         try:
             with self._storage_factory(self.db_path) as storage:
-                eco_count = storage.count(source_id=self.site)
-                self._last_fetch_at = self._read_last_fetch_at(storage)
-                self._analysis_status = self._read_analysis_status(storage)
+                eco_count = storage.count(source_id="eco")
+                hkej_count = storage.count(source_id="hkej")
+                self._last_fetch_at = self._read_last_fetch_at(storage, site_ids)
+                self._analysis_status = self._read_analysis_status(storage, site_ids)
         except Exception as exc:
             self.log(f"状态读取失败：{exc}")
             eco_count = 0
+            hkej_count = 0
 
         ai_ok, ai_failed = self._analysis_status
+        current = self.site_var.get()
         values = {
             "db": f"数据库：{self.db_path}",
-            "eco_count": f"{self.site_name} 新闻：{eco_count}",
+            "eco_count": f"ECO 新闻：{eco_count}",
+            "hkej_count": f"HKEJ 新闻：{hkej_count}",
             "ai_ok": f"AI 已分析：{ai_ok}",
             "ai_failed": f"AI 失败：{ai_failed}",
+            "current_source": f"当前来源：{self._source_display(current)}",
+            "last_action": f"最后操作：{self.last_action}",
             "last_fetch": f"最后抓取：{self._status_text(self._last_fetch_at)}",
         }
         for key, text in values.items():
@@ -469,37 +528,55 @@ class _NewsReaderApp:
     # ------------------------------------------------------------------ 业务
 
     def _run_fetch(self, limit: int) -> None:
-        self._bg_log(f"开始抓取 {self.site_name} 最新 {limit} 篇")
-        # 打开新连接（线程内使用）
+        site_ids = self._selected_site_ids()
+        self._bg_log(f"开始抓取 {self._source_display(self.site_var.get())} 最新 {limit} 篇")
+        # 打开新连接（线程内使用）；多个站点共用一个 Storage 连接
         with self._storage_factory(self.db_path) as storage:
             pipeline = self._pipeline_factory(storage, limit)
             try:
-                stats = pipeline.run_site(self.site)
+                for sid in site_ids:
+                    stats = pipeline.run_site(sid)
+                    s = stats
+                    self._bg_log(
+                        f"{self._sep}\n"
+                        f"[{self._source_display(sid)}] 发现：{s.discovered}\n"
+                        f"重复：{s.skipped_dup}\n"
+                        f"新增：{s.fetched_ok}\n"
+                        f"失败：{s.failed}"
+                    )
+                    if s.errors:
+                        self._bg_log(f"[{self._source_display(sid)}] 失败明细（前 5 条）：")
+                        for err in s.errors[:5]:
+                            self._bg_log(f"  - {err}")
             finally:
                 try:
                     pipeline.close()
                 except Exception:
                     pass
-        s = stats
-        self._bg_log(
-            f"{self._sep}\n"
-            f"发现：{s.discovered}\n"
-            f"重复：{s.skipped_dup}\n"
-            f"新增：{s.fetched_ok}\n"
-            f"失败：{s.failed}"
-        )
-        if s.errors:
-            self._bg_log("失败明细（前 5 条）：")
-            for err in s.errors[:5]:
-                self._bg_log(f"  - {err}")
-        self._bg_log(f"抓取完成（{self.site_name}，limit={limit}）")
+        self._bg_log(f"抓取完成（{self._source_display(self.site_var.get())}，limit={limit}）")
 
     def _run_ai_analyze(self, limit: int) -> None:
+        site_ids = self._selected_site_ids()
         self._bg_log(f"开始 AI 分析（最多 {limit} 篇，复用现有 AI processing 逻辑）")
         with self._storage_factory(self.db_path) as storage:
             processor = self._processor_factory(storage)
             try:
-                stats = processor.process_batch(source_id=self.site, limit=limit)
+                total_ok = 0
+                total_failed = 0
+                total_n = 0
+                for sid in site_ids:
+                    stats = processor.process_batch(source_id=sid, limit=limit)
+                    total_n += stats.total
+                    total_ok += stats.ok
+                    total_failed += stats.failed
+                    self._bg_log(
+                        f"[{self._source_display(sid)}] AI 处理：共 {stats.total} 篇 | "
+                        f"成功 {stats.ok} | 失败 {stats.failed}"
+                    )
+                    if stats.errors:
+                        self._bg_log(f"[{self._source_display(sid)}] AI 失败明细（前 5 条）：")
+                        for err in stats.errors[:5]:
+                            self._bg_log(f"  - {err}")
             finally:
                 try:
                     processor.close()
@@ -507,50 +584,51 @@ class _NewsReaderApp:
                     pass
         self._bg_log(
             f"{self._sep}\n"
-            f"AI 处理：共 {stats.total} 篇 | 成功 {stats.ok} | 失败 {stats.failed}"
+            f"AI 处理合计：共 {total_n} 篇 | 成功 {total_ok} | 失败 {total_failed}"
         )
-        if stats.errors:
-            self._bg_log("AI 失败明细（前 5 条）：")
-            for err in stats.errors[:5]:
-                self._bg_log(f"  - {err}")
         self._bg_log("AI 分析完成")
 
     def _run_news_archive(self, limit: int) -> None:
-        out_dir = self.news_archive_dir / self.site
-        self._bg_log(f"正在导出 News Archive（最近 {limit} 篇）→ {out_dir}")
+        site_ids = self._selected_site_ids()
         with self._storage_factory(self.db_path) as storage:
-            result = self._news_archive_export(
-                storage, out_dir, source_id=self.site, limit=limit
-            )
-        index = result.index_path or out_dir / "index.html"
-        if not index.exists():
-            raise FileNotFoundError(f"News Archive 未生成：{index}")
-        self._bg_log(
-            f"News Archive 导出完成：{result.exported} 篇（已分析 {result.analyzed_ok} / "
-            f"失败 {result.analyzed_failed} / 未分析 {result.unanalyzed}）"
-        )
-        # 本地 HTTP 阅读模式：打开 http://127.0.0.1:<port>/news-html/<site>/index.html
-        url = self._http_url_for(f"news-html/{self.site}/index.html")
-        self._bg_log(f"新闻库已启动：\n{url}")
-        self._open_url(url)
+            for sid in site_ids:
+                out_dir = self.news_archive_dir / sid
+                self._bg_log(f"正在导出 {self._source_display(sid)} News Archive（最近 {limit} 篇）→ {out_dir}")
+                result = self._news_archive_export(
+                    storage, out_dir, source_id=sid, limit=limit
+                )
+                index = result.index_path or out_dir / "index.html"
+                if not index.exists():
+                    raise FileNotFoundError(f"News Archive 未生成：{index}")
+                self._bg_log(
+                    f"{self._source_display(sid)} News Archive 导出完成：{result.exported} 篇"
+                    f"（已分析 {result.analyzed_ok} / 失败 {result.analyzed_failed} / 未分析 {result.unanalyzed}）"
+                )
+                # 本地 HTTP 阅读模式：打开 http://127.0.0.1:<port>/news-html/<site>/index.html
+                url = self._http_url_for(f"news-html/{sid}/index.html")
+                self._bg_log(f"{self._source_display(sid)} 新闻库已启动：\n{url}")
+                self._open_url(url)
 
     def _run_research(self) -> None:
-        out_dir = self.research_dir
-        self._bg_log(f"正在导出 AI 研究结果 HTML → {out_dir}")
+        site_ids = self._selected_site_ids()
         with self._storage_factory(self.db_path) as storage:
-            result = self._research_export(
-                storage, out_dir, source_id=self.site
-            )
-        index = result.index_path or out_dir / "index.html"
-        if not index.exists():
-            raise FileNotFoundError(f"AI 研究结果未生成：{index}")
-        self._bg_log(
-            f"AI 研究结果导出完成：成功 {result.analysis_ok} / 失败 {result.analysis_failed}"
-        )
-        # 本地 HTTP 阅读模式：打开 http://127.0.0.1:<port>/html/index.html
-        url = self._http_url_for("html/index.html")
-        self._bg_log(f"AI 研究结果已启动：\n{url}")
-        self._open_url(url)
+            for sid in site_ids:
+                out_dir = self.research_dir / sid
+                self._bg_log(f"正在导出 {self._source_display(sid)} AI 研究结果 HTML → {out_dir}")
+                result = self._research_export(
+                    storage, out_dir, source_id=sid
+                )
+                index = result.index_path or out_dir / "index.html"
+                if not index.exists():
+                    raise FileNotFoundError(f"AI 研究结果未生成：{index}")
+                self._bg_log(
+                    f"{self._source_display(sid)} AI 研究结果导出完成："
+                    f"成功 {result.analysis_ok} / 失败 {result.analysis_failed}"
+                )
+                # 本地 HTTP 阅读模式：打开 http://127.0.0.1:<port>/html/<site>/index.html
+                url = self._http_url_for(f"html/{sid}/index.html")
+                self._bg_log(f"{self._source_display(sid)} AI 研究结果已启动：\n{url}")
+                self._open_url(url)
 
 
 # ---------- 默认实现（真实逻辑；测试可注入假实现） ----------
@@ -608,7 +686,10 @@ def run_gui(
     db_path: str | Path = DEFAULT_DB,
     site: str = "eco",
 ) -> int:
-    """启动 tkinter 主循环（供 ``news gui`` 与 NewsReader.bat 调用）。"""
+    """启动 tkinter 主循环（供 ``news gui`` 与 NewsReader.bat 调用）。
+
+    ``site`` 为初始来源：eco / hkej / all，运行中可在 GUI 内切换。
+    """
     root = tk.Tk()
     app = _NewsReaderApp(
         root,
@@ -621,6 +702,9 @@ def run_gui(
 
 
 def _site_display_name(site: str) -> str:
+    for sid, label in _SOURCE_OPTIONS:
+        if sid == site:
+            return label
     try:
         from .config import load_site_config
 
@@ -636,10 +720,12 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     parser = argparse.ArgumentParser(
         prog="news gui",
-        description="ECO News Reader —— 轻量级 Windows 桌面 GUI",
+        description="Laxinwen News Reader —— 轻量级 Windows 桌面 GUI",
     )
     parser.add_argument("--db", default=str(DEFAULT_DB), help="SQLite 数据库路径")
-    parser.add_argument("--site", default="eco", help="站点 id（当前仅 ECO）")
+    parser.add_argument(
+        "--site", default="eco", help="初始来源 id：eco / hkej / all（默认 eco）"
+    )
     args = parser.parse_args(argv)
     return run_gui(db_path=args.db, site=args.site)
 

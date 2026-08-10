@@ -124,7 +124,7 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 
 def cmd_gui(args: argparse.Namespace) -> int:
-    """news gui —— 启动 Windows 桌面版 ECO News Reader。"""
+    """news gui —— 启动 Windows 桌面版 Laxinwen News Reader。"""
     from .gui import run_gui
 
     return run_gui(db_path=args.db, site=args.site)
@@ -345,8 +345,8 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common_args(p_status)
     p_status.set_defaults(func=cmd_status)
 
-    p_gui = sub.add_parser("gui", help="启动 Windows 桌面 GUI（ECO News Reader）")
-    p_gui.add_argument("--site", default="eco", help="站点 id（当前仅 ECO）")
+    p_gui = sub.add_parser("gui", help="启动 Windows 桌面 GUI（Laxinwen News Reader）")
+    p_gui.add_argument("--site", default="eco", help="初始来源 id：eco / hkej / all（默认 eco）")
     _add_common_args(p_gui)
     p_gui.set_defaults(func=cmd_gui)
 

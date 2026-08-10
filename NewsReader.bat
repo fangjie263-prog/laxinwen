@@ -1,6 +1,6 @@
 @echo off
 rem ============================================================
-rem  ECO News Reader - Windows 启动器
+rem  Laxinwen News Reader - Windows 启动器
 rem  双击本文件即可直接启动 GUI（无需先打开 PowerShell）
 rem
 rem  原理：
@@ -45,12 +45,12 @@ if not exist ".venv\Scripts\python.exe" (
     )
 )
 
-echo 正在启动 ECO News Reader ...
+echo 正在启动 Laxinwen News Reader ...
 uv run news gui
 
 if errorlevel 1 (
     echo.
-    echo [错误] ECO News Reader 异常退出（错误码 %errorlevel%）。
+    echo [错误] Laxinwen News Reader 异常退出（错误码 %errorlevel%）。
     echo 请查看上方日志；如有需要可运行 NewsReader-Console.bat 查看完整命令行输出。
     pause
 )

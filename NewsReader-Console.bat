@@ -1,6 +1,6 @@
 @echo off
 rem ============================================================
-rem  ECO News Reader - 控制台启动器
+rem  Laxinwen News Reader - 控制台启动器
 rem  与 NewsReader.bat 相同，但保留命令行窗口，
 rem  便于查看抓取/AI 的完整命令行日志。
 rem ============================================================
@@ -24,10 +24,10 @@ if not exist ".venv\Scripts\python.exe" (
     )
 )
 
-echo 正在启动 ECO News Reader（控制台模式）...
+echo 正在启动 Laxinwen News Reader（控制台模式）...
 uv run news gui -v
 
 echo.
-echo ECO News Reader 已退出（错误码 %errorlevel%）。
+echo Laxinwen News Reader 已退出（错误码 %errorlevel%）。
 pause
 endlocal

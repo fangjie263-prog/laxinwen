@@ -252,7 +252,7 @@ class TestBasics:
 
     def test_window_title(self, root, tmp_path):
         app, _ = _make_app(root, tmp_path)
-        assert root.title() == "ECO News Reader"
+        assert root.title() == "Laxinwen News Reader"
 
     def test_quick_limits_buttons(self, root, tmp_path):
         app, _ = _make_app(root, tmp_path)
@@ -262,10 +262,23 @@ class TestBasics:
             btn.invoke()
             assert app.limit_var.get() == btn.cget("text")
 
-    def test_site_combobox_only_eco(self, root, tmp_path):
+    def test_site_combobox_has_all_sources(self, root, tmp_path):
         app, _ = _make_app(root, tmp_path)
         assert app.site_var.get() == "eco"
-        assert app.site_combo["values"] == ("eco",)
+        assert app.site_combo["values"] == ("eco", "hkej", "all")
+
+    def test_source_switch_reflects_selection(self, root, tmp_path):
+        app, _ = _make_app(root, tmp_path)
+        # 切换到 HKEJ
+        app.site_combo.set("hkej")
+        app._on_source_changed()
+        assert app._selected_site_ids() == ("hkej",)
+        assert "当前来源：HKEJ" in app.status_labels["current_source"].cget("text")
+        # 切换到全部
+        app.site_combo.set("all")
+        app._on_source_changed()
+        assert app._selected_site_ids() == ("eco", "hkej")
+        assert "当前来源：全部" in app.status_labels["current_source"].cget("text")
 
     def test_invalid_limit_cannot_run(self, root, tmp_path):
         app, ctx = _make_app(root, tmp_path)
@@ -399,8 +412,8 @@ class TestAIResearchButton:
         # 必须打开 http://127.0.0.1，而不是 file://
         assert url.startswith("http://127.0.0.1:")
         assert "file://" not in url
-        assert "html/index.html" in url
-        index = ctx["research_dir"] / "index.html"
+        assert "html/eco/index.html" in url
+        index = ctx["research_dir"] / "eco" / "index.html"
         assert index.exists()
         assert index.read_text(encoding="utf-8") == "research eco"
         log = _log_text(app)
@@ -489,3 +502,215 @@ class TestStatus:
         # 抓取完成后重新读取状态（fake pipeline 不写库，仍应为 0，但不崩溃）
         after = app.status_labels["eco_count"].cget("text")
         assert "ECO 新闻：" in after
+
+    def test_status_shows_both_eco_and_hkej_counts(self, root, tmp_path):
+        db = tmp_path / "both.db"
+        s = Storage(db)
+        try:
+            for i in range(7):
+                art = Article(
+                    source_id="eco", source_name="ECO",
+                    canonical_url=f"https://eco.sapo.pt/2026/08/08/a-{i}/",
+                    title=f"E {i}", published_at=utcnow(), body_text="x", language="pt-PT",
+                    status="fetched",
+                )
+                s.insert_article(art)
+            for i in range(3):
+                art = Article(
+                    source_id="hkej", source_name="HKEJ",
+                    canonical_url=f"https://www1.hkej.com/dailynews/finance/article/{i}",
+                    title=f"H {i}", published_at=utcnow(), body_text="x", language="zh-Hant",
+                    status="fetched",
+                )
+                s.insert_article(art)
+        finally:
+            s.close()
+
+        app, ctx = _make_app(root, tmp_path, db=db)
+        texts = {k: v.cget("text") for k, v in app.status_labels.items()}
+        assert "ECO 新闻：7" in texts["eco_count"]
+        assert "HKEJ 新闻：3" in texts["hkej_count"]
+        assert "当前来源：ECO" in texts["current_source"]
+        assert "最后操作：" in texts["last_action"]
+
+
+class TestMultiSourceFetch:
+    """Phase 2：来源选择后抓取必须调用正确的 site。"""
+
+    def _run_fetch_for_source(self, app, ctx, source: str, limit: int):
+        app.site_combo.set(source)
+        app._on_source_changed()
+        app.limit_var.set(str(limit))
+        app._on_fetch()
+        assert _pump_until(app, lambda: not app._busy)
+        return [p.calls for p in ctx["pipeline_calls"]]
+
+    def test_eco_50_calls_site_eco(self, root, tmp_path):
+        app, ctx = _make_app(root, tmp_path)
+        calls = self._run_fetch_for_source(app, ctx, "eco", 50)
+        assert calls == [[("run_site", "eco")]]
+        pipe = ctx["pipeline_calls"][0]
+        assert pipe.limit == 50
+
+    def test_hkej_50_calls_site_hkej(self, root, tmp_path):
+        app, ctx = _make_app(root, tmp_path)
+        calls = self._run_fetch_for_source(app, ctx, "hkej", 50)
+        assert calls == [[("run_site", "hkej")]]
+        pipe = ctx["pipeline_calls"][0]
+        assert pipe.limit == 50
+
+    def test_all_50_calls_both_sites(self, root, tmp_path):
+        app, ctx = _make_app(root, tmp_path)
+        calls = self._run_fetch_for_source(app, ctx, "all", 50)
+        assert calls == [[("run_site", "eco"), ("run_site", "hkej")]]
+        pipe = ctx["pipeline_calls"][0]
+        assert pipe.limit == 50
+        log = _log_text(app)
+        assert "[ECO] 发现" in log
+        assert "[HKEJ] 发现" in log
+
+    def test_all_50_logs_both_sources(self, root, tmp_path):
+        app, ctx = _make_app(
+            root, tmp_path, pipeline_stats=FakeStats(discovered=50, fetched_ok=50)
+        )
+        calls = self._run_fetch_for_source(app, ctx, "all", 50)
+        log = _log_text(app)
+        assert "[ECO]" in log and "[HKEJ]" in log
+        assert "发现：50" in log
+
+    def test_custom_limit_input(self, root, tmp_path):
+        """允许任意正整数（如 20 / 500）并做基本校验。"""
+        app, ctx = _make_app(root, tmp_path)
+        for valid in ("20", "500"):
+            app.limit_var.set(valid)
+            app._on_fetch()
+            assert _pump_until(app, lambda: not app._busy)
+        assert len(ctx["pipeline_calls"]) == 2
+        assert ctx["pipeline_calls"][0].limit == 20
+        assert ctx["pipeline_calls"][1].limit == 500
+
+    def test_invalid_custom_limit_rejected(self, root, tmp_path):
+        app, ctx = _make_app(root, tmp_path)
+        for bad in ("0", "-1", "abc"):
+            app.limit_var.set(bad)
+            app._on_fetch()
+            assert not ctx["pipeline_calls"], f"非法数量 {bad!r} 不应触发抓取"
+
+
+class TestMultiSourceNewsArchive:
+    """Phase 2：打开新闻库必须按来源打开正确页面。"""
+
+    def _open_archive(self, app, ctx, source: str, limit: int = 50):
+        app.site_combo.set(source)
+        app._on_source_changed()
+        app.limit_var.set(str(limit))
+        app._on_open_news_archive()
+        assert _pump_until(app, lambda: not app._busy)
+        return ctx["opened_urls"]
+
+    def test_eco_opens_eco_archive(self, root, tmp_path):
+        app, ctx = _make_app(root, tmp_path)
+        urls = self._open_archive(app, ctx, "eco")
+        assert len(urls) == 1
+        assert "news-html/eco/index.html" in urls[0]
+        assert "file://" not in urls[0]
+        assert (ctx["archive_dir"] / "eco" / "index.html").exists()
+
+    def test_hkej_opens_hkej_archive(self, root, tmp_path):
+        app, ctx = _make_app(root, tmp_path)
+        urls = self._open_archive(app, ctx, "hkej")
+        assert len(urls) == 1
+        assert "news-html/hkej/index.html" in urls[0]
+        assert "file://" not in urls[0]
+        assert (ctx["archive_dir"] / "hkej" / "index.html").exists()
+
+    def test_all_opens_both_archives(self, root, tmp_path):
+        app, ctx = _make_app(root, tmp_path)
+        urls = self._open_archive(app, ctx, "all")
+        assert len(urls) == 2
+        assert any("news-html/eco/index.html" in u for u in urls)
+        assert any("news-html/hkej/index.html" in u for u in urls)
+
+
+class TestMultiSourceAI:
+    """Phase 2：AI 分析按来源调用现有 processor。"""
+
+    def _run_ai(self, app, ctx, source: str, limit: int = 3):
+        app.site_combo.set(source)
+        app._on_source_changed()
+        app.ai_limit_var.set(str(limit))
+        app._on_ai_analyze()
+        assert _pump_until(app, lambda: not app._busy)
+        return [p.calls for p in ctx["processor_calls"]]
+
+    def test_eco_ai_calls_eco_processor(self, root, tmp_path):
+        app, ctx = _make_app(root, tmp_path)
+        calls = self._run_ai(app, ctx, "eco")
+        assert calls == [[{"source_id": "eco", "limit": 3}]]
+
+    def test_hkej_ai_calls_hkej_processor(self, root, tmp_path):
+        app, ctx = _make_app(root, tmp_path)
+        calls = self._run_ai(app, ctx, "hkej")
+        assert calls == [[{"source_id": "hkej", "limit": 3}]]
+
+    def test_all_ai_calls_both_processors(self, root, tmp_path):
+        app, ctx = _make_app(root, tmp_path)
+        calls = self._run_ai(app, ctx, "all")
+        assert calls == [[{"source_id": "eco", "limit": 3}, {"source_id": "hkej", "limit": 3}]]
+
+
+class TestMultiSourceResearch:
+    """Phase 2：AI 研究结果按来源打开。"""
+
+    def test_eco_research_opens_eco_dir(self, root, tmp_path):
+        app, ctx = _make_app(root, tmp_path)
+        app.site_combo.set("eco")
+        app._on_source_changed()
+        app._on_open_research()
+        assert _pump_until(app, lambda: not app._busy)
+        urls = ctx["opened_urls"]
+        assert len(urls) == 1
+        assert "html/eco/index.html" in urls[0]
+
+    def test_hkej_research_opens_hkej_dir(self, root, tmp_path):
+        app, ctx = _make_app(root, tmp_path)
+        app.site_combo.set("hkej")
+        app._on_source_changed()
+        app._on_open_research()
+        assert _pump_until(app, lambda: not app._busy)
+        urls = ctx["opened_urls"]
+        assert len(urls) == 1
+        assert "html/hkej/index.html" in urls[0]
+
+
+class TestMultiSourceErrors:
+    """Phase 2：任意来源失败，GUI 都不能崩溃、按钮必须恢复。"""
+
+    def test_eco_http500_does_not_crash(self, root, tmp_path):
+        app, ctx = _make_app(root, tmp_path, pipeline_exc=RuntimeError("HTTP 500"))
+        app.site_combo.set("eco")
+        app._on_source_changed()
+        app.limit_var.set("50")
+        app._on_fetch()
+        assert _pump_until(app, lambda: not app._busy)
+        assert str(app.fetch_btn.cget("state")) == "normal"
+        assert "抓取失败" in _log_text(app)
+
+    def test_hkej_http500_does_not_crash(self, root, tmp_path):
+        app, ctx = _make_app(root, tmp_path, pipeline_exc=RuntimeError("HTTP 500"))
+        app.site_combo.set("hkej")
+        app._on_source_changed()
+        app.limit_var.set("50")
+        app._on_fetch()
+        assert _pump_until(app, lambda: not app._busy)
+        assert str(app.fetch_btn.cget("state")) == "normal"
+        assert "抓取失败" in _log_text(app)
+
+    def test_ai_http401_does_not_crash(self, root, tmp_path):
+        app, ctx = _make_app(root, tmp_path, processor_exc=RuntimeError("HTTP 401"))
+        app.site_combo.set("hkej")
+        app._on_source_changed()
+        app._on_ai_analyze()
+        assert _pump_until(app, lambda: not app._busy)
+        assert str(app.ai_btn.cget("state")) == "normal"
+        assert "AI 分析失败" in _log_text(app)
