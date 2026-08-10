@@ -299,24 +299,70 @@ eco-2026-08-10/
 
 ---
 
-## AI 配置（GUI 内置设置中心）
+## AI Provider 配置（GUI 内置多 Provider 管理器）
 
-普通用户**无需打开 PowerShell**，直接在 GUI 内完成 AI 配置：
+普通用户**无需打开 PowerShell**，直接在 GUI 内完成 AI 配置。
 
-1. 点击主界面「**⚙ AI 设置**」；
-2. 填写 **Provider / API Base URL / API Key / Model**（Provider 不限于下拉，任意 OpenAI-compatible 均可手输）；
-3. 点击「**测试连接**」真正发送一次极短模型请求，验证 Base URL + API Key + Model 是否可用；
-4. 测试成功后点击「**保存**」，配置立即生效，无需重启；
-5. 直接点击「**🤖 AI 分析**」即可使用。
+Laxinwen 使用 **OpenAI-compatible 接口（`/chat/completions`）作为统一调用层**，
+但 Provider 名称**不限于 OpenAI**：任何兼容 `/chat/completions` 的服务都可以接入
+（TokenRhythm、DeepSeek、Gemini 官方 OpenAI-compatibility endpoint、公司内部 API、
+自己的代理网关……）。
+
+### 1. 预设 Provider
+
+内置预设（选择后自动填 Base URL 与常用模型候选）：
+
+| Provider | 默认 Base URL | 说明 |
+| --- | --- | --- |
+| **OpenAI** | `https://api.openai.com/v1` | 官方 API，模型经 `GET /models` 动态发现 |
+| **Gemini** | `https://generativelanguage.googleapis.com/v1beta/openai/` | Google 官方 OpenAI-compatible endpoint，模型经 `GET /models` 动态发现 |
+| **TokenRhythm** | `https://tokenrhythm.studio/v1` | 预设，也作为自定义 Provider 使用 |
+
+> **Gemini 官方 OpenAI-compatible Base URL**：
+> `https://generativelanguage.googleapis.com/v1beta/openai/`，可直接用 Gemini API Key。
+
+### 2. 多 Provider 管理与切换
+
+「⚙ AI 设置」窗口支持保存**多个 Provider**，随时切换使用（例如：今天用 OpenAI、明天用 Gemini、
+公司电脑用公司 API、测试时用 TokenRhythm），**无需重复输入 Key**：
+
+- **Provider 配置列表 / 当前 Provider**：下拉展示所有已保存 Provider；
+- **[＋ 新增 Provider]**：新建自定义 Provider（名称可任意，不限定预设）；
+- **[🗑 删除 Provider]**：删除当前 Provider（只删该 Provider，不影响其它）；
+- **切换 Provider**：下拉选择即加载该 Provider 的 Base URL / Key / Model；
+  若当前表单有未保存修改，会提示“是否放弃修改”。
+
+### 3. 测试连接 & 测试成功自动保存
+
+- 「**测试连接**」**真正发送一次极短请求**（“请回复：OK”），验证 Base URL + API Key + Model；
+- **测试成功 → 自动保存**：无需再点「保存」，当前配置立即成为 Active Provider，
+  主界面 AI 状态立即变为 `🟢 已配置`，AI 分析按钮立即恢复，**无需重启 GUI**；
+- **测试失败 → 不覆盖**：401（Key 无效）/ 404（Model / Base URL 错误）/ 网络错误
+  **不会覆盖**之前已保存的有效配置（不会用一个错误 Key 冲掉原来有效的 Key）；
+- 「保存」按钮保留，用于**手动保存**当前已填写但尚未测试的配置。
+
+### 4. 模型刷新
+
+「**刷新模型**」调用 `GET {base_url}/models`（`Authorization: Bearer <API Key>`）动态发现当前可用模型，
+放入 Model 下拉框：
+
+- 模型列表**以 Provider 当前 API 返回结果为准**，不写死未来一定存在的模型；
+- 若 `/models` 不支持 / 权限不足 / 代理不支持，**不阻断使用**——提示“请手工输入 Model”；
+- Model 支持**下拉选择 + 手工输入**。
+
+### 5. 手工输入
+
+Model / Provider 名称 / Base URL 全部支持手工输入，不强制限定。
+
+### 6. API Key 安全
+
+- API Key 仅用于本地 AI 请求，**不写入新闻数据库（SQLite）、HTML 导出文件、日志或 README**；
+- 配置保存到项目根 `.env`（`gitignore` 已排除 `.env` / `.env.*`，**不会进入 Git**）；
+- 保存时按字段更新 / 追加，**保留其它未知配置、不删除 CNB_TOKEN**；
+- GUI 状态与日志只显示掩码（如 `sk-****abcd`）；
+- 测试连接 / 错误信息**绝不打印完整 API Key**。
 
 若尚未配置 AI 就点击「AI 分析」，程序会提示进入「AI 设置」（而不是只显示“缺少 AI_MODEL”）。
-
-**API Key 安全**：
-
-- API Key 仅用于本地 AI 请求，**不写入新闻数据库、HTML 导出文件或日志**；
-- 配置保存到项目根 `.env`（`gitignore` 已排除 `.env`，**不会进入 Git**）；
-- 保存时逐字段更新 / 追加，**保留其它未知配置、不删除 CNB_TOKEN**；
-- GUI 状态只显示掩码（如 `sk-****abcd`）。
 
 ---
 
@@ -535,6 +581,36 @@ AI_BASE_URL=https://tokenrhythm.studio/v1
 AI_API_KEY=your-key
 AI_MODEL=deepseek-v4-flash
 ```
+
+**多 Provider 存储**（GUI「⚙ AI 设置」写入 `.env`）：
+
+```bash
+# .env —— 可保存多个 Provider，随时切换
+AI_ACTIVE_PROVIDER=tokenrhythm
+
+# OpenAI
+AI_PROVIDER_OPENAI_BASE_URL=https://api.openai.com/v1
+AI_PROVIDER_OPENAI_API_KEY=sk-...
+AI_PROVIDER_OPENAI_MODEL=gpt-5.2
+
+# Gemini（官方 OpenAI-compatible endpoint）
+AI_PROVIDER_GEMINI_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/
+AI_PROVIDER_GEMINI_API_KEY=sk-...
+AI_PROVIDER_GEMINI_MODEL=gemini-3.6-flash
+
+# TokenRhythm
+AI_PROVIDER_TOKENRHYTHM_BASE_URL=https://tokenrhythm.studio/v1
+AI_PROVIDER_TOKENRHYTHM_API_KEY=sk-...
+AI_PROVIDER_TOKENRHYTHM_MODEL=deepseek-v4-flash
+
+# 任意自定义 Provider（名称可任意，只要求 OpenAI-compatible）
+AI_PROVIDER_MYCOMPANY_BASE_URL=https://company.example/v1
+AI_PROVIDER_MYCOMPANY_API_KEY=sk-...
+AI_PROVIDER_MYCOMPANY_MODEL=company-model-1
+```
+
+> **向后兼容**：只有旧版 `AI_PROVIDER / AI_BASE_URL / AI_API_KEY / AI_MODEL` 的 `.env`
+> 升级后自动识别为一个 Provider 并成为 Active Provider，**无需重新输入 Key**，旧配置不丢失。
 
 > **CNB 流水线内免配置**：在 CNB 流水线环境中运行 `news process` 时，
 > 若未设置 `AI_BASE_URL` / `AI_API_KEY` / `AI_MODEL`，系统会自动回退到

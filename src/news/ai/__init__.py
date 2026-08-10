@@ -23,12 +23,26 @@ from .provider import (
     ProviderResult,
     TestConnectionResult,
     build_provider,
+    fetch_models,
     load_dotenv,
     test_connection,
 )
 from .schema import AnalysisValidationError, extract_json_object, validate_analysis
-from .config_store import AiConfig, read_config, save_config, masked
-
+from .config_store import (
+    AiConfig,
+    ProviderConfig,
+    delete_provider,
+    get_active_provider,
+    get_provider,
+    is_preset,
+    list_providers,
+    masked,
+    preset_base_url,
+    preset_model_candidates,
+    read_config,
+    save_config,
+    save_provider,
+)
 __all__ = [
     "AIProviderConfig",
     "AIProviderError",
@@ -37,6 +51,7 @@ __all__ = [
     "TestConnectionResult",
     "OpenAICompatibleProvider",
     "build_provider",
+    "fetch_models",
     "load_dotenv",
     "test_connection",
     "ArticleProcessor",
@@ -47,7 +62,16 @@ __all__ = [
     "extract_json_object",
     "validate_analysis",
     "AiConfig",
+    "ProviderConfig",
     "read_config",
     "save_config",
+    "save_provider",
+    "delete_provider",
+    "list_providers",
+    "get_provider",
+    "get_active_provider",
+    "preset_base_url",
+    "preset_model_candidates",
+    "is_preset",
     "masked",
 ]

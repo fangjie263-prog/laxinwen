@@ -323,3 +323,59 @@ def load_dotenv(path: str | Path | None = None) -> None:
                 os.environ[key] = value
         logger.info("已加载 .env: %s", env_path)
         return
+
+
+def fetch_models(config: Optional[AIProviderConfig] = None) -> list[str]:
+    """调用 ``GET {base_url}/models`` 动态发现当前可用模型列表。
+
+    - 使用 Bearer API Key 鉴权；
+    - 只返回模型 id 列表（可用于 Model 下拉候选）；
+    - 失败（网络 / 401 / 404 / 无 /models 端点 / 解析失败）抛出 AIProviderError，
+      但**不**意味着 Provider 不可用——GUI 应在失败时提示“请手工输入 Model”。
+    - 绝不打印 / 返回 API Key。
+    """
+    import httpx
+
+    cfg = config or AIProviderConfig.from_env()
+    if not cfg.base_url:
+        raise AIProviderError("缺少 API Base URL，无法获取模型列表。")
+    if not cfg.api_key:
+        raise AIProviderError("缺少 API Key，无法获取模型列表。")
+
+    url = cfg.base_url.rstrip("/") + "/models"
+    headers = {
+        "Authorization": f"Bearer {cfg.api_key}",
+        "Content-Type": "application/json",
+    }
+    try:
+        with httpx.Client(timeout=cfg.timeout) as client:
+            resp = client.get(url, headers=headers)
+    except httpx.TimeoutException as exc:
+        raise AIProviderError(
+            f"获取模型列表超时（{cfg.timeout}s）：无法连接 {url}"
+        ) from exc
+    except httpx.TransportError as exc:
+        raise AIProviderError(f"获取模型列表网络错误：{exc}") from exc
+
+    if resp.status_code != 200:
+        raise AIProviderError(
+            f"获取模型列表失败：HTTP {resp.status_code}（该 Provider 可能不支持 /models，"
+            "可手工输入 Model）"
+        )
+
+    try:
+        data = resp.json()
+    except Exception as exc:
+        raise AIProviderError("获取模型列表失败：响应不是合法 JSON。") from exc
+
+    ids: list[str] = []
+    models = data.get("data") if isinstance(data, dict) else None
+    if isinstance(models, list):
+        for item in models:
+            if isinstance(item, dict):
+                mid = item.get("id")
+            else:
+                mid = item
+            if isinstance(mid, str) and mid.strip():
+                ids.append(mid.strip())
+    return ids
