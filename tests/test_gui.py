@@ -254,6 +254,12 @@ def _make_app(
             from news.ai.config_store import masked as _m
             return _m(value)
 
+        @staticmethod
+        def apply_to_env(cfg):
+            # 模拟保存后同步到 os.environ（验证 GUI 调用链）
+            from news.ai.config_store import apply_to_env as _apply
+            return _apply(cfg)
+
     def fake_test_connection(config):
         from news.ai.provider import TestConnectionResult
         test_calls.append(config)
@@ -306,6 +312,8 @@ def _make_app(
         "export_root": export_root,
         "portable_calls": portable_calls,
         "settings_opened": settings_opened,
+        "cfg_state": cfg_state,
+        "test_calls": test_calls,
         "app": app,
     }
     return app, ctx
@@ -975,3 +983,72 @@ class TestAiSettings:
         assert _pump_until(app, lambda: not app._busy)
         assert len(ctx["processor_calls"]) == 1
         assert not ctx["settings_opened"]
+
+    # ---------------- 验收核心：保存后立即生效（不重启 GUI） -------------
+
+    def test_save_marks_configured_without_restart(self, root, tmp_path):
+        """验收 1-9：GUI 启动未配置 → 在设置里填好并保存 → 不重启即变成已配置。"""
+        app, ctx = _make_app(root, tmp_path, ai_configured=False)
+        # 初始：未配置
+        assert "⚪ 未配置" in app._ai_status_label()
+        assert not app._is_ai_configured()
+
+        # 模拟用户在设置窗口填好并保存（fake_show_settings 会用 cfg_state 触发 on_save）
+        ctx["cfg_state"].update(
+            provider="tokenrhythm",
+            base_url="https://tokenrhythm.studio/v1",
+            api_key="sk-lifecycle-secret",
+            model="deepseek-v4-flash",
+        )
+        app._on_ai_settings()
+
+        # 保存后：状态立即变成已配置
+        assert app._is_ai_configured() is True
+        assert "🟢 已配置" in app._ai_status_label()
+        assert "🟢 已配置" in app.status_labels["ai_status"].cget("text")
+
+    def test_save_then_ai_analyze_runs_with_new_config(self, root, tmp_path):
+        """验收 10-11：保存后点 AI 分析 → processor 收到的是新配置（不再被“未配置”拦截）。"""
+        app, ctx = _make_app(root, tmp_path, ai_configured=False)
+        ctx["cfg_state"].update(
+            provider="tokenrhythm",
+            base_url="https://tokenrhythm.studio/v1",
+            api_key="sk-lifecycle-secret",
+            model="deepseek-v4-flash",
+        )
+        # 保存
+        app._on_ai_settings()
+        assert app._is_ai_configured()
+
+        # 再点 AI 分析：应直接运行，不被“尚未配置”拦截
+        app.ai_limit_var.set("2")
+        assert len(ctx["settings_opened"]) == 1  # 保存时开过一次
+        app._on_ai_analyze()
+        assert _pump_until(app, lambda: not app._busy)
+        assert len(ctx["processor_calls"]) == 1
+        assert len(ctx["settings_opened"]) == 1  # AI 分析没有再弹设置
+
+    def test_resave_uses_new_config_next_analysis(self, root, tmp_path):
+        """验收 12-15：修改已有 AI 配置后再保存，下一次 AI 分析用新配置。"""
+        app, ctx = _make_app(root, tmp_path, ai_configured=True)
+        assert app._is_ai_configured()
+
+        # 修改配置并保存（fake on_save 用新 cfg_state）
+        ctx["cfg_state"].update(
+            provider="deepseek",
+            base_url="https://api.deepseek.com/v1",
+            api_key="sk-new-deepseek",
+            model="deepseek-chat",
+        )
+        app._on_ai_settings()
+        assert app._is_ai_configured()
+        assert "🟢 已配置" in app._ai_status_label()
+
+        # 保存后 os.environ 已同步为新配置（apply_to_env 生效）
+        from news.ai.provider import AIProviderConfig
+
+        fe = AIProviderConfig.from_env()
+        assert fe.provider == "deepseek"
+        assert fe.model == "deepseek-chat"
+        assert fe.base_url == "https://api.deepseek.com/v1"
+        assert fe.api_key == "sk-new-deepseek"

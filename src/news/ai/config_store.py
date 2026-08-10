@@ -191,6 +191,38 @@ def save_config(cfg: AiConfig, env_path: str | Path | None = None) -> Path:
     return path
 
 
+def apply_to_env(cfg: AiConfig) -> None:
+    """把 AiConfig 同步到当前进程的 ``os.environ``（**覆盖**已有值）。
+
+    用途：让 ``save_config`` 保存后立即在当前进程生效，无需重启 GUI。
+
+    背景：``provider.AIProviderConfig.from_env()``（AI 分析 / build_provider）
+    从 ``os.environ`` 读取配置，而 ``save_config`` 只写 .env 文件、不更新内存中的
+    ``os.environ``。且 ``provider.load_dotenv()`` 采用 ``if key not in os.environ``
+    策略**不覆盖**已有环境变量——若 GUI 启动时已把旧值载入 os.environ，
+    保存的新配置就无法被 AI 分析读到。
+
+    因此这里在保存后显式把新配置写入 ``os.environ``（覆盖），让当前进程立刻可用。
+
+    注意：
+    - 只改内存中的 os.environ，不写回 .env（那是 save_config 的职责）；
+    - 只设置非空字段：字段留空时不动 os.environ 的旧值（保留 .env 中已有 Key 等）；
+    - API Key 只在内存中写入 os.environ，不打印、不写入任何持久化位置。
+    """
+    import os
+
+    mapping = {
+        "AI_PROVIDER": cfg.provider,
+        "AI_BASE_URL": cfg.base_url,
+        "AI_API_KEY": cfg.api_key,
+        "AI_MODEL": cfg.model,
+    }
+    for key, value in mapping.items():
+        value = (value or "").strip()
+        if value:
+            os.environ[key] = value
+
+
 def masked(value: str) -> str:
     """工具函数：对任意字符串做掩码（默认只留首尾 4 位）。"""
     value = (value or "").strip()

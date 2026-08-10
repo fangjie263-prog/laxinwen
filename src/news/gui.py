@@ -678,10 +678,10 @@ class _NewsReaderApp:
     def _open_ai_settings(self) -> None:
         """打开 AI 设置对话框；保存后立即刷新配置并更新状态。"""
         def _on_saved(cfg) -> None:
-            # 保存后立即生效：强制重载 .env 到环境变量，供后续 AI 分析使用
+            # 保存后立即生效：把新配置同步到当前进程 os.environ（覆盖），
+            # 供后续 AI 分析（AIProviderConfig.from_env()）立即读到，无需重启 GUI。
             try:
-                from .ai.provider import load_dotenv
-                load_dotenv()
+                self._ai_config_store.apply_to_env(cfg)
             except Exception:
                 pass
             self.log(

@@ -26,6 +26,7 @@ from news.ai import config_store  # noqa: E402
 from news.ai.config_store import (  # noqa: E402
     AI_KEYS,
     AiConfig,
+    apply_to_env,
     masked,
     read_config,
     save_config,
@@ -221,6 +222,85 @@ class TestTestConnection:
         res = _test_connection(self._cfg(api_key=secret))
         # 即使未知错误回显 err，也绝不含完整 Key
         assert secret not in res.message
+
+
+class TestApplyToEnv:
+    """apply_to_env：保存后把配置同步到当前进程 os.environ，立即生效（无需重启）。"""
+
+    def _clear_ai_env(self, monkeypatch):
+        for k in ("AI_PROVIDER", "AI_BASE_URL", "AI_API_KEY", "AI_MODEL"):
+            monkeypatch.delenv(k, raising=False)
+
+    def test_overwrites_existing_stale_env(self, monkeypatch):
+        """关键：覆盖已存在的旧环境变量，让 AI 分析读到新配置。"""
+        self._clear_ai_env(monkeypatch)
+        monkeypatch.setenv("AI_PROVIDER", "openai")
+        monkeypatch.setenv("AI_BASE_URL", "https://old.example/v1")
+        monkeypatch.setenv("AI_API_KEY", "old-stale-key")
+        monkeypatch.setenv("AI_MODEL", "old-model")
+
+        cfg = AiConfig(
+            provider="tokenrhythm",
+            base_url="https://tokenrhythm.studio/v1",
+            api_key="new-secret-key",
+            model="deepseek-v4-flash",
+        )
+        apply_to_env(cfg)
+
+        # AI 分析（from_env）应读到新配置
+        from news.ai.provider import AIProviderConfig
+
+        fe = AIProviderConfig.from_env()
+        assert fe.provider == "tokenrhythm"
+        assert fe.base_url == "https://tokenrhythm.studio/v1"
+        assert fe.api_key == "new-secret-key"
+        assert fe.model == "deepseek-v4-flash"
+
+    def test_sets_env_when_absent(self, monkeypatch):
+        """进程启动时 os.environ 没有 AI 配置：apply 后也能立即读到。"""
+        self._clear_ai_env(monkeypatch)
+        cfg = AiConfig(
+            provider="deepseek",
+            base_url="https://api.deepseek.com/v1",
+            api_key="sk-new",
+            model="deepseek-chat",
+        )
+        apply_to_env(cfg)
+        from news.ai.provider import AIProviderConfig
+
+        fe = AIProviderConfig.from_env()
+        assert fe.provider == "deepseek"
+        assert fe.model == "deepseek-chat"
+
+    def test_empty_field_does_not_clear_existing(self, monkeypatch):
+        """字段留空时不覆盖 os.environ 旧值（如保存时 Key 留空保留已有 Key）。"""
+        self._clear_ai_env(monkeypatch)
+        monkeypatch.setenv("AI_API_KEY", "existing-key")
+        cfg = AiConfig(
+            provider="tokenrhythm",
+            base_url="https://tokenrhythm.studio/v1",
+            api_key="",  # 留空
+            model="deepseek-v4-flash",
+        )
+        apply_to_env(cfg)
+        from news.ai.provider import AIProviderConfig
+
+        fe = AIProviderConfig.from_env()
+        assert fe.api_key == "existing-key"  # 保留
+        assert fe.provider == "tokenrhythm"
+
+    def test_key_never_logged(self, monkeypatch, caplog):
+        self._clear_ai_env(monkeypatch)
+        with caplog.at_level(logging.INFO):
+            apply_to_env(
+                AiConfig(
+                    provider="p",
+                    base_url="https://x/v1",
+                    api_key="SK-TOP-SECRET-ABC",
+                    model="m",
+                )
+            )
+        assert "SK-TOP-SECRET-ABC" not in caplog.text
 
 
 class TestKeyNotLeaked:
