@@ -133,6 +133,7 @@ def _make_app(
     opened_urls: list[str] = []
     archive_dir = tmp_path / "export" / "news-html"
     research_dir = tmp_path / "export" / "html"
+    portable_dir = tmp_path / "export" / "portable"
     export_root = tmp_path / "export"
 
     def storage_factory(path):
@@ -165,6 +166,23 @@ def _make_app(
         idx = out_dir / "index.html"
         idx.write_text(f"research {source_id}", encoding="utf-8")
         return SimpleNamespace(index_path=idx, analysis_ok=0, analysis_failed=0)
+
+    portable_calls: list[dict] = []
+
+    def portable_html_export(storage, out_path, *, source_id, limit, research_root=None):
+        out_path = Path(out_path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(f"independent {source_id} {limit}", encoding="utf-8")
+        portable_calls.append(("html", source_id, limit))
+        return SimpleNamespace(exported=limit, analyzed_ok=0, analyzed_failed=0, unanalyzed=limit)
+
+    def portable_package_export(storage, out_dir, *, source_id, limit, research_root=None):
+        out_dir = Path(out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        idx = out_dir / "index.html"
+        idx.write_text(f"pkg {source_id} {limit}", encoding="utf-8")
+        portable_calls.append(("pkg", source_id, limit))
+        return SimpleNamespace(index_path=idx, exported=limit, analyzed_ok=0, analyzed_failed=0, unanalyzed=limit)
 
     def open_url(url: str):
         opened_urls.append(url)
@@ -201,9 +219,12 @@ def _make_app(
         processor_factory=processor_factory,
         news_archive_export=archive_export,
         research_export=research_export,
+        portable_html_export=portable_html_export,
+        portable_package_export=portable_package_export,
         open_url=open_url,
         news_archive_dir=archive_dir,
         research_dir=research_dir,
+        portable_dir=portable_dir,
         export_root=export_root,
         server_factory=server_factory,
     )
@@ -214,7 +235,9 @@ def _make_app(
         "opened_urls": opened_urls,
         "archive_dir": archive_dir,
         "research_dir": research_dir,
+        "portable_dir": portable_dir,
         "export_root": export_root,
+        "portable_calls": portable_calls,
         "app": app,
     }
     return app, ctx
@@ -681,6 +704,68 @@ class TestMultiSourceResearch:
         urls = ctx["opened_urls"]
         assert len(urls) == 1
         assert "html/hkej/index.html" in urls[0]
+
+
+class TestPortableExportButtons:
+    """GUI 便携导出按钮（独立 HTML / HTML 新闻包）。"""
+
+    def test_buttons_present(self, root, tmp_path):
+        app, _ = _make_app(root, tmp_path)
+        buttons = _find_buttons(app.root, {"📦 导出独立 HTML", "📚 导出 HTML 新闻包"})
+        assert {b.cget("text") for b in buttons} == {"📦 导出独立 HTML", "📚 导出 HTML 新闻包"}
+
+    def test_independent_html_export(self, root, tmp_path):
+        app, ctx = _make_app(root, tmp_path)
+        app.export_limit_var.set("100")
+        app._on_export_independent_html()
+        assert _pump_until(app, lambda: not app._busy)
+
+        assert ctx["portable_calls"] == [("html", "eco", 100)]
+        log = _log_text(app)
+        assert "导出独立 HTML" in log
+        assert "双击即可阅读" in log
+
+    def test_portable_package_export(self, root, tmp_path):
+        app, ctx = _make_app(root, tmp_path)
+        app.export_limit_var.set("50")
+        app._on_export_portable_package()
+        assert _pump_until(app, lambda: not app._busy)
+
+        assert ctx["portable_calls"] == [("pkg", "eco", 50)]
+        log = _log_text(app)
+        assert "导出 HTML 新闻包" in log
+        assert "index.html" in log
+
+    def test_invalid_limit_rejected(self, root, tmp_path):
+        app, ctx = _make_app(root, tmp_path)
+        app.export_limit_var.set("abc")
+        app._on_export_independent_html()
+        app._on_export_portable_package()
+        assert not ctx["portable_calls"]
+        assert "无效的导出数量" in _log_text(app)
+
+    def test_error_does_not_crash(self, root, tmp_path):
+        # 覆盖 _portable_html_export 抛错：GUI 不崩溃、按钮恢复
+        app, _ = _make_app(root, tmp_path)
+
+        def boom(*a, **k):
+            raise RuntimeError("write error")
+
+        app._portable_html_export = boom
+        app.export_limit_var.set("100")
+        app._on_export_independent_html()
+        assert _pump_until(app, lambda: not app._busy)
+        assert "导出独立 HTML 失败" in _log_text(app)
+        assert str(app.portable_html_btn.cget("state")) == "normal"
+
+    def test_all_source_exports_both(self, root, tmp_path):
+        app, ctx = _make_app(root, tmp_path)
+        app.site_combo.set("all")
+        app._on_source_changed()
+        app.export_limit_var.set("100")
+        app._on_export_independent_html()
+        assert _pump_until(app, lambda: not app._busy)
+        assert ctx["portable_calls"] == [("html", "eco", 100), ("html", "hkej", 100)]
 
 
 class TestMultiSourceErrors:

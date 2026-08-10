@@ -3,7 +3,7 @@
 用法：
     news fetch [--site <id>] [--limit N] [--retry-failed]
     news list [--source <id>] [--limit N]
-    news export --format jsonl|markdown|html|news-html [--source <id>] [--article-id <id>] [--limit N]
+    news export --format jsonl|markdown|html|news-html|portable|package [--site <id>] [--article-id <id>] [--limit N]
     news status [--source <id>]
     news process [--site <id>] [--limit N] [--article-id <id>] [--retry-failed]
 """
@@ -22,6 +22,7 @@ from .config import list_available_sites, load_site_config
 from .export import export_jsonl, export_markdown
 from .html_export import export_html
 from .news_archive import export_news_archive
+from .portable import export_independent_html, export_portable_package
 from .fetch import FetcherOptions, HttpxFetcher
 from .pipeline import Pipeline
 from .storage import Storage
@@ -258,6 +259,59 @@ def cmd_export(args: argparse.Namespace) -> int:
             print(f"失败：\n{result.failed}")
             return 0
 
+        if args.format in ("portable", "package"):
+            # 便携式导出：独立 HTML / HTML 新闻包（默认输出到 data/export/portable/）
+            site = args.site or args.source
+            if not site:
+                sites = list_available_sites()
+                if len(sites) == 1:
+                    site = sites[0]
+                else:
+                    print(
+                        "便携式导出需要指定站点：--site <id>（当前可用："
+                        + ", ".join(sites)
+                        + "）",
+                        file=sys.stderr,
+                    )
+                    return 2
+            from .portable import default_independent_path, default_package_path
+
+            research_root = Path("data") / "export" / "html"
+            if args.format == "portable":
+                out = (
+                    Path(args.output)
+                    if args.output
+                    else default_independent_path(site)
+                )
+                result = export_independent_html(
+                    storage,
+                    out,
+                    source_id=site,
+                    limit=args.limit,
+                    research_root=research_root,
+                )
+                print(f"独立 HTML 导出：\n{out}")
+                print(f"共 {result.exported} 篇（已分析 {result.analyzed_ok} / 失败 {result.analyzed_failed} / 未分析 {result.unanalyzed}）")
+                print("双击该 .html 即可在没有 laxinwen 的电脑上直接阅读。")
+                return 0
+
+            out = (
+                Path(args.output)
+                if args.output
+                else default_package_path(site)
+            )
+            result = export_portable_package(
+                storage,
+                out,
+                source_id=site,
+                limit=args.limit,
+                research_root=research_root,
+            )
+            print(f"HTML 新闻包导出目录：\n{out}/")
+            print(f"共 {result.exported} 篇（已分析 {result.analyzed_ok} / 失败 {result.analyzed_failed} / 未分析 {result.unanalyzed}）")
+            print("可直接复制整个目录到其它电脑，双击 index.html 阅读。")
+            return 0
+
         if args.format == "news-html":
             # News Archive HTML：默认输出到 data/export/news-html/<site>/（阅读目录专用目录）
             site = args.site or args.source
@@ -375,13 +429,20 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common_args(p_process)
     p_process.set_defaults(func=cmd_process)
 
-    p_export = sub.add_parser("export", help="导出 JSONL / Markdown / HTML / News Archive HTML")
-    p_export.add_argument("--format", choices=["jsonl", "markdown", "html", "news-html"], required=True)
+    p_export = sub.add_parser(
+        "export",
+        help="导出 JSONL / Markdown / HTML / News Archive HTML / 便携 HTML",
+    )
+    p_export.add_argument(
+        "--format",
+        choices=["jsonl", "markdown", "html", "news-html", "portable", "package"],
+        required=True,
+    )
     p_export.add_argument("--site", help="按站点过滤（HTML / news-html 导出）")
     p_export.add_argument("--source", help="按站点过滤（兼容旧参数）")
     p_export.add_argument("--article-id", type=int, default=None, help="只导出指定文章（HTML）")
     p_export.add_argument("--limit", type=int, default=100, help="News Archive 显示最近 N 条（默认 100）")
-    p_export.add_argument("--output", default=None, help="导出目录（HTML 默认 data/export/html/，news-html 默认 data/export/news-html/<site>/）")
+    p_export.add_argument("--output", default=None, help="导出目录（HTML 默认 data/export/html/，news-html 默认 data/export/news-html/<site>/，portable/package 默认 data/export/portable/）")
     _add_common_args(p_export)
     p_export.set_defaults(func=cmd_export)
 

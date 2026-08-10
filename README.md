@@ -108,6 +108,19 @@ uv run news export --format html --site eco           # 只导出 ECO
 uv run news export --format html --article-id 1       # 只导出指定文章
 uv run news export --format html --output /tmp/out    # 指定导出目录
 
+# ---------- 便携式 HTML（独立 HTML / HTML 新闻包） ----------
+# 独立 HTML：单个 self-contained .html，CSS/JS 全内嵌，双击即可阅读，无需 laxinwen/Python/本地服务器。
+uv run news export --format portable --site eco --limit 100
+uv run news export --format portable --site eco --limit 100 --output /tmp/HKEJ-2026-08-10.html
+
+# HTML 新闻包：可复制到其它电脑的独立阅读目录（index.html + articles/NNN.html）
+uv run news export --format package --site eco --limit 100
+#   默认输出到 data/export/portable/<site>-<date>/
+#   ├── index.html
+#   └── articles/001.html ...
+
+# 所有导出的 HTML 展示时间统一为北京时间（Asia/Shanghai），24 小时制。
+
 # ---------- Windows 桌面 GUI（Laxinwen News Reader） ----------
 # 轻量级 tkinter 桌面窗口（Python 标准库，零额外依赖）
 uv run news gui
@@ -158,6 +171,9 @@ uv run news gui --site all          # 初始来源全部
 | 📖 打开新闻库 | 按当前来源导出 News Archive（`news export --format news-html --site <id> --limit N`），通过**本地 HTTP 阅读模式**用默认浏览器打开 `http://127.0.0.1:<port>/news-html/<id>/index.html`（全部→分别打开 ECO 与 HKEJ） |
 | 🤖 AI 分析 | 输入分析数量（默认 3），按当前来源复用现有 `news process --site <id>` 的 AI processing 逻辑 |
 | 📊 打开 AI 研究结果 | 按当前来源导出 `news export --format html --site <id>`，通过**本地 HTTP 阅读模式**打开 `http://127.0.0.1:<port>/html/<id>/index.html` |
+| 导出数量 | 数字输入框（默认 100），用于下方两个便携导出按钮 |
+| 📦 导出独立 HTML | 按当前来源生成**单个 self-contained HTML**（CSS/JS 全内嵌，双击即可阅读，无需 laxinwen/Python/服务器）→ `data/export/portable/<site>-<date>.html` |
+| 📚 导出 HTML 新闻包 | 按当前来源生成**可复制到其它电脑的 HTML 新闻包目录**（`index.html` + `articles/NNN.html`）→ `data/export/portable/<site>-<date>/` |
 | 日志区 | 实时显示抓取/AI/导出过程与结果（发现/重复/新增/失败），全部来源时分别显示 `[ECO]` 与 `[HKEJ]`；并明确显示 `新闻库已启动：http://127.0.0.1:<port>/...` |
 | 状态区 | 数据库路径、ECO 新闻数、HKEJ 新闻数、AI 已分析/失败、当前来源、最后操作、最后抓取时间（从现有 storage/status 读取，不硬编码） |
 
@@ -169,6 +185,8 @@ uv run news gui --site all          # 初始来源全部
 | 📖 打开新闻库 | `uv run news export --format news-html --site eco|hkej --limit N` → 浏览器打开 `http://127.0.0.1:<port>/news-html/<id>/index.html` |
 | 🤖 AI 分析 | `uv run news process --site eco|hkej --limit N`（复用现有 AI provider） |
 | 📊 打开 AI 研究结果 | `uv run news export --format html --site eco|hkej` → 浏览器打开 `http://127.0.0.1:<port>/html/<id>/index.html` |
+| 📦 导出独立 HTML | `uv run news export --format portable --site eco|hkej --limit N`（单个自包含 HTML，双击可读） |
+| 📚 导出 HTML 新闻包 | `uv run news export --format package --site eco|hkej --limit N`（index.html + articles/NNN.html） |
 
 > **本地 HTTP 阅读模式**：GUI 启动一个轻量级 localhost HTTP 静态服务器
 > （Python 标准库 `http.server`，**只监听 127.0.0.1**，端口被占用自动选择可用端口），
@@ -208,6 +226,12 @@ pipeline 出错不崩溃且按钮恢复、status 读取数据库统计、GUI 关
 | `news export --format jsonl\|markdown [--source <id>] [--output DIR]` | 导出（JSONL / Markdown） |
 | `news export --format news-html [--site <id>] [--limit N]` | 导出 News Archive HTML（最近 N 条阅读目录） |
 | `news export --format html [--site <id>] [--article-id <id>] [--output DIR]` | 导出 AI 研究结果 HTML |
+| `news export --format portable [--site <id>] [--limit N] [--output FILE]` | 导出**独立 HTML**（单个 self-contained，双击可读，无需 laxinwen/Python/服务器） |
+| `news export --format package [--site <id>] [--limit N] [--output DIR]` | 导出 **HTML 新闻包**（index.html + articles/NNN.html，可复制到其它电脑） |
+
+> **北京时间展示**：所有导出的 HTML（News Archive / AI Research / 独立 HTML / 新闻包）中的发布时间
+> 统一使用 **Asia/Shanghai（北京时间），24 小时制**。数据在 SQLite 内仍统一存 UTC（ISO 8601），
+> 仅在展示层转换为北京时间。
 
 环境变量（可选）：
 
@@ -244,6 +268,8 @@ laxinwen/
 │   ├── export.py           # JSONL / Markdown 导出
 │   ├── html_export.py      # HTML 研究结果展示层（第三阶段）
 │   ├── news_archive.py     # News Archive Daily Reader（第三+五阶段）
+│   ├── portable.py         # 便携式 HTML 导出（独立 HTML / HTML 新闻包，第七阶段）
+│   ├── beijing.py          # 北京时间（Asia/Shanghai）展示辅助（第七阶段）
 │   ├── reader_server.py    # 本地 HTTP 阅读模式（第五阶段，仅 127.0.0.1）
 │   ├── gui.py              # Windows 桌面 GUI（Laxinwen News Reader，第四+六阶段，tkinter）
 │   └── ai/                 # AI Processing Layer（第二阶段）

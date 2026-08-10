@@ -48,6 +48,8 @@ DEFAULT_DB = Path(
 # News Archive（阅读目录）与 AI Research（研究结果）导出目录
 DEFAULT_NEWS_ARCHIVE_DIR = _PROJECT_ROOT / "data" / "export" / "news-html"
 DEFAULT_RESEARCH_DIR = _PROJECT_ROOT / "data" / "export" / "html"
+# 便携式导出目录（独立 HTML / HTML 新闻包）
+DEFAULT_PORTABLE_DIR = _PROJECT_ROOT / "data" / "export" / "portable"
 
 # 本地 HTTP 阅读模式：静态根目录（同时提供 news-html/ 与 html/）
 DEFAULT_EXPORT_ROOT = _PROJECT_ROOT / "data" / "export"
@@ -73,6 +75,8 @@ _DONE_SENTINELS = {
     "__AI_DONE__": "AI 分析",
     "__ARCHIVE_DONE__": "打开新闻库",
     "__RESEARCH_DONE__": "打开 AI 研究结果",
+    "__PORTABLE_HTML_DONE__": "导出独立 HTML",
+    "__PORTABLE_PKG_DONE__": "导出 HTML 新闻包",
 }
 
 
@@ -91,9 +95,12 @@ class _NewsReaderApp:
         processor_factory=None,
         news_archive_export=None,
         research_export=None,
+        portable_html_export=None,
+        portable_package_export=None,
         open_url=None,
         news_archive_dir: str | Path = DEFAULT_NEWS_ARCHIVE_DIR,
         research_dir: str | Path = DEFAULT_RESEARCH_DIR,
+        portable_dir: str | Path = DEFAULT_PORTABLE_DIR,
         export_root: str | Path = DEFAULT_EXPORT_ROOT,
         server_factory=None,
     ):
@@ -103,6 +110,7 @@ class _NewsReaderApp:
         self.site_name = site_name or _site_display_name(site)
         self.news_archive_dir = Path(news_archive_dir)
         self.research_dir = Path(research_dir)
+        self.portable_dir = Path(portable_dir)
         self.export_root = Path(export_root)
 
         # 依赖注入（默认走真实实现；测试可替换为假实现）
@@ -114,6 +122,8 @@ class _NewsReaderApp:
         self._processor_factory = processor_factory or _default_processor_factory
         self._news_archive_export = news_archive_export or _default_news_archive_export
         self._research_export = research_export or _default_research_export
+        self._portable_html_export = portable_html_export or _default_portable_html_export
+        self._portable_package_export = portable_package_export or _default_portable_package_export
         self._open_url = open_url or _default_open_url
 
         # 后台线程 → GUI 消息队列
@@ -252,6 +262,25 @@ class _NewsReaderApp:
         )
         self.research_btn.pack(side="left", padx=(10, 0))
 
+        # ---- 便携导出卡片（独立 HTML / HTML 新闻包） ----
+        row3 = ttk.Frame(card)
+        row3.pack(fill="x", pady=(10, 0))
+
+        ttk.Label(row3, text="导出数量：").pack(side="left")
+        self.export_limit_var = tk.StringVar(value=str(_DEFAULT_LIMIT))
+        self.export_limit_entry = ttk.Entry(row3, textvariable=self.export_limit_var, width=8)
+        self.export_limit_entry.pack(side="left", padx=4)
+
+        self.portable_html_btn = ttk.Button(
+            row3, text="📦 导出独立 HTML", command=self._on_export_independent_html
+        )
+        self.portable_html_btn.pack(side="left", padx=(10, 0))
+
+        self.portable_pkg_btn = ttk.Button(
+            row3, text="📚 导出 HTML 新闻包", command=self._on_export_portable_package
+        )
+        self.portable_pkg_btn.pack(side="left", padx=(10, 0))
+
         # ---- 状态卡片 ----
         self.status_card = ttk.LabelFrame(outer, text="状态", padding=10)
         self.status_card.pack(fill="x", pady=(10, 0))
@@ -354,8 +383,10 @@ class _NewsReaderApp:
         self.export_btn.configure(state=state)
         self.ai_btn.configure(state=state)
         self.research_btn.configure(state=state)
+        self.portable_html_btn.configure(state=state)
+        self.portable_pkg_btn.configure(state=state)
         self.site_combo.configure(state="disabled" if busy else "readonly")
-        for e in (self.limit_entry, self.ai_limit_entry):
+        for e in (self.limit_entry, self.ai_limit_entry, self.export_limit_entry):
             e.configure(state=state)
         if busy:
             self._active_source = self.site_var.get()
@@ -521,6 +552,46 @@ class _NewsReaderApp:
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def _on_export_independent_html(self) -> None:
+        """【📦 导出独立 HTML】—— 生成单个 self-contained HTML 文件。"""
+        if self._busy:
+            self.log("已有任务运行中，请等待完成。")
+            return
+        limit = self._parse_limit(self.export_limit_var.get(), what="导出")
+        if limit is None:
+            return
+        self._set_busy(True, run="导出独立 HTML")
+
+        def worker() -> None:
+            try:
+                self._run_export_independent_html(limit)
+            except Exception as exc:
+                self._bg_log(f"导出独立 HTML 失败：\n{exc}")
+            finally:
+                self._queue.put("__PORTABLE_HTML_DONE__")
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_export_portable_package(self) -> None:
+        """【📚 导出 HTML 新闻包】—— 生成可复制的独立 HTML 新闻包目录。"""
+        if self._busy:
+            self.log("已有任务运行中，请等待完成。")
+            return
+        limit = self._parse_limit(self.export_limit_var.get(), what="导出")
+        if limit is None:
+            return
+        self._set_busy(True, run="导出 HTML 新闻包")
+
+        def worker() -> None:
+            try:
+                self._run_export_portable_package(limit)
+            except Exception as exc:
+                self._bg_log(f"导出 HTML 新闻包失败：\n{exc}")
+            finally:
+                self._queue.put("__PORTABLE_PKG_DONE__")
+
+        threading.Thread(target=worker, daemon=True).start()
+
     def _bg_log(self, msg: str) -> None:
         """后台线程安全地追加日志。"""
         self._queue.put(msg)
@@ -630,6 +701,51 @@ class _NewsReaderApp:
                 self._bg_log(f"{self._source_display(sid)} AI 研究结果已启动：\n{url}")
                 self._open_url(url)
 
+    def _run_export_independent_html(self, limit: int) -> None:
+        """导出独立 HTML（单个 self-contained 文件，双击可读，无需 laxinwen）。"""
+        site_ids = self._selected_site_ids()
+        research_root = self.research_dir
+        with self._storage_factory(self.db_path) as storage:
+            for sid in site_ids:
+                out_path = self.portable_dir / f"{sid}-{datetime.now().strftime('%Y-%m-%d')}.html"
+                self._bg_log(
+                    f"正在导出 {self._source_display(sid)} 独立 HTML（最近 {limit} 篇）→ {out_path}"
+                )
+                result = self._portable_html_export(
+                    storage, out_path, source_id=sid, limit=limit, research_root=research_root
+                )
+                if not out_path.exists():
+                    raise FileNotFoundError(f"独立 HTML 未生成：{out_path}")
+                self._bg_log(
+                    f"{self._source_display(sid)} 独立 HTML 导出完成：{result.exported} 篇"
+                    f"（已分析 {result.analyzed_ok} / 失败 {result.analyzed_failed} / 未分析 {result.unanalyzed}）"
+                )
+                self._bg_log(f"📦 独立 HTML 文件：\n{out_path}")
+                self._bg_log("可复制到没有 laxinwen 的电脑，双击即可阅读。")
+
+    def _run_export_portable_package(self, limit: int) -> None:
+        """导出 HTML 新闻包（可整体复制到其它电脑的独立阅读目录）。"""
+        site_ids = self._selected_site_ids()
+        research_root = self.research_dir
+        with self._storage_factory(self.db_path) as storage:
+            for sid in site_ids:
+                out_dir = self.portable_dir / f"{sid}-{datetime.now().strftime('%Y-%m-%d')}"
+                self._bg_log(
+                    f"正在导出 {self._source_display(sid)} HTML 新闻包（最近 {limit} 篇）→ {out_dir}"
+                )
+                result = self._portable_package_export(
+                    storage, out_dir, source_id=sid, limit=limit, research_root=research_root
+                )
+                index = result.index_path or out_dir / "index.html"
+                if not index.exists():
+                    raise FileNotFoundError(f"HTML 新闻包未生成：{index}")
+                self._bg_log(
+                    f"{self._source_display(sid)} HTML 新闻包导出完成：{result.exported} 篇"
+                    f"（已分析 {result.analyzed_ok} / 失败 {result.analyzed_failed} / 未分析 {result.unanalyzed}）"
+                )
+                self._bg_log(f"📚 HTML 新闻包目录：\n{out_dir}")
+                self._bg_log("可复制整个目录到其它电脑，双击 index.html 阅读。")
+
 
 # ---------- 默认实现（真实逻辑；测试可注入假实现） ----------
 
@@ -667,6 +783,22 @@ def _default_research_export(storage, out_dir, *, source_id):
     from .html_export import export_html
 
     return export_html(storage, out_dir, source_id=source_id)
+
+
+def _default_portable_html_export(storage, out_path, *, source_id, limit, research_root=None):
+    from .portable import export_independent_html
+
+    return export_independent_html(
+        storage, out_path, source_id=source_id, limit=limit, research_root=research_root
+    )
+
+
+def _default_portable_package_export(storage, out_dir, *, source_id, limit, research_root=None):
+    from .portable import export_portable_package
+
+    return export_portable_package(
+        storage, out_dir, source_id=source_id, limit=limit, research_root=research_root
+    )
 
 
 def _default_open_url(url: str) -> None:

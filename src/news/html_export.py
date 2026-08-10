@@ -39,6 +39,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from .beijing import fmt_date as _bj_fmt_date, fmt_dt as _bj_fmt_dt
 from .storage import Storage
 
 logger = logging.getLogger(__name__)
@@ -98,29 +99,21 @@ def _e(value: Any) -> str:
 
 
 def _fmt_dt(value: Any) -> str:
-    """把 ISO 时间字符串格式化为易读的 UTC 日期时间；空值返回 '—'。"""
+    """把 ISO 时间字符串格式化为北京时间（Asia/Shanghai）YYYY-MM-DD HH:MM（24 小时制）；空值返回 '—'。"""
     if not value:
         return "—"
     try:
-        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        dt = dt.astimezone(timezone.utc)
-        return dt.strftime("%Y-%m-%d %H:%M UTC")
+        return _bj_fmt_dt(value)
     except (ValueError, TypeError):
         return _e(value)
 
 
 def _fmt_date(value: Any) -> str:
-    """把 ISO 时间字符串格式化为 YYYY-MM-DD；空值返回 '—'。"""
+    """把 ISO 时间字符串格式化为北京时间 YYYY-MM-DD；空值返回 '—'。"""
     if not value:
         return "—"
     try:
-        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        dt = dt.astimezone(timezone.utc)
-        return dt.strftime("%Y-%m-%d")
+        return _bj_fmt_date(value)
     except (ValueError, TypeError):
         return _e(value)
 

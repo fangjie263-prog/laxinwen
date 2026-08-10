@@ -38,6 +38,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from .beijing import fmt_date as _bj_fmt_date, fmt_dt as _bj_fmt_dt
 from .storage import Storage
 
 logger = logging.getLogger(__name__)
@@ -88,19 +89,13 @@ def _parse_datetime(value: Any) -> Optional[datetime]:
 
 
 def _fmt_dt(value: Any) -> str:
-    """把 ISO 时间字符串格式化为 YYYY-MM-DD HH:MM（UTC）；空值返回 '—'。"""
-    dt = _parse_datetime(value)
-    if dt is None:
-        return "—"
-    return dt.strftime("%Y-%m-%d %H:%M")
+    """把 ISO 时间字符串格式化为北京时间（Asia/Shanghai）YYYY-MM-DD HH:MM（24 小时制）；空值返回 '—'。"""
+    return _bj_fmt_dt(value)
 
 
 def _fmt_date(value: Any) -> str:
-    """把 ISO 时间字符串格式化为 YYYY-MM-DD；空值返回 '—'。"""
-    dt = _parse_datetime(value)
-    if dt is None:
-        return "—"
-    return dt.strftime("%Y-%m-%d")
+    """把 ISO 时间字符串格式化为北京时间 YYYY-MM-DD；空值返回 '—'。"""
+    return _bj_fmt_date(value)
 
 
 def _load_json(value: Any, default: Any = None) -> Any:
@@ -871,10 +866,10 @@ def render_reader_index_html(
 
   <header class="masthead">
     <h1>{_e(source_name)} News — Daily Reader</h1>
-    <p class="date">{generated_at.strftime('%Y-%m-%d')}</p>
+    <p class="date">{_bj_fmt_date(generated_at)}</p>
     <p class="count">{total} articles · {_e(source_name)}</p>
     <p class="sub">
-      最近 {total} 条 · 按发布日期倒序 · 更新时间 {generated_at.strftime('%Y-%m-%d %H:%M UTC')}
+      最近 {total} 条 · 按发布日期倒序 · 更新时间 {_bj_fmt_dt(generated_at)}（北京时间）
       <br>{stats_line}
     </p>
   </header>
