@@ -52,3 +52,13 @@ class SourceAdapter(ABC):
         返回 None 表示使用默认请求头。
         """
         return None
+
+    def extract_article(self, article, html: str, url: str = "") -> bool:
+        """站点特有 HTML fallback 正文提取（可选覆盖）。
+
+        默认不处理（返回 False），由 pipeline 走通用 Trafilatura 提取。
+        需要站点特有正文解析（如 RFI 的 ``.t-content__body``）时覆盖此方法，
+        直接回填 ``article.body_html`` / ``article.body_text`` 等字段，
+        并返回 True 表示已处理。
+        """
+        return False

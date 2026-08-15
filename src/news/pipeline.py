@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from .config import load_site_config
-from .discover import discover_for_site
+from .discover import discover_for_site, has_usable_content
 from .extract import apply_extraction_to_article
 from .fetch import FetcherOptions, HttpxFetcher
 from .model import Article, utcnow
@@ -76,6 +76,7 @@ class Pipeline:
 
         # 站点 adapter（HKEJ 等）可提供自定义请求头（浏览器 UA 等）
         custom_headers: dict | None = None
+        adapter = None
         if cfg.get("adapter"):
             from .sources import get_adapter
 
@@ -97,6 +98,7 @@ class Pipeline:
             site_extract,
             title_suffixes,
             fetch_headers=custom_headers,
+            adapter=adapter,
         )
         ingest.discovered = len(items)
         return ingest
@@ -110,10 +112,16 @@ class Pipeline:
         site_extract: dict | None,
         title_suffixes: list[str],
         fetch_headers: dict | None = None,
+        adapter=None,
     ) -> FetchStats:
         """处理一批已发现条目：去重 → 下载 → 提取 → 入库。
 
         独立成方法便于测试注入离线抓取器。
+
+        新增 discovery content short-circuit：若 RSS 条目已带完整正文
+        （``has_usable_content(item.content_html)`` 为 True），直接用它作为
+        正文，跳过 ``fetcher.fetch()`` 与 ``extract()``（0 次额外请求）；
+        否则照常 fetch 原文 URL + extract（含站点 adapter 的 HTML fallback）。
         """
         stats = FetchStats()
         site_extract = site_extract or {}
@@ -145,6 +153,27 @@ class Pipeline:
 
             # 3. 下载正文
             fetched_at = utcnow()
+
+            # --- discovery content short-circuit ---
+            # RSS 已带完整正文（content_html）时，直接作为正文，跳过 fetch + extract
+            if has_usable_content(item.content_html):
+                from .discover import html_to_text
+
+                article.body_html = item.content_html
+                article.body_text = html_to_text(item.content_html)
+                article.fetched_at = fetched_at
+                article.status = "fetched"
+                stats.fetched_ok += 1
+                stats.extracted_ok += 1
+                self._update_body(
+                    article_id, article, source_id, stats, logger
+                )
+                logger.info(
+                    "[%s] 入库成功 #%d  %s（RSS 完整正文，0 fetch）",
+                    source_id, article_id, article.title[:60],
+                )
+                continue
+
             try:
                 if fetch_headers:
                     html = self.fetcher.fetch(canon, headers=fetch_headers)
@@ -163,7 +192,10 @@ class Pipeline:
 
             # 4. 正文提取
             try:
-                if fetch_headers:
+                # 站点 adapter 的 HTML fallback 优先（RFI .t-content__body 等）
+                if adapter is not None and adapter.extract_article(article, html, url=canon):
+                    pass  # adapter 已回填 body_html/body_text 等
+                elif fetch_headers:
                     # 站点 adapter（HKEJ）用 ResearchReader 已验证的解析逻辑
                     from .extract import apply_site_adapter_extraction
 
@@ -182,24 +214,28 @@ class Pipeline:
                 continue
 
             # 5. 回填
-            self.storage.update_article_body(
-                article_id,
-                title=article.title,
-                authors=article.authors,
-                body_text=article.body_text,
-                body_html=article.body_html,
-                images=article.images,
-                lead_image=article.lead_image,
-                published_at=article.published_at,
-                fetched_at=article.fetched_at,
-                language=article.language,
-                status=article.status,
-            )
+            self._update_body(article_id, article, source_id, stats, logger)
             logger.info(
                 "[%s] 入库成功 #%d  %s", source_id, article_id, article.title[:60]
             )
 
         return stats
+
+    def _update_body(self, article_id, article, source_id, stats, logger):
+        """把已提取的正文回填到数据库（供 short-circuit / 普通路径复用）。"""
+        self.storage.update_article_body(
+            article_id,
+            title=article.title,
+            authors=article.authors,
+            body_text=article.body_text,
+            body_html=article.body_html,
+            images=article.images,
+            lead_image=article.lead_image,
+            published_at=article.published_at,
+            fetched_at=article.fetched_at,
+            language=article.language,
+            status=article.status,
+        )
 
     # ---------- 重试失败项 ----------
 

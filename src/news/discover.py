@@ -26,6 +26,37 @@ from .normalize import canonicalize_url
 
 logger = logging.getLogger(__name__)
 
+# discovery content short-circuit 阈值：content_html 纯文本长度低于该值
+# 视为“导语/摘要”而非“完整正文”，必须走原文 URL 的 HTML fallback。
+# 150 字大致是“一句导语”的上限，真实文章正文通常远高于此。
+_MIN_USABLE_CONTENT_CHARS = 150
+
+
+def html_to_text(html: str) -> str:
+    """把 HTML 片段转为纯文本（去标签、折叠空白）。"""
+    if not html:
+        return ""
+    text = re.sub(r"<[^>]+>", "", html)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def has_usable_content(content_html: Optional[str]) -> bool:
+    """判断 RSS 条目自带的 ``content_html`` 是否可作为完整正文。
+
+    discovery content short-circuit 依据：
+
+    - ``content_html`` 为 None / 空 → False（无正文）；
+    - ``content_html`` 只有非常短的摘要/导语（纯文本 < 阈值）→ False；
+    - ``content_html`` 有足量正文 → True。
+
+    返回 True 时 pipeline 跳过 ``fetcher.fetch()`` 与 ``extract()``，直接用
+    该 content_html 作为正文；返回 False 时必须 fetch 原文 URL + extract。
+    保持简单：仅依据长度判断，不解析具体站点结构。
+    """
+    if not content_html:
+        return False
+    return len(html_to_text(content_html)) >= _MIN_USABLE_CONTENT_CHARS
+
 
 @dataclass
 class DiscoveredItem:

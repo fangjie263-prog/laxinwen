@@ -1,0 +1,33 @@
+# RFI – 法广中文（Radio France Internationale 中文）
+# 使用 Source Adapter（src/news/sources/rfi.py）。
+# 发现流程：官方 RSS → RSSHub 回退；RSSHub 只给导语时由 adapter 走 HTML fallback
+# （.t-content__chapo + .t-content__body 提取完整正文）。
+#
+# RFI 特有的 RSS/RSSHub URL 与 HTML 正文选择器集中在 RfiAdapter 内，
+# 本配置只声明使用哪个 adapter，与 hkej.yaml 的用法保持一致。
+
+id: rfi
+name: RFI 法广中文 - 法国国际广播电台
+language: zh
+
+# 指定使用 rfi Source Adapter（ECO 等未声明 adapter 的站点继续走通用 discover）
+adapter: rfi
+
+# 官方 RSS / RSSHub URL 由 RfiAdapter 内部管理（RFI 特有逻辑集中在 adapter）
+rss: null
+rsshub: null
+
+# 列表页（RFI 走 RSS/RSSHub + HTML fallback，不使用通用栏目页发现）
+lists: []
+
+# 无需 JS（普通 HTTP 即可取得正文与列表）
+requires_js: false
+
+# Trafilatura 提取参数（作为 HTML fallback 未命中正文容器时的兜底）
+extract:
+  favor_recall: true
+
+title_suffixes:
+  - " - RFI"
+  - " - 法广"
+  - " - RFI - 法国国际广播电台"

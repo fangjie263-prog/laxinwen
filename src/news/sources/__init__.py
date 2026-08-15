@@ -8,6 +8,8 @@
 - ``hkej``：HKEJ 信報財經新聞 —— 复用 ResearchReader 已验证的列表页
   抓取（LINK_RE / 分页）与标题 fallback（h1 → og:title → title）、
   正文（article-content）解析逻辑。
+- ``rfi``：RFI（法广中文）—— 官方 RSS → RSSHub 回退 + HTML fallback
+  （``.t-content__chapo`` + ``.t-content__body`` 正文提取）。
 """
 
 from __future__ import annotations
@@ -36,9 +38,13 @@ def get_adapter(site_cfg: dict) -> Optional[SourceAdapter]:
         from .hkej import HkejAdapter
 
         return HkejAdapter(source_id, source_name)
+    if name == "rfi":
+        from .rfi import RfiAdapter
+
+        return RfiAdapter(source_id, source_name)
     raise ValueError(
         f"未知的 source adapter: {name!r}（站点 {source_id!r}）。"
-        f"可用 adapter：hkej"
+        f"可用 adapter：hkej、rfi"
     )
 
 
