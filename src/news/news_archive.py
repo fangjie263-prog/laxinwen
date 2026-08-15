@@ -704,12 +704,19 @@ def render_article_section(
     authors: list[str],
     published_at: Any,
     canonical_url: str,
-    body_text: str,
+    body_text: str = "",
+    body_html: Optional[str] = None,
     ai_status: str,
     analysis: dict[str, Any],
     research_rel: str = "",
 ) -> str:
-    """渲染一篇新闻为连续阅读的 ``<section id="article-N">``。"""
+    """渲染一篇新闻为连续阅读的 ``<section id="article-N">``。
+
+    正文优先级：
+    - ``body_html`` 存在 → 直接作为 HTML 渲染（保留段落/图片等格式）；
+    - ``body_html`` 不存在 → 回退到 ``body_text``（HTML escape 后渲染）。
+    ECO/HKEJ 只存 ``body_text`` 时行为不变。
+    """
     n = index  # article-N 的 N 为目录序号（1 起），保证锚点可读
     dt = _fmt_dt(published_at)
     author_str = ", ".join(authors) if authors else ""
@@ -735,11 +742,13 @@ def render_article_section(
     else:
         ai_block = _render_ai_note(ai_status)
 
-    # 原文正文
-    if body_text and body_text.strip():
-        body_html = f'<div class="original-body">{_e(body_text)}</div>'
+    # 原文正文：body_html 存在则直接 HTML 渲染；否则 fallback 到 body_text
+    if body_html and body_html.strip():
+        body_render = f'<div class="original-body">{body_html}</div>'
+    elif body_text and body_text.strip():
+        body_render = f'<div class="original-body">{_e(body_text)}</div>'
     else:
-        body_html = '<p class="empty-body">（暂无原文正文）</p>'
+        body_render = '<p class="empty-body">（暂无原文正文）</p>'
 
     # 链接
     links: list[str] = [
@@ -755,7 +764,7 @@ def render_article_section(
   {head}
   {meta}
   {ai_block}
-  {body_html}
+  {body_render}
   {links_html}
 </section>"""
 
@@ -831,6 +840,7 @@ def render_reader_index_html(
                 ),
                 canonical_url=r["canonical_url"] or "",
                 body_text=r["body_text"] or "",
+                body_html=r.get("body_html") or "",
                 ai_status=status,
                 analysis=analysis_by_article.get(article_id, {}),
                 research_rel=research_rel_by_article.get(article_id, ""),
@@ -904,7 +914,8 @@ def render_article_page(
     authors: list[str],
     published_at: Any,
     canonical_url: str,
-    body_text: str,
+    body_text: str = "",
+    body_html: Optional[str] = None,
     ai_status: str,
     analysis: dict[str, Any],
     index_rel: str = "index.html",
@@ -980,11 +991,13 @@ def render_article_page(
   {_render_ai_note(ai_status)}
 """
 
-    body_html = ""
-    if body_text and body_text.strip():
-        body_html = f'<div class="original-body">{_e(body_text)}</div>'
+    body_render = ""
+    if body_html and body_html.strip():
+        body_render = f'<div class="original-body">{body_html}</div>'
+    elif body_text and body_text.strip():
+        body_render = f'<div class="original-body">{_e(body_text)}</div>'
     else:
-        body_html = '<p class="empty-body">（暂无原文正文）</p>'
+        body_render = '<p class="empty-body">（暂无原文正文）</p>'
 
     research_link = ""
     if has_ai and research_rel:
@@ -1047,7 +1060,7 @@ def render_article_page(
   {ai_section}
 
   <h2 class="section-title">原文正文</h2>
-  {body_html}
+  {body_render}
 
   <div class="footer">
     由 laxinwen 生成 · News Archive（最近 N 条新闻阅读目录）·
@@ -1259,6 +1272,7 @@ def _export_one_article(
         published_at=published,
         canonical_url=row["canonical_url"] or "",
         body_text=row["body_text"] or "",
+        body_html=row["body_html"] or "",
         ai_status=status,
         analysis=analysis,
         index_rel="../../index.html",

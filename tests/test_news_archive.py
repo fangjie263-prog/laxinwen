@@ -285,3 +285,177 @@ class TestSlugify:
     def test_illegal_windows_chars_removed(self):
         assert "<" not in slugify("a<b>c:d")
         assert ":" not in slugify("a<b>c:d")
+
+
+class TestBodyHtmlPriority:
+    """HTML Reader 正文优先级：body_html → body_text fallback。"""
+
+    def _add_article(self, storage, *, source_id="eco", title="Test", body_text="", body_html=None):
+        art = Article(
+            source_id=source_id,
+            source_name=source_id.upper(),
+            canonical_url=f"https://{source_id}.example.com/{title}/",
+            title=title,
+            body_text=body_text,
+            body_html=body_html,
+            published_at=datetime(2026, 8, 8, 12, 0, 0, tzinfo=timezone.utc),
+            status="fetched",
+        )
+        storage.insert_article(art)
+
+    def test_body_html_rendered_as_html(self, tmp_path):
+        """body_html 存在时直接作为 HTML 渲染（段落保留，不 escape）。"""
+        s = Storage(tmp_path / "body_html.db")
+        try:
+            html_content = (
+                '<p>第一段<strong>加粗</strong>文字</p>'
+                '<p>第二段包含 <a href="https://rfi.fr">链接</a></p>'
+            )
+            self._add_article(
+                s, source_id="rfi", title="RFI test",
+                body_text="plain text", body_html=html_content,
+            )
+            res = export_news_archive(s, tmp_path / "na", source_id="rfi", limit=10)
+            idx = (tmp_path / "na" / "index.html").read_text(encoding="utf-8")
+            # body_html 保留 HTML 标签（不被 escape）
+            assert '<p>第一段<strong>加粗</strong>文字</p>' in idx
+            assert "&lt;p&gt;第一段" not in idx
+            # body_text 不出现（body_html 优先）
+            assert "plain text" not in idx
+        finally:
+            s.close()
+
+    def test_body_html_missing_falls_back_to_body_text(self, tmp_path):
+        """body_html 缺失时 fallback 到 body_text（escape 后渲染）。"""
+        s = Storage(tmp_path / "fallback.db")
+        try:
+            self._add_article(
+                s, source_id="eco", title="ECO test",
+                body_text="eco <b>bold</b> text", body_html=None,
+            )
+            res = export_news_archive(s, tmp_path / "na", source_id="eco", limit=10)
+            idx = (tmp_path / "na" / "index.html").read_text(encoding="utf-8")
+            # body_text 被 escape 后渲染
+            assert "eco &lt;b&gt;bold&lt;/b&gt; text" in idx
+            # 原始 HTML 不应出现
+            assert "eco <b>bold</b> text" not in idx
+        finally:
+            s.close()
+
+    def test_eco_hkej_regression_body_text_still_works(self, tmp_path):
+        """ECO/HKEJ 无 body_html 时 body_text 行为保持不变。"""
+        s = Storage(tmp_path / "regression.db")
+        try:
+            self._add_article(
+                s, source_id="eco", title="ECO News",
+                body_text="ECO 葡萄牙经济正文", body_html=None,
+            )
+            self._add_article(
+                s, source_id="hkej", title="HKEJ News",
+                body_text="HKEJ 香港经济正文", body_html=None,
+            )
+            export_news_archive(s, tmp_path / "na-eco", source_id="eco", limit=10)
+            export_news_archive(s, tmp_path / "na-hkej", source_id="hkej", limit=10)
+            eco_idx = (tmp_path / "na-eco" / "index.html").read_text(encoding="utf-8")
+            hkej_idx = (tmp_path / "na-hkej" / "index.html").read_text(encoding="utf-8")
+            assert "ECO 葡萄牙经济正文" in eco_idx
+            assert "HKEJ 香港经济正文" in hkej_idx
+        finally:
+            s.close()
+
+    def test_rfi_news_archive_export(self, tmp_path):
+        """RFI News Archive 可以导出（直接读 SQLite source_id='rfi'）。"""
+        s = Storage(tmp_path / "rfi_na.db")
+        try:
+            html_content = '<p>法广中文正文内容</p>'
+            self._add_article(
+                s, source_id="rfi", title="法广测试文章",
+                body_text="法广纯文本", body_html=html_content,
+            )
+            res = export_news_archive(s, tmp_path / "na-rfi", source_id="rfi", limit=10)
+            assert res.exported == 1
+            idx = (tmp_path / "na-rfi" / "index.html").read_text(encoding="utf-8")
+            assert "法广中文正文内容" in idx
+            assert "法广纯文本" not in idx  # body_html 优先
+            # 单篇页同样使用 body_html
+            pages = list((tmp_path / "na-rfi").rglob("*.html"))
+            assert len(pages) == 2  # index + 1 article
+            for p in pages:
+                if p.name != "index.html":
+                    content = p.read_text(encoding="utf-8")
+                    assert "法广中文正文内容" in content
+        finally:
+            s.close()
+
+    def test_render_article_section_body_html_priority(self):
+        """render_article_section 连续阅读 section body_html 优先。"""
+        from news.news_archive import render_article_section
+
+        html = render_article_section(
+            index=1,
+            article_id=1,
+            title="RFI Article",
+            source_name="RFI",
+            authors=[],
+            published_at=None,
+            canonical_url="",
+            body_text="fallback text",
+            body_html="<p>HTML <em>body</em></p>",
+            ai_status="none",
+            analysis={},
+        )
+        assert "<p>HTML <em>body</em></p>" in html
+        assert "fallback text" not in html
+
+    def test_render_article_section_fallback_to_body_text(self):
+        """render_article_section 无 body_html 时 fallback 到 body_text。"""
+        from news.news_archive import render_article_section
+
+        html = render_article_section(
+            index=1,
+            article_id=1,
+            title="ECO Article",
+            source_name="ECO",
+            authors=[],
+            published_at=None,
+            canonical_url="",
+            body_text="ECO plain text",
+            body_html=None,
+            ai_status="none",
+            analysis={},
+        )
+        assert "ECO plain text" in html
+
+    def test_render_article_page_body_html_priority(self):
+        """render_article_page 单篇页 body_html 优先。"""
+        html = render_article_page(
+            article_id=1,
+            title="RFI Article",
+            source_name="RFI",
+            authors=[],
+            published_at="2026-08-08T12:00:00+00:00",
+            canonical_url="https://rfi.fr/cn/1",
+            body_text="fallback text",
+            body_html='<p>HTML <strong>正文</strong></p>',
+            ai_status="none",
+            analysis={},
+        )
+        assert '<p>HTML <strong>正文</strong></p>' in html
+        assert "fallback text" not in html
+
+    def test_render_article_page_fallback_to_body_text(self):
+        """render_article_page 无 body_html 时 fallback 到 body_text。"""
+        html = render_article_page(
+            article_id=1,
+            title="ECO Article",
+            source_name="ECO",
+            authors=[],
+            published_at="2026-08-08T12:00:00+00:00",
+            canonical_url="https://eco.sapo.pt/1",
+            body_text="ECO body text",
+            body_html=None,
+            ai_status="none",
+            analysis={},
+        )
+        assert "ECO body text" in html
+        assert "&lt;p&gt;" not in html

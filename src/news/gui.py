@@ -64,10 +64,11 @@ _APP_TITLE = "Laxinwen News Reader"
 _SOURCE_OPTIONS = (
     ("eco", "ECO"),
     ("hkej", "HKEJ"),
+    ("rfi", "RFI"),
     ("all", "全部"),
 )
 # 全部来源实际对应的站点 id（顺序保持：ECO 在前）
-_ALL_SOURCE_IDS = ("eco", "hkej")
+_ALL_SOURCE_IDS = ("eco", "hkej", "rfi")
 
 # 后台线程完成哨兵 → 恢复提示文案
 _DONE_SENTINELS = {
@@ -193,10 +194,12 @@ class _NewsReaderApp:
             return _ALL_SOURCE_IDS
         if selection == "hkej":
             return ("hkej",)
+        if selection == "rfi":
+            return ("rfi",)
         return ("eco",)
 
     def _selected_site_ids(self) -> tuple[str, ...]:
-        """返回当前来源对应的站点 id 列表（全部 → (eco, hkej)）。"""
+        """返回当前来源对应的站点 id 列表（全部 → (eco, hkej, rfi)）。"""
         return self._site_ids_for(self.site_var.get())
 
     def _source_display(self, site_id: str) -> str:
@@ -321,7 +324,7 @@ class _NewsReaderApp:
         grid = ttk.Frame(self.status_card)
         grid.pack(fill="x")
         for i, key in enumerate(
-            ("db", "eco_count", "hkej_count", "ai_ok", "ai_failed",
+            ("db", "eco_count", "hkej_count", "rfi_count", "ai_ok", "ai_failed",
              "ai_status", "current_source", "last_action", "last_fetch")
         ):
             lbl = ttk.Label(grid, text="")
@@ -500,6 +503,7 @@ class _NewsReaderApp:
             with self._storage_factory(self.db_path) as storage:
                 eco_count = storage.count(source_id="eco")
                 hkej_count = storage.count(source_id="hkej")
+                rfi_count = storage.count(source_id="rfi")
                 self._last_fetch_at = self._read_last_fetch_at(storage, site_ids)
                 self._analysis_status = self._read_analysis_status(storage, site_ids)
         except Exception as exc:
@@ -513,6 +517,7 @@ class _NewsReaderApp:
             "db": f"数据库：{self.db_path}",
             "eco_count": f"ECO 新闻：{eco_count}",
             "hkej_count": f"HKEJ 新闻：{hkej_count}",
+            "rfi_count": f"RFI 新闻：{rfi_count}",
             "ai_ok": f"AI 已分析：{ai_ok}",
             "ai_failed": f"AI 失败：{ai_failed}",
             "ai_status": f"AI 状态：{self._ai_status_label()}",
@@ -714,6 +719,16 @@ class _NewsReaderApp:
             pipeline = self._pipeline_factory(storage, limit)
             try:
                 for sid in site_ids:
+                    # RFI 抓取在 Phase 4 CLI 完成，GUI 不访问 RFI/RSSHub。
+                    # GUI 仅从 SQLite 读取已有 RFI 数据（source_id='rfi'）。
+                    if sid == "rfi":
+                        rfi_count = storage.count(source_id="rfi")
+                        self._bg_log(
+                            f"{self._sep}\n"
+                            f"[RFI] GUI 不直接抓取 RFI/RSSHub（Phase 4 CLI 已抓取入库）\n"
+                            f"[RFI] 数据库现有 RFI 文章：{rfi_count} 篇"
+                        )
+                        continue
                     stats = pipeline.run_site(sid)
                     s = stats
                     self._bg_log(

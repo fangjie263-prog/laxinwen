@@ -365,7 +365,7 @@ class TestBasics:
     def test_site_combobox_has_all_sources(self, root, tmp_path):
         app, _ = _make_app(root, tmp_path)
         assert app.site_var.get() == "eco"
-        assert app.site_combo["values"] == ("eco", "hkej", "all")
+        assert app.site_combo["values"] == ("eco", "hkej", "rfi", "all")
 
     def test_source_switch_reflects_selection(self, root, tmp_path):
         app, _ = _make_app(root, tmp_path)
@@ -374,10 +374,15 @@ class TestBasics:
         app._on_source_changed()
         assert app._selected_site_ids() == ("hkej",)
         assert "当前来源：HKEJ" in app.status_labels["current_source"].cget("text")
+        # 切换到 RFI
+        app.site_combo.set("rfi")
+        app._on_source_changed()
+        assert app._selected_site_ids() == ("rfi",)
+        assert "当前来源：RFI" in app.status_labels["current_source"].cget("text")
         # 切换到全部
         app.site_combo.set("all")
         app._on_source_changed()
-        assert app._selected_site_ids() == ("eco", "hkej")
+        assert app._selected_site_ids() == ("eco", "hkej", "rfi")
         assert "当前来源：全部" in app.status_labels["current_source"].cget("text")
 
     def test_invalid_limit_cannot_run(self, root, tmp_path):
@@ -659,15 +664,19 @@ class TestMultiSourceFetch:
         pipe = ctx["pipeline_calls"][0]
         assert pipe.limit == 50
 
-    def test_all_50_calls_both_sites(self, root, tmp_path):
+    def test_all_50_calls_all_sites(self, root, tmp_path):
+        """全部 → (eco, hkej, rfi)；RFI 不调用 pipeline（GUI 不抓 RFI/RSSHub）。"""
         app, ctx = _make_app(root, tmp_path)
         calls = self._run_fetch_for_source(app, ctx, "all", 50)
+        # RFI 不触发 pipeline.run_site，仅 eco/hkej 调用
         assert calls == [[("run_site", "eco"), ("run_site", "hkej")]]
         pipe = ctx["pipeline_calls"][0]
         assert pipe.limit == 50
         log = _log_text(app)
         assert "[ECO] 发现" in log
         assert "[HKEJ] 发现" in log
+        # RFI 日志显示从 SQLite 读取
+        assert "RFI" in log
 
     def test_all_50_logs_both_sources(self, root, tmp_path):
         app, ctx = _make_app(
@@ -677,6 +686,20 @@ class TestMultiSourceFetch:
         log = _log_text(app)
         assert "[ECO]" in log and "[HKEJ]" in log
         assert "发现：50" in log
+
+    def test_rfi_selected_does_not_fetch(self, root, tmp_path):
+        """RFI 来源：GUI 不调用 pipeline 抓 RFI/RSSHub，仅从 SQLite 读取。"""
+        app, ctx = _make_app(root, tmp_path)
+        app.site_combo.set("rfi")
+        app._on_source_changed()
+        app.limit_var.set("50")
+        app._on_fetch()
+        assert _pump_until(app, lambda: not app._busy)
+        # 不创建 pipeline，不调用 run_site
+        assert len(ctx["pipeline_calls"]) == 0
+        log = _log_text(app)
+        assert "RFI" in log
+        assert "SQLite" in log or "数据库" in log
 
     def test_custom_limit_input(self, root, tmp_path):
         """允许任意正整数（如 20 / 500）并做基本校验。"""
@@ -724,12 +747,22 @@ class TestMultiSourceNewsArchive:
         assert "file://" not in urls[0]
         assert (ctx["archive_dir"] / "hkej" / "index.html").exists()
 
-    def test_all_opens_both_archives(self, root, tmp_path):
+    def test_all_opens_all_archives(self, root, tmp_path):
         app, ctx = _make_app(root, tmp_path)
         urls = self._open_archive(app, ctx, "all")
-        assert len(urls) == 2
+        assert len(urls) == 3
         assert any("news-html/eco/index.html" in u for u in urls)
         assert any("news-html/hkej/index.html" in u for u in urls)
+        assert any("news-html/rfi/index.html" in u for u in urls)
+
+    def test_rfi_opens_rfi_archive(self, root, tmp_path):
+        """RFI 来源：News Archive 从 SQLite 读取并导出。"""
+        app, ctx = _make_app(root, tmp_path)
+        urls = self._open_archive(app, ctx, "rfi")
+        assert len(urls) == 1
+        assert "news-html/rfi/index.html" in urls[0]
+        assert "file://" not in urls[0]
+        assert (ctx["archive_dir"] / "rfi" / "index.html").exists()
 
 
 class TestMultiSourceAI:
@@ -753,10 +786,20 @@ class TestMultiSourceAI:
         calls = self._run_ai(app, ctx, "hkej")
         assert calls == [[{"source_id": "hkej", "limit": 3}]]
 
-    def test_all_ai_calls_both_processors(self, root, tmp_path):
+    def test_all_ai_calls_all_processors(self, root, tmp_path):
         app, ctx = _make_app(root, tmp_path)
         calls = self._run_ai(app, ctx, "all")
-        assert calls == [[{"source_id": "eco", "limit": 3}, {"source_id": "hkej", "limit": 3}]]
+        assert calls == [[
+            {"source_id": "eco", "limit": 3},
+            {"source_id": "hkej", "limit": 3},
+            {"source_id": "rfi", "limit": 3},
+        ]]
+
+    def test_rfi_ai_calls_rfi_processor(self, root, tmp_path):
+        """RFI 来源：AI 分析调用 processor(source_id='rfi')。"""
+        app, ctx = _make_app(root, tmp_path)
+        calls = self._run_ai(app, ctx, "rfi")
+        assert calls == [[{"source_id": "rfi", "limit": 3}]]
 
 
 class TestMultiSourceResearch:
@@ -847,7 +890,7 @@ class TestPortableExportButtons:
         assert "HTML 新闻包" in log
         assert "index.html" in log
 
-    def test_export_all_source_both(self, root, tmp_path):
+    def test_export_all_source_all(self, root, tmp_path):
         app, ctx = _make_app(root, tmp_path)
         app.site_combo.set("all")
         app._on_source_changed()
@@ -855,7 +898,22 @@ class TestPortableExportButtons:
         app.export_limit_var.set("100")
         app._on_export()
         assert _pump_until(app, lambda: not app._busy)
-        assert ctx["portable_calls"] == [("html", "eco", 100), ("html", "hkej", 100)]
+        assert ctx["portable_calls"] == [
+            ("html", "eco", 100),
+            ("html", "hkej", 100),
+            ("html", "rfi", 100),
+        ]
+
+    def test_export_rfi_source(self, root, tmp_path):
+        """RFI 来源：导出独立 HTML。"""
+        app, ctx = _make_app(root, tmp_path)
+        app.site_combo.set("rfi")
+        app._on_source_changed()
+        self._set_mode(app, "html")
+        app.export_limit_var.set("100")
+        app._on_export()
+        assert _pump_until(app, lambda: not app._busy)
+        assert ctx["portable_calls"] == [("html", "rfi", 100)]
 
     def test_invalid_limit_rejected(self, root, tmp_path):
         app, ctx = _make_app(root, tmp_path)
