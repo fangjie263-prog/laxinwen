@@ -330,3 +330,149 @@ class TestPipelineContentShortCircuitRegression:
         art = storage.list_articles(limit=1)[0]
         assert art.body_text and "正文" in art.body_text
         pipe.close()
+
+
+# ---------------------------------------------------------------------------
+# Phase 4：content 缺失但 summary 携带完整 HTML 正文 → 直接用 summary 作
+# content_html → 0-fetch 短路；figure/figcaption 图片区不进入 body_text。
+# ---------------------------------------------------------------------------
+
+# RFI RSSHub 实际返回：无 content:encoded，但 summary 携带完整正文 HTML
+# （.t-content__chapo 导语 + .t-content__main-media 图片区 + 多段正文）。
+_SUMMARY_FULL_BODY_RSS = """<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel>
+<title>法广 - 时事与新闻直播 - RFI</title>
+<item>
+<title>仅靠对华“去风险”已经不够了</title>
+<link>https://www.rfi.fr/cn/germany/20260815-derisking</link>
+<description><![CDATA[
+<p class="t-content__chapo">据德国《商报》报道，在对华事务上，问题已不再只涉及贸易和投资前景，而早已涉及就业岗位的流失以及政治行动能力。</p>
+<div class="t-content__main-media">
+<figure class="m-item-image m-item-image--16x9 m-item-image--has-caption">
+<img alt="德国汽车制造商采用中国零部件。" class="a-img" height="576" src="https://s.rfi.fr/media/display/x.jpg" width="1024"/>
+<figcaption class="a-figcaption">德国大众（Volkswagen）、宝马（BMW）和梅赛德斯-奔驰（Mercedes-Benz）等德国汽车制造商也越来越多地采用中国零部件。REUTERS - Benoit Tessier</figcaption>
+</figure>
+</div>
+<p>德国汽车工业在7月底宣布大规模裁员：大众汽车最多可能削减10万个工作岗位，保时捷削减9000个，宝马削减8000个。奥迪大幅下调营业额和利润预期，梅赛德斯-奔驰也下调了全年业绩预期。</p>
+<p>这些都是德国去工业化的明显信号，也反映出德国经济模式在与中国日益激烈的竞争中所面临的压力。中国已形成大规模工业产能过剩，并凭借快速的技术追赶，开始冲击德国传统优势。</p>
+<p>即便是在复杂工业品领域，中国企业也已经成为欧洲以及第三方市场上的顶尖竞争者，例如在电动汽车、电池、太阳能技术和机械设备等领域。同时，中国市场对德国产品的需求正在不断萎缩。不仅汽车制造商及其供应商需要作出调整，德国机械制造业同样面临巨大压力。</p>
+]]></description>
+<pubDate>Sat, 15 Aug 2026 10:43:37 GMT</pubDate>
+</item>
+</channel></rss>
+"""
+
+
+class TestSummaryAsContentFallback:
+    """Phase 4：content 缺失但 summary 携带足够长 HTML 正文 → 直接用 summary。"""
+
+    def test_discover_uses_summary_as_content_html(self):
+        """content 缺失 + summary 有效 → content_html 被设为 summary HTML。"""
+        items = discover_from_rss(_SUMMARY_FULL_BODY_RSS)
+        assert items
+        it = items[0]
+        assert it.content_html  # summary 被用作 content_html
+        assert has_usable_content(it.content_html) is True
+        assert "德国汽车工业在7月底宣布大规模裁员" in it.content_html
+
+    def test_pipeline_short_circuit_zero_fetch_from_summary(self, storage):
+        """content 缺失 + summary 有效 → pipeline 0 fetch（不请求原文）。"""
+        fetcher = FakeFetcher(_SUMMARY_FULL_BODY_RSS, html=_ARTICLE_HTML)
+        pipe = Pipeline(storage, fetcher=fetcher, max_items=3)
+        items = discover_from_rss(_SUMMARY_FULL_BODY_RSS)
+        stats = pipe._ingest_items(items, "rfi", "RFI", "zh", {}, [])
+        # 短路：0 次原文请求
+        assert fetcher.calls == []
+        assert stats.fetched_ok == 1
+        assert stats.extracted_ok == 1
+        art = storage.list_articles(limit=1)[0]
+        assert art.body_html != ""
+        assert art.body_text != ""
+        pipe.close()
+
+    def test_rfi_summary_body_kept_figure_removed(self):
+        """RFI summary：正文保留，figure/figcaption（版权说明）不进入 body_text。"""
+        from news.discover import html_to_text
+
+        items = discover_from_rss(_SUMMARY_FULL_BODY_RSS)
+        it = items[0]
+        body_text = html_to_text(it.content_html)
+        # 正文保留
+        assert "德国汽车工业在7月底宣布大规模裁员" in body_text
+        assert "据德国《商报》报道" in body_text  # chapo 导语保留
+        # 图片版权说明 / figcaption / img alt 不进入正文
+        assert "REUTERS" not in body_text
+        assert "Benoit" not in body_text
+        assert "Volkswagen" not in body_text  # figcaption 文本
+        assert "德国汽车制造商采用中国零部件" not in body_text  # img alt
+
+
+class TestNoUsableContentFallsBackToHtmlFetch:
+    """Phase 4：content 与 summary 都不可用 → 才走原站 HTML fetch fallback。"""
+
+    def test_content_and_summary_unusable_fetches_html(self, storage):
+        """content=None + summary 很短 → has_usable_content=False → fetch 原文。"""
+        fetcher = FakeFetcher(_SUMMARY_RSS, html=_ARTICLE_HTML)
+        pipe = Pipeline(storage, fetcher=fetcher, max_items=3)
+        # _SUMMARY_RSS 只给很短的导语，无 content → 必须 fetch 原文
+        items = discover_from_rss(_SUMMARY_RSS)
+        assert items and not items[0].content_html
+        assert has_usable_content(items[0].content_html) is False
+        stats = pipe._ingest_items(items, "rfi", "RFI", "zh", {}, [])
+        # 触发 fetch 原文 + adapter HTML fallback
+        assert fetcher.calls == ["https://www.rfi.fr/cn/politics/20260815-yasukuni"]
+        assert stats.fetched_ok == 1
+        art = storage.list_articles(limit=1)[0]
+        assert art.body_text and "这是从原文页面提取的正文第一段" in art.body_text
+        pipe.close()
+
+
+class TestRsshubFeedLevelFallback:
+    """Phase 4：sites/rfi.yaml 两个 RSSHub 实例 + feed-level fallback。"""
+
+    def test_adapter_reads_instances_from_config(self):
+        """RfiAdapter 从站点配置读取 rsshub_instances。"""
+        cfg = load_site_config("rfi")
+        adapter = get_adapter(cfg)
+        assert isinstance(adapter, RfiAdapter)
+        assert adapter.rsshub_instances == [
+            "https://rsshub.rssforever.com/rfi/cn",
+            "https://rsshub.ktachibana.party/rfi/cn",
+        ]
+
+    def test_first_instance_succeeds_no_second_request(self):
+        """第一个 RSSHub 实例成功 → 不请求第二个实例。"""
+        cfg = load_site_config("rfi")
+        fetcher = FakeFetcher(_SUMMARY_FULL_BODY_RSS)
+        # 官方 RSS 不可达，走 RSSHub
+        fetcher.fail_urls.add("https://www.rfi.fr/zh/rss")
+        adapter = get_adapter(cfg)
+        items = adapter.discover(fetcher=fetcher, max_items=5)
+        assert items
+        # 请求了官方 RSS + 第一个 RSSHub 实例；没请求第二个实例
+        assert adapter.rsshub_instances[0] in fetcher.calls
+        assert adapter.rsshub_instances[1] not in fetcher.calls
+
+    def test_first_instance_fails_then_second(self):
+        """第一个实例失败 → 切到第二个实例。"""
+        cfg = load_site_config("rfi")
+        fetcher = FakeFetcher(_SUMMARY_FULL_BODY_RSS)
+        fetcher.fail_urls.add("https://www.rfi.fr/zh/rss")
+        # 第一个 RSSHub 实例失败
+        fetcher.fail_urls.add("https://rsshub.rssforever.com/rfi/cn")
+        adapter = get_adapter(cfg)
+        items = adapter.discover(fetcher=fetcher, max_items=5)
+        assert items
+        # 第二个实例被请求且成功
+        assert "https://rsshub.ktachibana.party/rfi/cn" in fetcher.calls
+
+    def test_all_instances_fail_returns_empty(self):
+        """所有 RSSHub 实例都失败 → 返回空列表，不抛异常。"""
+        cfg = load_site_config("rfi")
+        fetcher = FakeFetcher(_SUMMARY_FULL_BODY_RSS)
+        fetcher.fail_urls.add("https://www.rfi.fr/zh/rss")
+        fetcher.fail_urls.add("https://rsshub.rssforever.com/rfi/cn")
+        fetcher.fail_urls.add("https://rsshub.ktachibana.party/rfi/cn")
+        adapter = get_adapter(cfg)
+        items = adapter.discover(fetcher=fetcher, max_items=5)
+        assert items == []

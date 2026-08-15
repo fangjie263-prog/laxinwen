@@ -7,14 +7,16 @@
    ``content:encoded`` 正文，则 ``content_html`` 为完整正文，pipeline 走
    "discovery content short-circuit"（见 ``discover.has_usable_content``），
    不再 fetch 原文 URL；
-2. **RSSHub**（``https://rsshub.rssforever.com/rfi/cn``）—— 当官方 RSS
-   不可达（如本环境）时回退。RSSHub 只返回导语（``t-content__chapo``）与媒体，
-   不含完整正文，因此 ``content_html`` 为空 → ``has_usable_content`` 为 False →
-   pipeline 触发原文 URL 的 HTML fallback；
-3. **HTML fallback** —— pipeline 下载原文 HTML，由
-   :meth:`RfiAdapter.extract_article` 用 RFI 页面结构
-   （``.t-content__chapo`` 导语 + ``.t-content__body`` 正文容器）提取完整正文，
-   同时回填 ``body_html`` 与 ``body_text``。
+2. **RSSHub 多实例 feed-level fallback** —— 当官方 RSS 不可达（如本环境）时，
+   逐个尝试 ``sites/rfi.yaml`` 的 ``rsshub_instances``（Phase 3 实际验证的两个
+   实例），一个实例整个失败才切下一个，不对每篇文章重复请求。RSSHub 的
+   summary 通常携带完整正文 HTML（含 ``.t-content__chapo`` 导语 + 多段正文 +
+   ``.t-content__main-media`` 图片区），因此 ``discover._resolve_content_html``
+   会把它作为 ``content_html`` → ``has_usable_content`` 为 True → pipeline 走
+   0-fetch 短路；
+3. **HTML fallback** —— 仅当 content 与 summary 都不可用时，pipeline 下载原文
+   HTML，由 :meth:`RfiAdapter.extract_article` 用 RFI 页面结构
+   （``.t-content__chapo`` 导语 + ``.t-content__body`` 正文容器）提取完整正文。
 
 RFI 特有的逻辑（RSS/RSSHub 回退、HTML 正文选择器）全部集中在本模块，
 不污染通用 discover / pipeline。
@@ -44,8 +46,12 @@ RFI_UA = (
 # 官方 RSS（法广中文）
 OFFICIAL_RSS = "https://www.rfi.fr/zh/rss"
 
-# RSSHub RFI 中文 route（当前网络环境下官方 RSS 不可达，用 RSSHub 回退）
+# RSSHub RFI 中文 route —— Phase 3 实际验证可用的实例（供未配置时兜底）。
+# 实际生效的实例列表来自 ``sites/rfi.yaml`` 的 ``rsshub_instances``；
+# 这里作为代码级默认，与配置保持一致。
 RSSHUB_RFI_CN = "https://rsshub.rssforever.com/rfi/cn"
+RSSHUB_RFI_CN_BACKUP = "https://rsshub.ktachibana.party/rfi/cn"
+_DEFAULT_RSSHUB_INSTANCES = (RSSHUB_RFI_CN, RSSHUB_RFI_CN_BACKUP)
 
 
 def extract_title(html: str) -> str:
@@ -112,15 +118,19 @@ def extract_body_from_html(html: str) -> tuple[str, str]:
 class RfiAdapter(SourceAdapter):
     """RFI（法广中文）Source Adapter。
 
-    只负责发现新闻（官方 RSS → RSSHub 回退）与 HTML fallback 正文提取；
-    去重 / 入库交给 laxinwen 通用 pipeline。
+    只负责发现新闻（官方 RSS → RSSHub 多实例 feed-level fallback）与
+    HTML fallback 正文提取；去重 / 入库交给 laxinwen 通用 pipeline。
     """
 
-    def __init__(self, source_id: str, source_name: str) -> None:
+    def __init__(self, source_id: str, source_name: str, site_cfg: dict | None = None) -> None:
         super().__init__(source_id, source_name)
+        # RSSHub 实例列表：优先取站点配置 ``rsshub_instances``（Phase 3 验证的两个
+        # 实例），否则回退到代码级默认。
+        instances = (site_cfg or {}).get("rsshub_instances") or _DEFAULT_RSSHUB_INSTANCES
+        self.rsshub_instances: list[str] = list(instances)
 
     def discover(self, *, fetcher: BaseFetcher, max_items: int) -> list[DiscoveredItem]:
-        """发现 RFI 中文新闻，优先级：官方 RSS → RSSHub。
+        """发现 RFI 中文新闻，优先级：官方 RSS → RSSHub 多实例 feed-level fallback。
 
         返回 ``DiscoveredItem``；若 RSS 带完整正文，``content_html`` 非空，
         pipeline 走 short-circuit；否则为 None，pipeline 走 HTML fallback。
@@ -134,16 +144,25 @@ class RfiAdapter(SourceAdapter):
         except Exception as exc:
             logger.warning("[rfi] 官方 RSS 失败: %s", exc)
 
-        # 2. RSSHub 回退
-        try:
-            items = discover_from_rss(RSSHUB_RFI_CN, fetcher=fetcher)
-            if items:
-                logger.info("[rfi] RSSHub 返回 %d 条", len(items))
-                return items[:max_items]
-        except Exception as exc:
-            logger.warning("[rfi] RSSHub 失败: %s", exc)
+        # 2. RSSHub 多实例 feed-level fallback：逐个实例尝试，
+        #    一个实例整个失败才切下一个，不会对每篇文章重复请求多个实例。
+        last_exc: Exception | None = None
+        for instance in self.rsshub_instances:
+            logger.info("[rfi] 尝试 RSSHub 实例: %s", instance)
+            try:
+                items = discover_from_rss(instance, fetcher=fetcher)
+                if items:
+                    logger.info("[rfi] RSSHub 实例 %s 返回 %d 条", instance, len(items))
+                    return items[:max_items]
+                logger.warning("[rfi] RSSHub 实例 %s 无条目", instance)
+            except Exception as exc:
+                last_exc = exc
+                logger.warning("[rfi] RSSHub 实例 %s 失败: %s", instance, exc)
 
-        logger.warning("[rfi] 官方 RSS 与 RSSHub 均失败，无候选文章")
+        logger.warning(
+            "[rfi] 官方 RSS 与所有 RSSHub 实例均失败，无候选文章"
+            + (f"（最近错误: {last_exc}" if last_exc else "")
+        )
         return []
 
     def fetch_custom_headers(self) -> Optional[dict[str, str]]:

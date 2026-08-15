@@ -32,11 +32,38 @@ logger = logging.getLogger(__name__)
 _MIN_USABLE_CONTENT_CHARS = 150
 
 
+# HTML → text 时移除的“非正文”媒体/图片区域元素。
+# RFI RSSHub summary 里 .t-content__main-media 等图片区含 <figure>/<figcaption>
+# （图片版权说明，如 “REUTERS - Benoit Tessier”），不应进入 body_text。
+_MEDIA_CLEAN_SELECTORS = (
+    ".t-content__main-media",  # RFI 主图区
+    "figure",                  # 图片块（含 img + figcaption）
+    "figcaption",              # 图片说明/版权
+    "img",                     # 内嵌图片
+    "source",                  # picture 的 source
+    "picture",
+    "script",
+    "style",
+)
+
+
 def html_to_text(html: str) -> str:
-    """把 HTML 片段转为纯文本（去标签、折叠空白）。"""
+    """把 HTML 片段转为纯文本（去标签、折叠空白）。
+
+    先移除媒体/图片区域（``figure`` / ``figcaption`` / ``.t-content__main-media``
+    / ``img`` 等），避免 RFI 等站点的图片版权说明、图片 alt 文本进入正文；
+    再取剩余文本并折叠空白。
+    """
     if not html:
         return ""
-    text = re.sub(r"<[^>]+>", "", html)
+    try:
+        tree = HTMLParser(html)
+        for node in tree.css(",".join(_MEDIA_CLEAN_SELECTORS)):
+            node.decompose()
+        text = (tree.body.text() if tree.body else tree.text() or "") or ""
+    except Exception:
+        # 兜底：解析失败时退回简单去标签
+        text = re.sub(r"<[^>]+>", "", html)
     return re.sub(r"\s+", " ", text).strip()
 
 
@@ -122,6 +149,26 @@ def _parse_datetime(value: Optional[str], struct: Optional[object] = None) -> Op
     return None
 
 
+def _resolve_content_html(entry) -> Optional[str]:
+    """解析 RSS 条目的 content_html（正文 HTML）。
+
+    优先级（保持 content/content:encoded 优先）：
+
+    1. 若条目带 ``content`` / ``content:encoded``（feedparser 归一为 ``content``），
+       取其 HTML 作为 ``content_html``；
+    2. 若没有 content，且 ``summary`` 含足够长的 HTML 正文（RFI 等 RSSHub
+       summary 可能直接携带完整正文，见 ``has_usable_content``），则把 summary
+       HTML 作为 ``content_html``，从而让 pipeline 走 0-fetch 短路；
+    3. 否则返回 None，由 pipeline 触发原文 URL 的 HTML fallback。
+    """
+    if entry.get("content"):
+        return entry["content"][0].get("value")
+    summary_html = entry.get("summary", "") or ""
+    if summary_html and has_usable_content(summary_html):
+        return summary_html
+    return None
+
+
 def discover_from_rss(feed_url: str, *, fetcher: BaseFetcher | None = None) -> list[DiscoveredItem]:
     """从 RSS / Atom 解析文章条目（官方 RSS 或 RSSHub 通用）。
 
@@ -168,7 +215,7 @@ def discover_from_rss(feed_url: str, *, fetcher: BaseFetcher | None = None) -> l
                     e.get("published_parsed") or e.get("updated_parsed"),
                 ),
                 summary=re.sub(r"<[^>]+>", "", e.get("summary", "")).strip(),
-                content_html=e.get("content")[0].get("value") if e.get("content") else None,
+                content_html=_resolve_content_html(e),
                 image=image,
             )
         )
