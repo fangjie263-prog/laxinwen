@@ -719,16 +719,6 @@ class _NewsReaderApp:
             pipeline = self._pipeline_factory(storage, limit)
             try:
                 for sid in site_ids:
-                    # RFI 抓取在 Phase 4 CLI 完成，GUI 不访问 RFI/RSSHub。
-                    # GUI 仅从 SQLite 读取已有 RFI 数据（source_id='rfi'）。
-                    if sid == "rfi":
-                        rfi_count = storage.count(source_id="rfi")
-                        self._bg_log(
-                            f"{self._sep}\n"
-                            f"[RFI] GUI 不直接抓取 RFI/RSSHub（Phase 4 CLI 已抓取入库）\n"
-                            f"[RFI] 数据库现有 RFI 文章：{rfi_count} 篇"
-                        )
-                        continue
                     stats = pipeline.run_site(sid)
                     s = stats
                     self._bg_log(

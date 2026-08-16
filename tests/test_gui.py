@@ -665,41 +665,47 @@ class TestMultiSourceFetch:
         assert pipe.limit == 50
 
     def test_all_50_calls_all_sites(self, root, tmp_path):
-        """全部 → (eco, hkej, rfi)；RFI 不调用 pipeline（GUI 不抓 RFI/RSSHub）。"""
+        """全部 → (eco, hkej, rfi)；RFI 与 ECO/HKEJ 一样调用 pipeline.run_site。"""
         app, ctx = _make_app(root, tmp_path)
         calls = self._run_fetch_for_source(app, ctx, "all", 50)
-        # RFI 不触发 pipeline.run_site，仅 eco/hkej 调用
-        assert calls == [[("run_site", "eco"), ("run_site", "hkej")]]
+        # RFI 也触发 pipeline.run_site
+        assert calls == [[
+            ("run_site", "eco"),
+            ("run_site", "hkej"),
+            ("run_site", "rfi"),
+        ]]
         pipe = ctx["pipeline_calls"][0]
         assert pipe.limit == 50
         log = _log_text(app)
         assert "[ECO] 发现" in log
         assert "[HKEJ] 发现" in log
-        # RFI 日志显示从 SQLite 读取
-        assert "RFI" in log
+        assert "[RFI] 发现" in log
 
-    def test_all_50_logs_both_sources(self, root, tmp_path):
+    def test_all_50_logs_all_sources(self, root, tmp_path):
         app, ctx = _make_app(
             root, tmp_path, pipeline_stats=FakeStats(discovered=50, fetched_ok=50)
         )
         calls = self._run_fetch_for_source(app, ctx, "all", 50)
         log = _log_text(app)
-        assert "[ECO]" in log and "[HKEJ]" in log
+        assert "[ECO]" in log and "[HKEJ]" in log and "[RFI]" in log
         assert "发现：50" in log
 
-    def test_rfi_selected_does_not_fetch(self, root, tmp_path):
-        """RFI 来源：GUI 不调用 pipeline 抓 RFI/RSSHub，仅从 SQLite 读取。"""
+    def test_rfi_selected_calls_pipeline(self, root, tmp_path):
+        """RFI 来源：GUI 调用 pipeline.run_site("rfi")。"""
         app, ctx = _make_app(root, tmp_path)
         app.site_combo.set("rfi")
         app._on_source_changed()
-        app.limit_var.set("50")
+        app.limit_var.set("100")
         app._on_fetch()
         assert _pump_until(app, lambda: not app._busy)
-        # 不创建 pipeline，不调用 run_site
-        assert len(ctx["pipeline_calls"]) == 0
+        # RFI 创建 pipeline 并调用 run_site("rfi")
+        assert len(ctx["pipeline_calls"]) == 1
+        pipe = ctx["pipeline_calls"][0]
+        assert pipe.limit == 100
+        assert pipe.calls == [("run_site", "rfi")]
         log = _log_text(app)
-        assert "RFI" in log
-        assert "SQLite" in log or "数据库" in log
+        assert "[RFI] 发现" in log
+        assert "GUI 不直接抓取" not in log
 
     def test_custom_limit_input(self, root, tmp_path):
         """允许任意正整数（如 20 / 500）并做基本校验。"""
