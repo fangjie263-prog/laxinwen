@@ -27,6 +27,7 @@ from news.discover import (  # noqa: E402
     has_usable_content,
 )
 from news.fetch import BaseFetcher  # noqa: E402
+from news.normalize import canonicalize_url  # noqa: E402
 from news.pipeline import Pipeline  # noqa: E402
 from news.sources import get_adapter  # noqa: E402
 from news.sources.rfi import (  # noqa: E402
@@ -43,19 +44,37 @@ from news.storage import Storage  # noqa: E402
 
 
 class FakeFetcher(BaseFetcher):
-    """离线假抓取器：记录 calls，按 URL 返回对应内容。"""
+    """离线假抓取器：记录 calls，按 URL 返回对应内容。
 
-    def __init__(self, rss: str, html: str = ""):
+    - ``rss`` / ``html``：兜底内容（任何含 rss/rsshub/feed 的 URL 返回 ``rss``，
+      其余返回 ``html``）；
+    - ``url_map``：可选，精确 URL → 内容，优先于兜底（用于分类聚合测试，不同
+      分类返回不同 feed）；
+    - ``fail_urls`` / ``fail_substrings``：精确 URL / 包含子串即抛连接错误。
+    """
+
+    def __init__(
+        self,
+        rss: str = "",
+        html: str = "",
+        url_map: dict[str, str] | None = None,
+    ):
         self.rss = rss
         self.html = html
+        self.url_map = url_map or {}
         self.calls: list[str] = []
         self.fail_urls: set[str] = set()
+        self.fail_substrings: list[str] = []
 
     def fetch(self, url: str, **kwargs) -> str:
         self.calls.append(url)
-        # 模拟官方 RSS 站点不可达
+        # 模拟站点不可达（精确 URL 或子串匹配）
         if url in self.fail_urls:
             raise RuntimeError(f"connection refused: {url}")
+        if any(sub in url for sub in self.fail_substrings):
+            raise RuntimeError(f"connection refused: {url}")
+        if url in self.url_map:
+            return self.url_map[url]
         if "rss" in url or "rsshub" in url or "feed" in url:
             return self.rss
         return self.html
@@ -69,6 +88,21 @@ def storage(tmp_path):
     s = Storage(tmp_path / "rfi.db")
     yield s
     s.close()
+
+
+def _mk_rss(items: list[tuple[str, str]]) -> str:
+    """由 ``(title, link)`` 列表构造一个最小 RSS feed（用于分类聚合测试）。"""
+    entries = "".join(
+        f"<item><title>{title}</title><link>{link}</link>"
+        f"<pubDate>Sat, 15 Aug 2026 10:00:00 GMT</pubDate></item>"
+        for title, link in items
+    )
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<rss version="2.0"><channel><title>法广 - RFI</title>'
+        + entries
+        + "</channel></rss>"
+    )
 
 
 # RFI 完整正文 RSS（官方 RSS content:encoded 场景）—— 正文超过阈值，应短路
@@ -454,25 +488,249 @@ class TestRsshubFeedLevelFallback:
         assert adapter.rsshub_instances[1] not in fetcher.calls
 
     def test_first_instance_fails_then_second(self):
-        """第一个实例失败 → 切到第二个实例。"""
+        """第一个实例整个失败（首页 + 各分类） → 切到第二个实例聚合。"""
         cfg = load_site_config("rfi")
         fetcher = FakeFetcher(_SUMMARY_FULL_BODY_RSS)
         fetcher.fail_urls.add("https://www.rfi.fr/zh/rss")
-        # 第一个 RSSHub 实例失败
-        fetcher.fail_urls.add("https://rsshub.rssforever.com/rfi/cn")
+        # 第一个 RSSHub 实例的首页与所有分类都失败
+        fetcher.fail_substrings.append("rsshub.rssforever.com")
         adapter = get_adapter(cfg)
         items = adapter.discover(fetcher=fetcher, max_items=5)
         assert items
-        # 第二个实例被请求且成功
+        # 第一个实例首页与分类都被尝试过，第二个实例被请求且成功
+        assert "https://rsshub.rssforever.com/rfi/cn" in fetcher.calls
         assert "https://rsshub.ktachibana.party/rfi/cn" in fetcher.calls
+        assert any("ktachibana" in u and u != "https://rsshub.ktachibana.party/rfi/cn" for u in fetcher.calls)
 
     def test_all_instances_fail_returns_empty(self):
-        """所有 RSSHub 实例都失败 → 返回空列表，不抛异常。"""
+        """所有 RSSHub 实例都失败（首页 + 分类） → 返回空列表，不抛异常。"""
         cfg = load_site_config("rfi")
         fetcher = FakeFetcher(_SUMMARY_FULL_BODY_RSS)
         fetcher.fail_urls.add("https://www.rfi.fr/zh/rss")
-        fetcher.fail_urls.add("https://rsshub.rssforever.com/rfi/cn")
-        fetcher.fail_urls.add("https://rsshub.ktachibana.party/rfi/cn")
+        fetcher.fail_substrings.extend(
+            ["rsshub.rssforever.com", "rsshub.ktachibana.party"]
+        )
         adapter = get_adapter(cfg)
         items = adapter.discover(fetcher=fetcher, max_items=5)
         assert items == []
+
+
+# ---------------------------------------------------------------------------
+# Phase 7：RFI RSSHub 分类聚合
+# ---------------------------------------------------------------------------
+
+
+class TestRsshubCategoryAggregation:
+    """Phase 7：RSSHub 首页 + RFI 中文分类页面聚合。"""
+
+    INSTANCE = "https://rsshub.rssforever.com/rfi/cn"
+
+    def _url_map(self):
+        """首页 + 两个分类各含不同文章的 URL→内容映射。"""
+        return {
+            self.INSTANCE: _mk_rss([("首页文章", "https://www.rfi.fr/cn/france/20260815-home")]),
+            f"{self.INSTANCE}/politique": _mk_rss(
+                [("政治文章", "https://www.rfi.fr/cn/politique/20260815-pol")]
+            ),
+            f"{self.INSTANCE}/moyen-orient": _mk_rss(
+                [("中东文章", "https://www.rfi.fr/cn/moyen-orient/20260815-mo")]
+            ),
+        }
+
+    def test_requests_homepage_then_categories(self):
+        """第一个 RSSHub 实例内依次请求首页 + 各分类页面，聚合去重。"""
+        cfg = load_site_config("rfi")
+        fetcher = FakeFetcher(url_map=self._url_map())
+        fetcher.fail_urls.add("https://www.rfi.fr/zh/rss")
+        adapter = get_adapter(cfg)
+        items = adapter.discover(fetcher=fetcher, max_items=10)
+        # 首页与各分类都被请求
+        assert self.INSTANCE in fetcher.calls
+        assert f"{self.INSTANCE}/politique" in fetcher.calls
+        assert f"{self.INSTANCE}/moyen-orient" in fetcher.calls
+        # 聚合了首页与分类的文章
+        titles = [it.title for it in items]
+        assert "首页文章" in titles
+        assert "政治文章" in titles
+        assert "中东文章" in titles
+        # 首页在分类之前
+        assert fetcher.calls.index(self.INSTANCE) < fetcher.calls.index(f"{self.INSTANCE}/politique")
+
+    def test_category_order_follows_config(self):
+        """分类请求顺序与 RFI_CN_CATEGORIES 定义一致。"""
+        from news.sources.rfi import RFI_CN_CATEGORIES
+
+        cfg = load_site_config("rfi")
+        fetcher = FakeFetcher(url_map=self._url_map())
+        fetcher.fail_urls.add("https://www.rfi.fr/zh/rss")
+        adapter = get_adapter(cfg)
+        adapter.discover(fetcher=fetcher, max_items=10)
+        cat_calls = [
+            u for u in fetcher.calls
+            if u.startswith(f"{self.INSTANCE}/") and "rsshub" in u
+        ]
+        # 只请求了 url_map 里实际配置的分类（未配置的返回兜底空 feed 也请求过）
+        expected_prefix = [f"{self.INSTANCE}/{slug}" for slug in RFI_CN_CATEGORIES]
+        for p in expected_prefix:
+            assert p in fetcher.calls
+
+    def test_cross_category_url_dedup(self):
+        """跨分类 canonical URL 去重：同一文章出现在多分类只保留一份。"""
+        dup_url = "https://www.rfi.fr/cn/chine/20260815-dup"
+        url_map = {
+            self.INSTANCE: _mk_rss([("首页重复", dup_url)]),
+            f"{self.INSTANCE}/politique": _mk_rss([("政治重复", dup_url)]),
+            f"{self.INSTANCE}/moyen-orient": _mk_rss(
+                [("中东独立", "https://www.rfi.fr/cn/moyen-orient/20260815-mo")]
+            ),
+        }
+        cfg = load_site_config("rfi")
+        fetcher = FakeFetcher(url_map=url_map)
+        fetcher.fail_urls.add("https://www.rfi.fr/zh/rss")
+        adapter = get_adapter(cfg)
+        items = adapter.discover(fetcher=fetcher, max_items=10)
+        urls = [canonicalize_url(it.url) for it in items]
+        assert len(urls) == len(set(urls))  # 无重复
+        assert urls.count(canonicalize_url(dup_url)) == 1
+
+    def test_dedup_ignores_tracking_params(self):
+        """跨分类去重对带追踪参数的同一 URL 仍只保留一份。"""
+        base = "https://www.rfi.fr/cn/chine/20260815-dup"
+        tracked = base + "?utm_source=rss&utm_medium=feed"
+        url_map = {
+            self.INSTANCE: _mk_rss([("首页", base)]),
+            f"{self.INSTANCE}/politique": _mk_rss([("政治", tracked)]),
+        }
+        cfg = load_site_config("rfi")
+        fetcher = FakeFetcher(url_map=url_map)
+        fetcher.fail_urls.add("https://www.rfi.fr/zh/rss")
+        adapter = get_adapter(cfg)
+        items = adapter.discover(fetcher=fetcher, max_items=10)
+        urls = [canonicalize_url(it.url) for it in items]
+        assert len(urls) == 1
+
+    def test_stops_at_max_items_no_more_requests(self):
+        """达到 max_items 立即停止，不再请求后续分类。"""
+        url_map = {
+            self.INSTANCE: _mk_rss(
+                [
+                    ("首页A", "https://www.rfi.fr/cn/france/20260815-a"),
+                    ("首页B", "https://www.rfi.fr/cn/france/20260815-b"),
+                ]
+            ),
+            f"{self.INSTANCE}/politique": _mk_rss(
+                [("政治C", "https://www.rfi.fr/cn/politique/20260815-c")]
+            ),
+        }
+        cfg = load_site_config("rfi")
+        fetcher = FakeFetcher(url_map=url_map)
+        fetcher.fail_urls.add("https://www.rfi.fr/zh/rss")
+        adapter = get_adapter(cfg)
+        items = adapter.discover(fetcher=fetcher, max_items=2)
+        # 首页就达到 2 条，不再请求任何分类
+        assert len(items) == 2
+        assert f"{self.INSTANCE}/politique" not in fetcher.calls
+
+    def test_max_items_stop_mid_categories(self):
+        """分类聚合过程中达到 max_items 即停止后续分类请求。"""
+        url_map = {
+            self.INSTANCE: _mk_rss([("首页", "https://www.rfi.fr/cn/france/20260815-home")]),
+            f"{self.INSTANCE}/politique": _mk_rss(
+                [("政治A", "https://www.rfi.fr/cn/politique/20260815-a"),
+                 ("政治B", "https://www.rfi.fr/cn/politique/20260815-b")]
+            ),
+            f"{self.INSTANCE}/moyen-orient": _mk_rss(
+                [("中东", "https://www.rfi.fr/cn/moyen-orient/20260815-mo")]
+            ),
+        }
+        cfg = load_site_config("rfi")
+        fetcher = FakeFetcher(url_map=url_map)
+        fetcher.fail_urls.add("https://www.rfi.fr/zh/rss")
+        adapter = get_adapter(cfg)
+        items = adapter.discover(fetcher=fetcher, max_items=3)
+        # 首页1 + 政治2 = 3 条，达到 max_items 后不再请求 moyen-orient
+        assert len(items) == 3
+        assert f"{self.INSTANCE}/moyen-orient" not in fetcher.calls
+        # 政治两个分类都被请求到了（达到 max_items 前）
+        assert f"{self.INSTANCE}/politique" in fetcher.calls
+
+    def test_homepage_fails_still_aggregates_categories(self):
+        """首页失败不中断实例，仍继续聚合分类。"""
+        url_map = {
+            f"{self.INSTANCE}/politique": _mk_rss(
+                [("政治文章", "https://www.rfi.fr/cn/politique/20260815-pol")]
+            ),
+        }
+        cfg = load_site_config("rfi")
+        fetcher = FakeFetcher(url_map=url_map)
+        fetcher.fail_urls.add("https://www.rfi.fr/zh/rss")
+        fetcher.fail_urls.add(self.INSTANCE)  # 首页失败
+        adapter = get_adapter(cfg)
+        items = adapter.discover(fetcher=fetcher, max_items=10)
+        assert items
+        assert any(it.title == "政治文章" for it in items)
+
+
+class TestRsshubCategoryTwoInstanceFallback:
+    """Phase 7：两个 RSSHub 实例保持 fallback（不合并），每个实例内分类聚合。"""
+
+    INST1 = "https://rsshub.rssforever.com/rfi/cn"
+    INST2 = "https://rsshub.ktachibana.party/rfi/cn"
+
+    def test_first_instance_aggregates_and_second_not_used(self):
+        """第一个实例聚合成功 → 不请求第二个实例。"""
+        url_map = {
+            self.INST1: _mk_rss([("首页", "https://www.rfi.fr/cn/france/20260815-home")]),
+            f"{self.INST1}/politique": _mk_rss(
+                [("政治", "https://www.rfi.fr/cn/politique/20260815-pol")]
+            ),
+        }
+        cfg = load_site_config("rfi")
+        fetcher = FakeFetcher(url_map=url_map)
+        fetcher.fail_urls.add("https://www.rfi.fr/zh/rss")
+        adapter = get_adapter(cfg)
+        items = adapter.discover(fetcher=fetcher, max_items=10)
+        assert items
+        assert f"{self.INST1}/politique" in fetcher.calls
+        # 第二个实例（首页/分类）均未被请求
+        assert self.INST2 not in fetcher.calls
+
+    def test_second_instance_also_aggregates_categories(self):
+        """第一个实例失败后，第二个实例同样做首页+分类聚合。"""
+        url_map = {
+            self.INST2: _mk_rss([("备选首页", "https://www.rfi.fr/cn/france/20260815-bak")]),
+            f"{self.INST2}/politique": _mk_rss(
+                [("备选政治", "https://www.rfi.fr/cn/politique/20260815-bakpol")]
+            ),
+        }
+        cfg = load_site_config("rfi")
+        fetcher = FakeFetcher(url_map=url_map)
+        fetcher.fail_urls.add("https://www.rfi.fr/zh/rss")
+        fetcher.fail_substrings.append("rsshub.rssforever.com")
+        adapter = get_adapter(cfg)
+        items = adapter.discover(fetcher=fetcher, max_items=10)
+        assert items
+        assert f"{self.INST2}/politique" in fetcher.calls
+        titles = [it.title for it in items]
+        assert "备选首页" in titles
+        assert "备选政治" in titles
+
+    def test_categories_listed_at_least_required(self):
+        """RFI_CN_CATEGORIES 至少包含要求的分类。"""
+        from news.sources.rfi import RFI_CN_CATEGORIES
+
+        cats = set(RFI_CN_CATEGORIES)
+        required = {
+            "politique",       # 政治
+            "moyen-orient",    # 中东
+            "international",   # 国际
+            "taiwan",          # 港澳台
+            "societe",         # 社会
+            "economie",        # 经济
+            "sports",          # 体育
+            "afrique",         # 非洲
+            "asie",            # 亚洲
+            "europe",          # 欧洲
+            "chine",           # 中国
+        }
+        assert required.issubset(cats)

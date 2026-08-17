@@ -33,6 +33,7 @@ from selectolax.parser import HTMLParser
 from ..discover import DiscoveredItem, discover_from_rss
 from ..fetch import BaseFetcher
 from ..model import Article
+from ..normalize import canonicalize_url
 from .base import SourceAdapter
 
 logger = logging.getLogger(__name__)
@@ -52,6 +53,23 @@ OFFICIAL_RSS = "https://www.rfi.fr/zh/rss"
 RSSHUB_RFI_CN = "https://rsshub.rssforever.com/rfi/cn"
 RSSHUB_RFI_CN_BACKUP = "https://rsshub.ktachibana.party/rfi/cn"
 _DEFAULT_RSSHUB_INSTANCES = (RSSHUB_RFI_CN, RSSHUB_RFI_CN_BACKUP)
+
+# RFI 中文分类（RSSHub route ``/rfi/cn/<slug>``）—— 首页之后依次请求，跨分类
+# 用 canonical URL 去重，达到 max_items 即停止。列表含 Phase 3 调查确认有效的
+# 主要分类。
+RFI_CN_CATEGORIES: tuple[str, ...] = (
+    "politique",       # 政治
+    "moyen-orient",    # 中东
+    "international",   # 国际
+    "taiwan",          # 港澳台
+    "societe",         # 社会
+    "economie",        # 经济
+    "sports",          # 体育
+    "afrique",         # 非洲
+    "asie",            # 亚洲
+    "europe",          # 欧洲
+    "chine",           # 中国
+)
 
 
 def extract_title(html: str) -> str:
@@ -144,16 +162,22 @@ class RfiAdapter(SourceAdapter):
         except Exception as exc:
             logger.warning("[rfi] 官方 RSS 失败: %s", exc)
 
-        # 2. RSSHub 多实例 feed-level fallback：逐个实例尝试，
-        #    一个实例整个失败才切下一个，不会对每篇文章重复请求多个实例。
+        # 2. RSSHub 多实例 feed-level fallback：逐个实例尝试，一个实例整个失败
+        #    才切下一个（不要把两个 instance 合并）。每个实例内先请求首页，再
+        #    依次请求 RFI 中文分类页面，跨分类用 canonical URL 去重，达到
+        #    max_items 立即停止。
         last_exc: Exception | None = None
         for instance in self.rsshub_instances:
             logger.info("[rfi] 尝试 RSSHub 实例: %s", instance)
             try:
-                items = discover_from_rss(instance, fetcher=fetcher)
+                items = self._discover_rsshub_instance(
+                    fetcher=fetcher, max_items=max_items, instance=instance
+                )
                 if items:
-                    logger.info("[rfi] RSSHub 实例 %s 返回 %d 条", instance, len(items))
-                    return items[:max_items]
+                    logger.info(
+                        "[rfi] RSSHub 实例 %s 聚合返回 %d 条", instance, len(items)
+                    )
+                    return items
                 logger.warning("[rfi] RSSHub 实例 %s 无条目", instance)
             except Exception as exc:
                 last_exc = exc
@@ -164,6 +188,69 @@ class RfiAdapter(SourceAdapter):
             + (f"（最近错误: {last_exc}" if last_exc else "")
         )
         return []
+
+    def _discover_rsshub_instance(
+        self, *, fetcher: BaseFetcher, max_items: int, instance: str
+    ) -> list[DiscoveredItem]:
+        """在单个 RSSHub 实例内聚合发现：首页 + RFI 中文分类页面。
+
+        依次请求首页（``<instance>``）与 ``RFI_CN_CATEGORIES`` 各分类页面
+        （``<instance>/<slug>``），跨分类用 canonical URL 去重；达到 ``max_items``
+        立即停止，不再请求后续 feed。单个 feed 失败只记 warning 并继续下一个，
+        不中断整个实例。返回聚合去重后的候选列表（最多 ``max_items`` 条）。
+        """
+        collected: list[DiscoveredItem] = []
+        seen: set[str] = set()
+
+        def _add(feed_items: list[DiscoveredItem]) -> int:
+            added = 0
+            for it in feed_items:
+                canon = canonicalize_url(it.url)
+                if not canon or canon in seen:
+                    continue
+                seen.add(canon)
+                collected.append(it)
+                added += 1
+            return added
+
+        # 1. 首页
+        try:
+            home_items = discover_from_rss(instance, fetcher=fetcher)
+            added = _add(home_items)
+            logger.info(
+                "[rfi] RSSHub 实例 %s 首页返回 %d 条（新增 %d，累计 %d）",
+                instance,
+                len(home_items),
+                added,
+                len(collected),
+            )
+            if len(collected) >= max_items:
+                return collected[:max_items]
+        except Exception as exc:
+            logger.warning("[rfi] RSSHub 实例 %s 首页失败: %s", instance, exc)
+
+        # 2. 分类页面（达到 max_items 立即停止）
+        for slug in RFI_CN_CATEGORIES:
+            if len(collected) >= max_items:
+                break
+            category_url = f"{instance}/{slug}"
+            try:
+                cat_items = discover_from_rss(category_url, fetcher=fetcher)
+                added = _add(cat_items)
+                logger.info(
+                    "[rfi] RSSHub 实例 %s 分类 %s 返回 %d 条（新增 %d，累计 %d）",
+                    instance,
+                    slug,
+                    len(cat_items),
+                    added,
+                    len(collected),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[rfi] RSSHub 实例 %s 分类 %s 失败: %s", instance, slug, exc
+                )
+
+        return collected[:max_items]
 
     def fetch_custom_headers(self) -> Optional[dict[str, str]]:
         # RFI / RSSHub 用浏览器 UA + 中文语言更友好
