@@ -291,15 +291,11 @@ class _NewsReaderApp:
         self.ai_settings_btn.pack(side="left", padx=(10, 0))
 
         # ---- 导出卡片（导出方式下拉 + 单一导出按钮） ----
+        # 导出数量统一使用顶部 limit_var（顶部“最近 N 篇”是唯一权威 limit）。
         row3 = ttk.Frame(card)
         row3.pack(fill="x", pady=(10, 0))
 
-        ttk.Label(row3, text="导出数量：").pack(side="left")
-        self.export_limit_var = tk.StringVar(value=str(_DEFAULT_LIMIT))
-        self.export_limit_entry = ttk.Entry(row3, textvariable=self.export_limit_var, width=8)
-        self.export_limit_entry.pack(side="left", padx=4)
-
-        ttk.Label(row3, text="导出方式：").pack(side="left", padx=(16, 4))
+        ttk.Label(row3, text="导出方式：").pack(side="left")
         # 默认 = 便携阅读包
         default_label = dict(_EXPORT_OPTIONS)[_DEFAULT_EXPORT_MODE]
         self.export_mode_var = tk.StringVar(value=default_label)
@@ -423,7 +419,7 @@ class _NewsReaderApp:
         self.ai_settings_btn.configure(state=state)
         self.site_combo.configure(state="disabled" if busy else "readonly")
         self.export_mode_combo.configure(state="disabled" if busy else "readonly")
-        for e in (self.limit_entry, self.ai_limit_entry, self.export_limit_entry):
+        for e in (self.limit_entry, self.ai_limit_entry):
             e.configure(state=state)
         if busy:
             self._active_source = self.site_var.get()
@@ -630,7 +626,8 @@ class _NewsReaderApp:
         if self._busy:
             self.log("已有任务运行中，请等待完成。")
             return
-        limit = self._parse_limit(self.export_limit_var.get(), what="导出")
+        # 导出数量统一使用顶部 limit_var（顶部“最近 N 篇”是唯一权威 limit）。
+        limit = self._parse_limit(self.limit_var.get(), what="导出")
         if limit is None:
             return
         mode = self._selected_export_mode()

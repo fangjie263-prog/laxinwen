@@ -670,6 +670,50 @@ class TestRsshubCategoryAggregation:
         assert items
         assert any(it.title == "政治文章" for it in items)
 
+    def test_all_categories_tried_below_max_items_returns_available(self):
+        """所有分类都已尝试完成但仍不足 max_items → 返回已有的全部，不凑数。"""
+        url_map = {
+            self.INSTANCE: _mk_rss(
+                [("首页文章", "https://www.rfi.fr/cn/france/20260815-home")]
+            ),
+            f"{self.INSTANCE}/politique": _mk_rss(
+                [("政治文章", "https://www.rfi.fr/cn/politique/20260815-pol")]
+            ),
+        }
+        cfg = load_site_config("rfi")
+        fetcher = FakeFetcher(url_map=url_map)
+        fetcher.fail_urls.add("https://www.rfi.fr/zh/rss")
+        adapter = get_adapter(cfg)
+        # max_items=100 但只有 2 篇唯一文章 → 返回 2，不凑到 100
+        items = adapter.discover(fetcher=fetcher, max_items=100)
+        assert len(items) == 2
+        titles = [it.title for it in items]
+        assert "首页文章" in titles
+        assert "政治文章" in titles
+
+    def test_single_category_fails_continues_next(self):
+        """单个分类失败只记录 warning，继续请求后续分类。"""
+        url_map = {
+            self.INSTANCE: _mk_rss(
+                [("首页文章", "https://www.rfi.fr/cn/france/20260815-home")]
+            ),
+            f"{self.INSTANCE}/moyen-orient": _mk_rss(
+                [("中东文章", "https://www.rfi.fr/cn/moyen-orient/20260815-mo")]
+            ),
+        }
+        cfg = load_site_config("rfi")
+        fetcher = FakeFetcher(url_map=url_map)
+        fetcher.fail_urls.add("https://www.rfi.fr/zh/rss")
+        # 让 politique 分类失败，但 moyen-orient 应该仍被请求
+        fetcher.fail_urls.add(f"{self.INSTANCE}/politique")
+        adapter = get_adapter(cfg)
+        items = adapter.discover(fetcher=fetcher, max_items=10)
+        # moyen-orient 仍被请求并成功聚合
+        assert f"{self.INSTANCE}/moyen-orient" in fetcher.calls
+        assert any(it.title == "中东文章" for it in items)
+        # politique 失败但后续分类继续
+        assert f"{self.INSTANCE}/politique" in fetcher.calls
+
 
 class TestRsshubCategoryTwoInstanceFallback:
     """Phase 7：两个 RSSHub 实例保持 fallback（不合并），每个实例内分类聚合。"""

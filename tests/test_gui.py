@@ -855,7 +855,7 @@ class TestPortableExportButtons:
     def test_default_export_calls_portable_reader(self, root, tmp_path):
         """验收 A：默认导出方式=便携阅读包，点击「导出」调用 portable reader。"""
         app, ctx = _make_app(root, tmp_path)
-        app.export_limit_var.set("100")
+        app.limit_var.set("100")
         app._on_export()
         assert _pump_until(app, lambda: not app._busy)
         assert ctx["portable_calls"] == [("reader", "eco", 100)]
@@ -867,7 +867,7 @@ class TestPortableExportButtons:
     def test_select_reader_calls_portable_reader(self, root, tmp_path):
         app, ctx = _make_app(root, tmp_path)
         self._set_mode(app, "reader")
-        app.export_limit_var.set("30")
+        app.limit_var.set("30")
         app._on_export()
         assert _pump_until(app, lambda: not app._busy)
         assert ctx["portable_calls"] == [("reader", "eco", 30)]
@@ -876,7 +876,7 @@ class TestPortableExportButtons:
         """验收 B：选择「独立 HTML」→ 调用 portable html。"""
         app, ctx = _make_app(root, tmp_path)
         self._set_mode(app, "html")
-        app.export_limit_var.set("100")
+        app.limit_var.set("100")
         app._on_export()
         assert _pump_until(app, lambda: not app._busy)
         assert ctx["portable_calls"] == [("html", "eco", 100)]
@@ -888,7 +888,7 @@ class TestPortableExportButtons:
         """验收 B：选择「HTML 新闻包」→ 调用 package。"""
         app, ctx = _make_app(root, tmp_path)
         self._set_mode(app, "package")
-        app.export_limit_var.set("50")
+        app.limit_var.set("50")
         app._on_export()
         assert _pump_until(app, lambda: not app._busy)
         assert ctx["portable_calls"] == [("pkg", "eco", 50)]
@@ -901,7 +901,7 @@ class TestPortableExportButtons:
         app.site_combo.set("all")
         app._on_source_changed()
         self._set_mode(app, "html")
-        app.export_limit_var.set("100")
+        app.limit_var.set("100")
         app._on_export()
         assert _pump_until(app, lambda: not app._busy)
         assert ctx["portable_calls"] == [
@@ -916,14 +916,14 @@ class TestPortableExportButtons:
         app.site_combo.set("rfi")
         app._on_source_changed()
         self._set_mode(app, "html")
-        app.export_limit_var.set("100")
+        app.limit_var.set("100")
         app._on_export()
         assert _pump_until(app, lambda: not app._busy)
         assert ctx["portable_calls"] == [("html", "rfi", 100)]
 
     def test_invalid_limit_rejected(self, root, tmp_path):
         app, ctx = _make_app(root, tmp_path)
-        app.export_limit_var.set("abc")
+        app.limit_var.set("abc")
         app._on_export()
         assert not ctx["portable_calls"]
         assert "无效的导出数量" in _log_text(app)
@@ -936,7 +936,7 @@ class TestPortableExportButtons:
             raise RuntimeError("write error")
 
         app._portable_html_export = boom
-        app.export_limit_var.set("100")
+        app.limit_var.set("100")
         self._set_mode(app, "html")
         app._on_export()
         assert _pump_until(app, lambda: not app._busy)
@@ -950,11 +950,58 @@ class TestPortableExportButtons:
             raise RuntimeError("write error")
 
         app._portable_reader_export = boom
-        app.export_limit_var.set("100")
+        app.limit_var.set("100")
         app._on_export()  # 默认 reader
         assert _pump_until(app, lambda: not app._busy)
         assert "导出（📦 便携阅读包）失败" in _log_text(app)
         assert str(app.export_btn.cget("state")) == "normal"
+
+    # ---- 统一 limit：顶部 limit_var 是唯一权威导出数量 ----
+
+    def test_export_uses_limit_var_50(self, root, tmp_path):
+        """limit=50 → 所有导出函数收到 50。"""
+        app, ctx = _make_app(root, tmp_path)
+        app.limit_var.set("50")
+        self._set_mode(app, "html")
+        app._on_export()
+        assert _pump_until(app, lambda: not app._busy)
+        assert ctx["portable_calls"] == [("html", "eco", 50)]
+
+    def test_export_uses_limit_var_100(self, root, tmp_path):
+        """limit=100 → 所有导出函数收到 100。"""
+        app, ctx = _make_app(root, tmp_path)
+        app.limit_var.set("100")
+        self._set_mode(app, "html")
+        app._on_export()
+        assert _pump_until(app, lambda: not app._busy)
+        assert ctx["portable_calls"] == [("html", "eco", 100)]
+
+    def test_export_uses_limit_var_200(self, root, tmp_path):
+        """limit=200 → 所有导出函数收到 200。"""
+        app, ctx = _make_app(root, tmp_path)
+        app.limit_var.set("200")
+        self._set_mode(app, "package")
+        app._on_export()
+        assert _pump_until(app, lambda: not app._busy)
+        assert ctx["portable_calls"] == [("pkg", "eco", 200)]
+
+    def test_no_export_limit_var_widget(self, root, tmp_path):
+        """不再有独立 export_limit 输入框。"""
+        app, _ = _make_app(root, tmp_path)
+        # export_limit_var / export_limit_entry 不应存在
+        assert not hasattr(app, "export_limit_var")
+        assert not hasattr(app, "export_limit_entry")
+
+    def test_rfi_export_uses_limit_var(self, root, tmp_path):
+        """RFI 来源导出：使用顶部 limit_var。"""
+        app, ctx = _make_app(root, tmp_path)
+        app.site_combo.set("rfi")
+        app._on_source_changed()
+        app.limit_var.set("50")
+        self._set_mode(app, "reader")
+        app._on_export()
+        assert _pump_until(app, lambda: not app._busy)
+        assert ctx["portable_calls"] == [("reader", "rfi", 50)]
 
 
 class TestMultiSourceErrors:

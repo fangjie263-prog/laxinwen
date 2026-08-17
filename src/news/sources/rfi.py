@@ -157,10 +157,10 @@ class RfiAdapter(SourceAdapter):
         try:
             items = discover_from_rss(OFFICIAL_RSS, fetcher=fetcher)
             if items:
-                logger.info("[rfi] 官方 RSS 返回 %d 条", len(items))
+                logger.info("[RFI] 官方 RSS 返回 %d 条", len(items))
                 return items[:max_items]
         except Exception as exc:
-            logger.warning("[rfi] 官方 RSS 失败: %s", exc)
+            logger.warning("[RFI] 官方 RSS 失败: %s", exc)
 
         # 2. RSSHub 多实例 feed-level fallback：逐个实例尝试，一个实例整个失败
         #    才切下一个（不要把两个 instance 合并）。每个实例内先请求首页，再
@@ -168,23 +168,26 @@ class RfiAdapter(SourceAdapter):
         #    max_items 立即停止。
         last_exc: Exception | None = None
         for instance in self.rsshub_instances:
-            logger.info("[rfi] 尝试 RSSHub 实例: %s", instance)
+            logger.info("[RFI] 尝试 RSSHub 实例: %s", instance)
             try:
                 items = self._discover_rsshub_instance(
                     fetcher=fetcher, max_items=max_items, instance=instance
                 )
                 if items:
                     logger.info(
-                        "[rfi] RSSHub 实例 %s 聚合返回 %d 条", instance, len(items)
+                        "[RFI] RSSHub 实例 %s 聚合完成：唯一 %d / limit %d",
+                        instance,
+                        len(items),
+                        max_items,
                     )
                     return items
-                logger.warning("[rfi] RSSHub 实例 %s 无条目", instance)
+                logger.warning("[RFI] RSSHub 实例 %s 无条目", instance)
             except Exception as exc:
                 last_exc = exc
-                logger.warning("[rfi] RSSHub 实例 %s 失败: %s", instance, exc)
+                logger.warning("[RFI] RSSHub 实例 %s 失败: %s", instance, exc)
 
         logger.warning(
-            "[rfi] 官方 RSS 与所有 RSSHub 实例均失败，无候选文章"
+            "[RFI] 官方 RSS 与所有 RSSHub 实例均失败，无候选文章"
             + (f"（最近错误: {last_exc}" if last_exc else "")
         )
         return []
@@ -218,16 +221,24 @@ class RfiAdapter(SourceAdapter):
             home_items = discover_from_rss(instance, fetcher=fetcher)
             added = _add(home_items)
             logger.info(
-                "[rfi] RSSHub 实例 %s 首页返回 %d 条（新增 %d，累计 %d）",
-                instance,
+                "[RFI] 分类首页：返回 %d，新增唯一 %d，累计 %d",
                 len(home_items),
                 added,
                 len(collected),
             )
             if len(collected) >= max_items:
+                logger.info(
+                    "[RFI] 聚合完成：唯一 %d / limit %d（已达上限）",
+                    len(collected),
+                    max_items,
+                )
                 return collected[:max_items]
         except Exception as exc:
-            logger.warning("[rfi] RSSHub 实例 %s 首页失败: %s", instance, exc)
+            logger.warning(
+                "[RFI] 分类首页：失败 %s，累计仍为 %d",
+                exc,
+                len(collected),
+            )
 
         # 2. 分类页面（达到 max_items 立即停止）
         for slug in RFI_CN_CATEGORIES:
@@ -238,18 +249,33 @@ class RfiAdapter(SourceAdapter):
                 cat_items = discover_from_rss(category_url, fetcher=fetcher)
                 added = _add(cat_items)
                 logger.info(
-                    "[rfi] RSSHub 实例 %s 分类 %s 返回 %d 条（新增 %d，累计 %d）",
-                    instance,
+                    "[RFI] 分类%s：返回 %d，新增唯一 %d，累计 %d",
                     slug,
                     len(cat_items),
                     added,
                     len(collected),
                 )
+                if len(collected) >= max_items:
+                    logger.info(
+                        "[RFI] 聚合完成：唯一 %d / limit %d（已达上限）",
+                        len(collected),
+                        max_items,
+                    )
+                    return collected[:max_items]
             except Exception as exc:
                 logger.warning(
-                    "[rfi] RSSHub 实例 %s 分类 %s 失败: %s", instance, slug, exc
+                    "[RFI] 分类%s：失败 %s，累计仍为 %d",
+                    slug,
+                    exc,
+                    len(collected),
                 )
 
+        # 所有分类已尝试完成，未达到 max_items
+        logger.info(
+            "[RFI] 所有分类已尝试，唯一文章 %d / limit %d",
+            len(collected),
+            max_items,
+        )
         return collected[:max_items]
 
     def fetch_custom_headers(self) -> Optional[dict[str, str]]:
@@ -270,7 +296,7 @@ class RfiAdapter(SourceAdapter):
         """
         body_html, body_text = extract_body_from_html(html)
         if not body_html and not body_text:
-            logger.info("[rfi] HTML fallback 未找到正文容器，回退通用提取")
+            logger.info("[RFI] HTML fallback 未找到正文容器，回退通用提取")
             return False
         title = extract_title(html)
         if title:
