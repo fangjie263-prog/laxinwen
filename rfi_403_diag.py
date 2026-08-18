@@ -2,7 +2,11 @@
 """RFI 官网 403 诊断脚本（Windows 实机运行）。
 
 用法（在仓库根目录，项目依赖已安装的环境）：
-    python rfi_403_diag.py
+    python rfi_403_diag.py [<文章 URL>]
+
+不带参数时自动执行以下流程；也可传入一个真实文章 URL：
+    python rfi_403_diag.py "https://www.rfi.fr/cn/..."
+传参时会直接使用该 URL 作为文章页，完全跳过首页自动发现。
 
 它会依次执行 5 组实验并打印 status / content-length / 请求头 / 响应头：
 
@@ -155,9 +159,16 @@ def main() -> None:
     print(f"httpx : {httpx.__version__}")
     print()
 
-    article_url = ARTICLE_URL or _discover_article_url()
+    # 若命令行传入 URL（python rfi_403_diag.py "<url>"），则直接使用它，
+    # 完全跳过首页自动发现；未传参时才保留原来的自动发现逻辑。
+    if len(sys.argv) > 1 and sys.argv[1].startswith(('http://', 'https://')):
+        article_url = sys.argv[1].strip().rstrip('"\'')
+        print(f"[argv] 使用命令行参数作为文章 URL")
+    else:
+        article_url = ARTICLE_URL or _discover_article_url()
+
     if not article_url:
-        print("⚠ 未找到文章 URL，请在脚本中手动设置 ARTICLE_URL 后重跑。")
+        print("⚠ 未找到文章 URL，请在脚本中手动设置 ARTICLE_URL 或传入命令行参数后重跑。")
         return
 
     print(f"首页 URL  : {HOMEPAGE_URL}")
