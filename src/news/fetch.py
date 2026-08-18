@@ -17,11 +17,10 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_USER_AGENT = (
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 "
-    "laxinwen/0.1 (personal news research tool)"
-)
+# 默认不设置自定义 User-Agent：由 httpx 使用自身默认的 python-httpx/... UA。
+# 实验确认 Chrome 风格 UA 会触发 RFI 等站点的 403。
+# 如需自定义 UA，调用方可通过 FetcherOptions(user_agent="...") 显式指定。
+DEFAULT_USER_AGENT = None
 
 # 常见希望获取 JSON 而非 HTML 的站点（RSSHub 等）也统一处理
 _HTML_HINTS = ("text/html", "application/xhtml", "text/xml", "application/xml", "text/plain")
@@ -34,7 +33,7 @@ class FetcherOptions:
     retry_backoff: float = 1.5          # 指数退避基数（秒）
     min_interval: float = 2.0           # 同一域名两次请求的最小间隔（秒）
     max_interval: float = 8.0           # 随机化上限
-    user_agent: str = DEFAULT_USER_AGENT
+    user_agent: Optional[str] = DEFAULT_USER_AGENT
     headers: dict[str, str] = field(default_factory=dict)
     respect_retry_after: bool = True
 
@@ -65,18 +64,21 @@ class HttpxFetcher(BaseFetcher):
     def __init__(self, options: Optional[FetcherOptions] = None):
         self.options = options or FetcherOptions()
         self._last_request: dict[str, float] = {}
+        headers = {
+            "Accept": (
+                "text/html,application/xhtml+xml,application/xml;q=0.9,"
+                "application/rss+xml,application/atom+xml,application/json;q=0.8,*/*;q=0.7"
+            ),
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8,pt;q=0.7",
+            **self.options.headers,
+        }
+        # 仅在调用方显式指定 UA 时覆盖；否则保留 httpx 默认 UA（避免 403）。
+        if self.options.user_agent:
+            headers["User-Agent"] = self.options.user_agent
         self._client = httpx.Client(
             timeout=self.options.timeout,
             follow_redirects=True,
-            headers={
-                "User-Agent": self.options.user_agent,
-                "Accept": (
-                    "text/html,application/xhtml+xml,application/xml;q=0.9,"
-                    "application/rss+xml,application/atom+xml,application/json;q=0.8,*/*;q=0.7"
-                ),
-                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8,pt;q=0.7",
-                **self.options.headers,
-            },
+            headers=headers,
         )
 
     # ---------- 抓取礼仪 ----------
