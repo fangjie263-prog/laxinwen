@@ -327,9 +327,10 @@ def test_existing_valid_body_zero_fetch(storage):
     fetcher = FakeFetcher(url_map={})
     pipe = Pipeline(storage, fetcher=fetcher)
     # RSS 已带完整正文 content_html → 走 short-circuit，不 fetch 原文
+    # （has_usable_content 阈值已从 150 降到 20，短正文也不被误判为摘要）
     long_content = (
         "这是一段足够长的、可读的 RSS 完整正文内容，"
-        "长度需要超过 has_usable_content 的 150 字符阈值才能判定为完整正文。"
+        "长度已超过 has_usable_content 的 20 字符阈值，可判定为完整正文。"
         "继续补充更多文字以确保达到阈值。"
         "这一段文字继续扩充，让整段内容真正足够长。"
         "再增加一些描述性文字，确保整个段落的内容确实足够长。"

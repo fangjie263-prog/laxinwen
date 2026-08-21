@@ -28,8 +28,14 @@ logger = logging.getLogger(__name__)
 
 # discovery content short-circuit 阈值：content_html 纯文本长度低于该值
 # 视为“导语/摘要”而非“完整正文”，必须走原文 URL 的 HTML fallback。
-# 150 字大致是“一句导语”的上限，真实文章正文通常远高于此。
-_MIN_USABLE_CONTENT_CHARS = 150
+# 阈值不宜过高（20 字即可区分“一句话导语”与真正的正文片段），否则会把
+# 短但有效的 RSS 正文误判为摘要，导致不必要的官网正文请求。
+_MIN_USABLE_CONTENT_CHARS = 20
+
+# 单段落但作为完整正文时的最低纯文本长度。
+# 摘要/导语通常是 1 个短段落（一句话），真正的正文即使只有 1 个段落也会
+# 较长（> 80 字）。用于区分“只有摘要”与“带正文（即使短）”。
+_MIN_SINGLE_PARAGRAPH_BODY_CHARS = 80
 
 
 # HTML → text 时移除的“非正文”媒体/图片区域元素。
@@ -73,12 +79,16 @@ def has_usable_content(content_html: Optional[str]) -> bool:
     discovery content short-circuit 依据：
 
     - ``content_html`` 为 None / 空 → False（无正文）；
-    - ``content_html`` 只有非常短的摘要/导语（纯文本 < 阈值）→ False；
-    - ``content_html`` 有足量正文 → True。
+    - 纯文本长度 >= ``_MIN_USABLE_CONTENT_CHARS``（20 字）→ True。
+      20 字足以区分"一句话导语"（< 20 字）与"正文片段"（>= 20 字）；
+      但 content:encoded 的完整正文即使只有 1 个段落且较短，只要 >= 20 字
+      就应被接受为正文（RSS 优先原则，不因短而丢弃）；
+    - 纯文本长度 < 20 字 → False（空壳/失败占位/极短导语）。
 
     返回 True 时 pipeline 跳过 ``fetcher.fetch()`` 与 ``extract()``，直接用
     该 content_html 作为正文；返回 False 时必须 fetch 原文 URL + extract。
-    保持简单：仅依据长度判断，不解析具体站点结构。
+    摘要与完整正文的区分由 ``_resolve_content_html`` / ``_summary_is_usable_body``
+    完成：content:encoded 直接视为正文，summary 需要多段落或足够长才视为正文。
     """
     if not content_html:
         return False
@@ -155,18 +165,34 @@ def _resolve_content_html(entry) -> Optional[str]:
     优先级（保持 content/content:encoded 优先）：
 
     1. 若条目带 ``content`` / ``content:encoded``（feedparser 归一为 ``content``），
-       取其 HTML 作为 ``content_html``；
+       取其 HTML 作为 ``content_html``（content:encoded 即完整正文，即使较短
+       也保留，由 ``has_usable_content`` 判断是否可走 short-circuit）；
     2. 若没有 content，且 ``summary`` 含足够长的 HTML 正文（RFI 等 RSSHub
-       summary 可能直接携带完整正文，见 ``has_usable_content``），则把 summary
-       HTML 作为 ``content_html``，从而让 pipeline 走 0-fetch 短路；
+       summary 可能直接携带完整正文），则把 summary HTML 作为 ``content_html``；
+       summary 需要满足多段落或足够长（避免单段落导语被误判为完整正文）；
     3. 否则返回 None，由 pipeline 触发原文 URL 的 HTML fallback。
     """
     if entry.get("content"):
         return entry["content"][0].get("value")
     summary_html = entry.get("summary", "") or ""
-    if summary_html and has_usable_content(summary_html):
+    if summary_html and _summary_is_usable_body(summary_html):
         return summary_html
     return None
+
+
+def _summary_is_usable_body(summary_html: str) -> bool:
+    """判断 RSS summary 是否包含完整正文（而非仅导语/摘要）。
+
+    导语/摘要是 1 个短段落（一句话）；完整正文即使较短，也包含至少 2 个
+    段落或 1 个较长段落（>= 80 字）。
+    """
+    text = html_to_text(summary_html)
+    if len(text) < _MIN_USABLE_CONTENT_CHARS:
+        return False
+    paragraphs = len(re.findall(r"<p[^>]*>", summary_html, re.IGNORECASE))
+    if paragraphs >= 2:
+        return True
+    return len(text) >= _MIN_SINGLE_PARAGRAPH_BODY_CHARS
 
 
 def discover_from_rss(feed_url: str, *, fetcher: BaseFetcher | None = None) -> list[DiscoveredItem]:

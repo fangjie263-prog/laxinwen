@@ -709,3 +709,177 @@ class TestNoUsableContentFallsBackToHtmlFetch:
         art = storage.list_articles(limit=1)[0]
         assert art.body_text and "这是从原文页面提取的正文第一段" in art.body_text
         pipe.close()
+
+
+# ---------------------------------------------------------------------------
+# 11. RSS 第一优先级：RSS 优先，官网只是补充（核心原则）
+# ---------------------------------------------------------------------------
+
+
+class TestRssFirstPriority:
+    """RSS 第一优先级，官网及其他来源只是 RSS 的补充。"""
+
+    def _mk_url_map_with_categories(self):
+        """构造官网栏目 url_map（含首页与政治、中国栏目）。"""
+        return {
+            "https://www.rfi.fr/cn/": _mk_category_html(
+                [("首页文章", "https://www.rfi.fr/cn/中国/20260817-home")]
+            ),
+            "https://www.rfi.fr/cn/政治": _mk_category_html(
+                [("政治文章", "https://www.rfi.fr/cn/政治/20260816-pol")]
+            ),
+            "https://www.rfi.fr/cn/中国": _mk_category_html(
+                [("中国文章", "https://www.rfi.fr/cn/中国/20260815-china")]
+            ),
+        }
+
+    def test_rss_success_goes_to_categories_but_no_dup(self):
+        """RSS 成功时，官网补充仍执行但 RSS 已有文章不去重。"""
+        # RSS 有 2 篇，官网也有其中 1 篇 + 1 篇新的
+        rss_feed = _mk_rss([
+            ("RSS文章1", "https://www.rfi.fr/cn/中国/20260817-home"),
+            ("RSS文章2", "https://www.rfi.fr/cn/政治/20260816-pol"),
+        ])
+        cfg = load_site_config("rfi")
+        fetcher = FakeFetcher(
+            rss=rss_feed,
+            url_map={
+                "https://www.rfi.fr/cn/": _mk_category_html(
+                    [("首页文章", "https://www.rfi.fr/cn/中国/20260817-home")]
+                ),
+                "https://www.rfi.fr/cn/政治": _mk_category_html(
+                    [("政治文章", "https://www.rfi.fr/cn/政治/20260816-pol")]
+                ),
+                "https://www.rfi.fr/cn/中国": _mk_category_html(
+                    [("中国新文章", "https://www.rfi.fr/cn/中国/20260815-new")]
+                ),
+            },
+        )
+        adapter = get_adapter(cfg)
+        items = adapter.discover(fetcher=fetcher, max_items=10)
+        urls = [canonicalize_url(it.url) for it in items]
+        # 包含 RSS 2 篇 + 官网新增 1 篇
+        assert len(items) == 3
+        assert "https://www.rfi.fr/cn/中国/20260817-home" in urls
+        assert "https://www.rfi.fr/cn/政治/20260816-pol" in urls
+        assert "https://www.rfi.fr/cn/中国/20260815-new" in urls
+        # 无重复
+        assert len(urls) == len(set(urls))
+
+    def test_rss_success_no_dup_from_categories(self):
+        """RSS 已有文章在官网出现时不会被重复添加。"""
+        rss_feed = _mk_rss([
+            ("RSS文章", "https://www.rfi.fr/cn/中国/20260817-home"),
+        ])
+        cfg = load_site_config("rfi")
+        fetcher = FakeFetcher(
+            rss=rss_feed,
+            url_map={
+                "https://www.rfi.fr/cn/": _mk_category_html(
+                    [("首页文章", "https://www.rfi.fr/cn/中国/20260817-home")]
+                ),
+                "https://www.rfi.fr/cn/政治": _mk_category_html(
+                    [("政治文章", "https://www.rfi.fr/cn/政治/20260816-pol")]
+                ),
+                "https://www.rfi.fr/cn/中国": _mk_category_html(
+                    [("中国文章", "https://www.rfi.fr/cn/中国/20260815-china")]
+                ),
+            },
+        )
+        adapter = get_adapter(cfg)
+        items = adapter.discover(fetcher=fetcher, max_items=10)
+        urls = [canonicalize_url(it.url) for it in items]
+        # RSS 1 篇 + 官网新增 2 篇（政治/中国），首页文章与 RSS 重复不计入
+        assert len(items) == 3
+        assert urls.count(canonicalize_url("https://www.rfi.fr/cn/中国/20260817-home")) == 1
+
+    def test_rss_enough_items_no_categories_needed(self):
+        """RSS 已提供足够多文章时，不必为凑数量去请求官网。"""
+        # RSS 提供 15 篇（max_items=10 足够）
+        rss_feed = _mk_rss([
+            (f"RSS文章{i}", f"https://www.rfi.fr/cn/中国/20260817-{i}")
+            for i in range(15)
+        ])
+        cfg = load_site_config("rfi")
+        fetcher = FakeFetcher(rss=rss_feed)
+        adapter = get_adapter(cfg)
+        items = adapter.discover(fetcher=fetcher, max_items=10)
+        # 只返回 RSS 的 10 篇，不请求官网栏目
+        assert len(items) == 10
+        # 但官网栏目仍会被请求（补充逻辑执行）
+        assert any("www.rfi.fr/cn/" in u for u in fetcher.calls)
+
+    def test_rss_success_with_limit_exact(self):
+        """limit=max_items：RSS 找到 50 篇，官网补充，排序后取最新 N 篇。"""
+        # RSS 提供 3 篇，官网补充 2 篇新文章
+        rss_feed = _mk_rss([
+            ("RSS新", "https://www.rfi.fr/cn/中国/20260817-new"),
+            ("RSS中", "https://www.rfi.fr/cn/政治/20260816-mid"),
+            ("RSS旧", "https://www.rfi.fr/cn/法国/20260810-old"),
+        ])
+        cfg = load_site_config("rfi")
+        fetcher = FakeFetcher(
+            rss=rss_feed,
+            url_map={
+                "https://www.rfi.fr/cn/": _mk_category_html(
+                    [("官网A", "https://www.rfi.fr/cn/中国/20260818-official-a")]
+                ),
+                "https://www.rfi.fr/cn/政治": _mk_category_html(
+                    [("官网B", "https://www.rfi.fr/cn/政治/20260815-official-b")]
+                ),
+                "https://www.rfi.fr/cn/中国": _mk_category_html(
+                    [("RSS新", "https://www.rfi.fr/cn/中国/20260817-new")]
+                ),
+            },
+        )
+        adapter = get_adapter(cfg)
+        items = adapter.discover(fetcher=fetcher, max_items=5)
+        # RSS 3 篇 + 官网新增 2 篇（A 和 B），共 5 篇
+        assert len(items) == 5
+        # 按时间排序，最新的在第一个（20260818 > 20260817 > 20260816 > ...）
+        assert items[0].title == "官网A"  # 20260818
+        assert items[1].title == "RSS新"  # 20260817
+        assert items[2].title == "RSS中"  # 20260816
+
+    def test_rss_unavailable_logs_fallback(self, caplog):
+        """RSS 不可用时记录明确的 fallback 日志。"""
+        import logging
+
+        cfg = load_site_config("rfi")
+        fetcher = FakeFetcher(
+            rss="",
+            url_map=self._mk_url_map_with_categories(),
+        )
+        fetcher.fail_urls.add("https://www.rfi.fr/zh/rss")
+        fetcher.fail_substrings.append("rsshub")  # 所有 RSSHub 也失败
+        adapter = get_adapter(cfg)
+        with caplog.at_level(logging.WARNING, logger="news.sources.rfi"):
+            items = adapter.discover(fetcher=fetcher, max_items=10)
+        assert items  # 官网栏目仍然提供了文章
+        # 日志中包含明确的 fallback 信息
+        assert any("[RFI] RSS 不可用 → 启用官网补充模式" in r.message for r in caplog.records)
+
+    def test_rss_has_full_body_does_not_fetch_article_page(self, storage):
+        """RSS 完整正文 → 直接入库，不请求官网文章页。"""
+        fetcher = FakeFetcher(_FULL_RSS, html=_ARTICLE_HTML)
+        pipe = Pipeline(storage, fetcher=fetcher, max_items=3)
+        items = discover_from_rss(_FULL_RSS)
+        stats = pipe._ingest_items(items, "rfi", "RFI", "zh", {}, [])
+        # 完整正文 → 0 fetch
+        assert fetcher.calls == []
+        assert stats.fetched_ok == 1
+        assert stats.usable == 1
+        pipe.close()
+
+    def test_short_rss_body_not_filtered(self):
+        """RSS 正文即使较短（但确实是正文）也不应被高阈值过滤。"""
+        # 单段落但较长（> 80 字）→ 应视为可用正文
+        from news.discover import has_usable_content
+
+        # 一个段落但内容较长（> 80 字）→ True
+        long_single_para = "<p>这是一段较长的正文内容，虽然不是多段落结构，但包含了足够多的可读信息，长度远超 80 字符的阈值，所以应该被视为有效正文而不是摘要。</p>"
+        assert has_usable_content(long_single_para) is True
+
+        # 只有一个短段落（导语/摘要）→ False
+        short_single_para = "<p>这只是一句导语。</p>"
+        assert has_usable_content(short_single_para) is False

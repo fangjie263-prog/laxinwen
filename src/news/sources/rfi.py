@@ -1,25 +1,36 @@
 """RFI（法广中文）Source Adapter。
 
-法广（Radio France Internationale）中文站点的主要发现入口改为直接抓取
-RFI 中文官网栏目页（而非 RSSHub /rfi/cn 作为主入口）。RfiAdapter 按以下
-优先级发现文章：
+RFI 数据源严格遵循 **RSS 第一优先级，官网及其他来源只是 RSS 的补充**
+的核心原则。RfiAdapter 按以下优先级发现文章：
 
-1. **官方 RSS**（``https://www.rfi.fr/zh/rss``）—— 若可达且带完整
-   ``content:encoded`` 正文，则 ``content_html`` 为完整正文，pipeline 走
-   "discovery content short-circuit"（见 ``discover.has_usable_content``），
-   不再 fetch 原文 URL；官方 RSS 在部分网络环境下返回 404，此时直接进入
-   官网栏目方案；
-2. **RFI 中文官网栏目页**（主入口）—— 依次抓取 ``RFI_CN_CATEGORY_PAGES``
-   中列出的 RFI 中文栏目页（使用中文 slug，如 ``/cn/政治``、``/cn/中国``，
-   不是 ``/rfi/cn/europe``、``/rfi/cn/chine`` 等错误 slug）。从每个栏目页
-   HTML 中提取文章链接，用 ``canonicalize_url`` 去重；从页面 HTML / JSON-LD /
-   文章 URL 中解析发布时间（RFI 文章 URL 本身包含日期，如
-   ``/cn/中国/20260817-xxxxx``）。合并所有栏目候选后按 ``published_at``
-   从新到旧排序，返回前 ``max_items`` 篇。若栏目页能直接提供完整正文则
-   保留 ``content_html``（复用 0-fetch 短路），否则由 pipeline 后续 fetch
-   文章正文；
-3. **RSSHub 多实例 fallback** —— 仅当官网栏目页全部无法访问时，逐个尝试
-   ``sites/rfi.yaml`` 的 ``rsshub_instances``（两个实例保持 fallback，不合并）。
+1. **RSS（最高优先级）**—— 先尝试官方 RSS（``https://www.rfi.fr/zh/rss``），
+   再尝试 RSSHub 实例（``sites/rfi.yaml`` 的 ``rsshub_instances``）。
+   RSS 能获取到的新闻，优先全部采用 RSS 数据。RSS 条目若带完整正文
+   （``content_html``），直接入库，不再请求官网文章页；RSS 只有标题/摘要/URL
+   时，保留该条目，后续只对这些需要正文的条目请求官网文章页。
+2. **RFI 中文官网栏目页（补充来源）**—— 官网栏目 discovery 只能作为 RSS
+   的补充。先完成 RSS discovery，再抓官网栏目。官网发现的文章必须首先与
+   RSS 已发现的文章进行 URL / canonical URL / fingerprint 去重。RSS 已经
+   存在的文章，官网发现后不得再次作为新文章处理。只有官网发现、而 RSS 没有
+   覆盖的新闻，才进入补充集合。
+3. **官网文章正文**—— RSS 已有完整正文 → 不访问官网正文页；RSS 没有正文，
+   但有文章 URL → 可以访问官网正文页；官网栏目新增、RSS 没有覆盖的文章 →
+   可以访问官网正文页。
+
+数据流：
+
+```
+RSS discovery
+  → RSS 去重
+  → RSS 完整正文 → 直接入库
+  → RSS 无正文 → 标记为需要补正文
+  → 官网栏目 discovery
+  → 与 RSS 已有文章去重
+  → 只保留 RSS 没有的新文章
+  → 对需要正文的文章进行官网正文抓取
+  → 最终统一去重、质量检查、按发布时间排序
+  → limit = 最终输出数量
+```
 
 RFI 特有的逻辑（官网栏目聚合、RSSHub 回退、HTML 正文选择器）全部集中在本模块，
 不污染通用 discover / pipeline。
@@ -322,71 +333,143 @@ class RfiAdapter(SourceAdapter):
         self.rsshub_instances: list[str] = list(instances)
 
     def discover(self, *, fetcher: BaseFetcher, max_items: int) -> list[DiscoveredItem]:
-        """发现 RFI 中文新闻。
+        """发现 RFI 中文新闻（RSS 第一优先级，官网只是补充）。
 
-        优先级：
-        1. 官方 RSS（404 时直接进入官网栏目方案）；
-        2. RFI 中文官网栏目页（主入口，聚合去重 + 按发布时间排序）；
-        3. 官网栏目全部失败时，RSSHub 多实例 feed-level fallback（不合并）。
+        数据流：
+        1. RSS discovery（官方 RSS + RSSHub 实例，统一去重）
+        2. 官网栏目 discovery（与 RSS 已发现文章去重，只保留 RSS 没有的新文章）
+        3. 合并 RSS + 官网补充，按发布时间排序，截断到 max_items
 
         返回 ``DiscoveredItem``；若 RSS / 栏目页带完整正文，``content_html``
         非空，pipeline 走 short-circuit；否则为 None，pipeline 走 HTML fallback。
         """
-        # 1. 官方 RSS（实践中常 404，404 后直接进入官网栏目方案）
+        # ========== Step 1: RSS discovery（第一优先级）==========
+        rss_items: list[DiscoveredItem] = []
+        rss_seen: set[str] = set()
+
+        # 1a. 官方 RSS
+        official_rss_ok = False
         try:
-            items = discover_from_rss(OFFICIAL_RSS, fetcher=fetcher)
-            if items:
-                logger.info("[RFI] 官方 RSS 返回 %d 条", len(items))
-                return items[:max_items]
+            official_items = discover_from_rss(OFFICIAL_RSS, fetcher=fetcher)
+            if official_items:
+                official_rss_ok = True
+                logger.info("[RFI] 官方 RSS 返回 %d 条", len(official_items))
+                for it in official_items:
+                    canon = canonicalize_url(it.url)
+                    if not canon or canon in rss_seen:
+                        continue
+                    rss_seen.add(canon)
+                    rss_items.append(it)
         except Exception as exc:
-            logger.info("[RFI] 官方 RSS 不可用: %s（进入官网栏目方案）", exc)
-
-        # 2. RFI 中文官网栏目页（主入口）
-        items = self._discover_official_categories(fetcher=fetcher, max_items=max_items)
-        if items:
-            logger.info(
-                "[RFI] 官网栏目聚合：唯一文章 %d，按发布时间排序后取最近 %d 篇",
-                len(items),
-                min(len(items), max_items),
+            logger.warning(
+                "[RFI] RSS 不可用 → 启用官网补充模式（官方 RSS 失败: %s）",
+                exc,
             )
-            return items[:max_items]
 
-        # 3. RSSHub 多实例 fallback：仅当官网栏目全部失败时。
-        last_exc: Exception | None = None
-        for instance in self.rsshub_instances:
-            logger.info("[RFI] 尝试 RSSHub 实例（官网栏目不可用）: %s", instance)
-            try:
-                items = discover_from_rss(instance, fetcher=fetcher)
-                if items:
-                    logger.info(
-                        "[RFI] RSSHub 实例 %s 返回 %d 条（官网栏目不可用 fallback）",
-                        instance,
-                        len(items),
-                    )
-                    return items[:max_items]
-                logger.warning("[RFI] RSSHub 实例 %s 无条目", instance)
-            except Exception as exc:
-                last_exc = exc
-                logger.warning("[RFI] RSSHub 实例 %s 失败: %s", instance, exc)
+        # 1b. RSSHub 实例（官方 RSS 不成功或无条目时尝试）
+        if not official_rss_ok:
+            for instance in self.rsshub_instances:
+                try:
+                    hub_items = discover_from_rss(instance, fetcher=fetcher)
+                    if hub_items:
+                        logger.info("[RFI] RSSHub 实例 %s 返回 %d 条", instance, len(hub_items))
+                        added = 0
+                        for it in hub_items:
+                            canon = canonicalize_url(it.url)
+                            if not canon or canon in rss_seen:
+                                continue
+                            rss_seen.add(canon)
+                            rss_items.append(it)
+                            added += 1
+                        logger.info("[RFI] RSSHub %s 新增唯一 %d 条（累计 RSS %d 条）", instance, added, len(rss_items))
+                        if rss_items:
+                            break  # 第一个有条目的实例就停止
+                except Exception as exc:
+                    logger.warning("[RFI] RSSHub 实例 %s 失败: %s", instance, exc)
 
-        logger.warning(
-            "[RFI] 官方 RSS、官网栏目与所有 RSSHub 实例均失败，无候选文章"
-            + (f"（最近错误: {last_exc}" if last_exc else "")
+        # 1c. 如果官方 RSS 成功，也尝试 RSSHub 补充（收集更多文章）
+        elif len(rss_items) < max_items:
+            for instance in self.rsshub_instances:
+                try:
+                    hub_items = discover_from_rss(instance, fetcher=fetcher)
+                    if hub_items:
+                        added = 0
+                        for it in hub_items:
+                            canon = canonicalize_url(it.url)
+                            if not canon or canon in rss_seen:
+                                continue
+                            rss_seen.add(canon)
+                            rss_items.append(it)
+                            added += 1
+                        logger.info(
+                            "[RFI] RSSHub %s 补充发现 %d 条（RSS 累计 %d 条）",
+                            instance,
+                            added,
+                            len(rss_items),
+                        )
+                        if added == 0:
+                            break
+                except Exception as exc:
+                    logger.debug("[RFI] RSSHub %s 补充失败: %s", instance, exc)
+
+        logger.info("[RFI] RSS discovery 完成：共 %d 条（去重后）", len(rss_items))
+
+        # ========== Step 2: 官网栏目 discovery（补充 RSS 未覆盖的文章）==========
+        official_categories_items = self._discover_official_categories(
+            fetcher=fetcher, existing_urls=rss_seen
         )
-        return []
+
+        # 官网新增（RSS 未覆盖）的条目
+        new_from_official: list[DiscoveredItem] = []
+        for it in official_categories_items:
+            canon = canonicalize_url(it.url)
+            if not canon or canon in rss_seen:
+                continue
+            rss_seen.add(canon)
+            new_from_official.append(it)
+
+        logger.info(
+            "[RFI] 官网栏目补充：RSS 未覆盖的新文章 %d 条（RSS 已有 %d 条）",
+            len(new_from_official),
+            len(rss_items),
+        )
+
+        # ========== Step 3: 合并 RSS + 官网补充，统一排序 ==========
+        all_items = rss_items + new_from_official
+
+        # 按发布时间从新到旧排序；无发布时间的条目排到末尾（保持相对顺序）。
+        with_time = [it for it in all_items if it.published_at is not None]
+        without_time = [it for it in all_items if it.published_at is None]
+        with_time.sort(key=lambda it: it.published_at, reverse=True)
+        sorted_items = with_time + without_time
+
+        # 最终按 max_items 截断
+        result = sorted_items[:max_items]
+        logger.info(
+            "[RFI] 最终输出 %d 篇（RSS %d + 官网补充 %d，去重后共 %d，limit=%d）",
+            len(result),
+            len(rss_items),
+            len(new_from_official),
+            len(all_items),
+            max_items,
+        )
+        return result
 
     def _discover_official_categories(
-        self, *, fetcher: BaseFetcher, max_items: int
+        self, *, fetcher: BaseFetcher, existing_urls: set[str] | None = None
     ) -> list[DiscoveredItem]:
-        """从 RFI 中文官网栏目页聚合发现文章。
+        """从 RFI 中文官网栏目页聚合发现 RSS 未覆盖的文章。
 
         依次抓取 ``RFI_CN_CATEGORY_PAGES`` 各栏目页，从每个栏目页提取文章
         链接并用 canonical URL 去重；单个栏目失败只记 warning 并继续下一个。
-        所有栏目尝试完成后，按 ``published_at`` 从新到旧排序，返回前
-        ``max_items`` 篇（不足则返回已有的全部，不凑数）。
+        返回所有 RSS 未覆盖的新文章（不截断到 max_items，由调用方统一
+        排序截断）。
+
+        ``existing_urls``：RSS 已发现的 canonical URL 集合，用于在官网发现时
+        跳过这些已有文章（RSS 已经存在的文章，官网发现后不得再次作为新文章）。
         """
         collected: list[DiscoveredItem] = []
-        seen: set[str] = set()
+        seen: set[str] = set(existing_urls or set())
 
         def _add(items: list[DiscoveredItem]) -> int:
             added = 0
@@ -405,7 +488,7 @@ class RfiAdapter(SourceAdapter):
                 cat_items = _extract_articles_from_category_page(html, cat_url)
                 added = _add(cat_items)
                 logger.info(
-                    "[RFI] 官网栏目%s：发现 %d，新增唯一 %d，累计 %d",
+                    "[RFI] 官网栏目%s：发现 %d，RSS 未覆盖新增 %d，累计 %d",
                     cat_name,
                     len(cat_items),
                     added,
@@ -420,9 +503,8 @@ class RfiAdapter(SourceAdapter):
                 )
 
         logger.info(
-            "[RFI] 官网栏目聚合：唯一文章 %d%s",
+            "[RFI] 官网栏目聚合：RSS 未覆盖的新文章 %d 条",
             len(collected),
-            f" / limit {max_items}" if len(collected) < max_items else "",
         )
 
         # 按发布时间从新到旧排序；无发布时间的条目排到末尾（保持相对顺序）。
@@ -431,11 +513,7 @@ class RfiAdapter(SourceAdapter):
         with_time.sort(key=lambda it: it.published_at, reverse=True)
         sorted_items = with_time + without_time
 
-        logger.info(
-            "[RFI] 按发布时间排序后取最近 %d 篇",
-            min(len(sorted_items), max_items),
-        )
-        return sorted_items[:max_items]
+        return sorted_items
 
     def fetch_custom_headers(self) -> Optional[dict[str, str]]:
         # RFI / RSSHub 用浏览器 UA + 中文语言更友好
