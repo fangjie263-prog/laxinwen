@@ -174,17 +174,17 @@ class TestLimitCountsNewArticlesOnly:
         adapter = get_adapter({"id": "rfi", "name": "RFI", "adapter": "rfi"})
         items = adapter.discover(fetcher=fetcher, max_items=20, existing_urls=existing)
 
-        # 20 篇新候选（跳过 11 篇已存在的）
-        assert len(items) == 20
+        # 返回所有过滤后的新候选（不截断）：40 - 11 = 29 篇
+        assert len(items) == 29
         # 验证没有已存在的 URL 被返回
         for it in items:
             assert canonicalize_url(it.url) not in existing
-        # 验证返回的文章是第 11-30 篇（前 11 篇已在库被跳过）
+        # 验证返回的文章是第 11-39 篇（前 11 篇已在库被跳过）
         urls = [canonicalize_url(it.url) for it in items]
         assert canonicalize_url("https://www.rfi.fr/cn/中国/20260817-0") not in urls
         assert canonicalize_url("https://www.rfi.fr/cn/中国/20260817-10") not in urls
         assert canonicalize_url("https://www.rfi.fr/cn/中国/20260817-11") in urls
-        assert canonicalize_url("https://www.rfi.fr/cn/中国/20260817-30") in urls
+        assert canonicalize_url("https://www.rfi.fr/cn/中国/20260817-39") in urls
 
     def test_existing_in_db_does_not_consume_limit(self, storage):
         """RSS 前几条已在数据库 → 不影响 limit 数量。"""
@@ -214,7 +214,7 @@ class TestLimitCountsNewArticlesOnly:
         adapter = get_adapter({"id": "rfi", "name": "RFI", "adapter": "rfi"})
         items = adapter.discover(fetcher=fetcher, max_items=5, existing_urls=existing)
 
-        # 5 篇新文章（3 篇旧文被跳过，不消耗 limit）
+        # 5 篇新文章（3 篇旧文被跳过，不消耗 limit；返回全部新候选不截断）
         assert len(items) == 5
         titles = [it.title for it in items]
         assert "新文1" in titles
@@ -242,7 +242,7 @@ class TestRssEnoughSkipsOfficial:
 
         items = adapter.discover(fetcher=fetcher, max_items=20)
 
-        assert len(items) == 20
+        assert len(items) == 25  # 返回所有 25 篇新候选（不截断）
         # 不请求官网栏目页
         official_urls = [
             "https://www.rfi.fr/cn/",
@@ -261,7 +261,7 @@ class TestRssEnoughSkipsOfficial:
         fetcher = FakeFetcher(rss=rss_feed)
         adapter = get_adapter({"id": "rfi", "name": "RFI", "adapter": "rfi"})
         items = adapter.discover(fetcher=fetcher, max_items=10)
-        assert len(items) == 10
+        assert len(items) == 20  # 返回所有 20 篇新候选（不截断）
         # 不请求 RSSHub
         for inst in adapter.rsshub_instances:
             assert inst not in fetcher.calls
@@ -526,6 +526,46 @@ class TestOnly9Usable:
         pipe = Pipeline(storage, fetcher=fetcher, max_items=20)
         stats = pipe._ingest_items(items, "rfi", "RFI", "zh", {}, [])
         assert stats.usable <= 9
+
+    def test_only_9_usable_logs_all_sources_exhausted(self, storage, caplog):
+        """最终只有 9 篇可读 → 日志明确说明所有来源已经耗尽。"""
+        import logging
+
+        # 9 篇带完整正文的 RSS（content:encoded → 0-fetch 成功入库）
+        rss_entries = ""
+        for i in range(9):
+            rss_entries += f"""
+            <item>
+            <title>文章{i}</title>
+            <link>https://www.rfi.fr/cn/中国/20260817-{i}</link>
+            <content:encoded xmlns:content="http://purl.org/rss/1.0/modules/content/"><![CDATA[
+            <p class="t-content__chapo">导语段落内容。</p>
+            <div class="t-content__body">
+            <p>这是完整的正文第一段，包含足够的可读内容。</p>
+            <p>这是完整的正文第二段，继续提供更多细节。</p>
+            <p>这是完整的正文第三段，总结全部内容。</p>
+            </div>
+            ]]></content:encoded>
+            <pubDate>Sat, 15 Aug 2026 10:00:00 GMT</pubDate>
+            </item>
+            """
+        rss_feed = (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<rss version="2.0"><channel><title>法广 - RFI</title>'
+            + rss_entries
+            + "</channel></rss>"
+        )
+        fetcher = FakeFetcher(rss=rss_feed)
+        fetcher.fail_substrings.append("rsshub")
+        from news.sources.rfi import RFI_CN_CATEGORY_PAGES
+        for _, url in RFI_CN_CATEGORY_PAGES:
+            fetcher.fail_urls.add(url)
+
+        pipe = Pipeline(storage, fetcher=fetcher, max_items=20)
+        with caplog.at_level(logging.WARNING, logger="news"):
+            stats = pipe.run_site("rfi")
+        assert stats.usable == 9
+        assert any("所有来源已耗尽" in r.message for r in caplog.records)
 
 
 # ---------------------------------------------------------------------------

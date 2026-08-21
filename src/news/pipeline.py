@@ -166,7 +166,7 @@ class Pipeline:
             len(existing_urls),
         )
 
-        # 2. 逐个：去重 → 下载 → 提取 → 入库
+        # 2. 逐个：去重 → 下载 → 提取 → 入库，直到 usable >= max_items 或候选耗尽
         ingest = self._ingest_items(
             items,
             source_id,
@@ -176,6 +176,7 @@ class Pipeline:
             title_suffixes,
             fetch_headers=custom_headers,
             adapter=adapter,
+            target_usable=self.max_items,
         )
         ingest.discovered = len(items)
 
@@ -188,10 +189,10 @@ class Pipeline:
                 ingest.usable,
             )
         elif ingest.usable < self.max_items and items:
-            # 未能达到 limit：给出明确原因
+            # 未能达到 limit：所有来源已耗尽
             logger.warning(
-                "[%s] 新增可读新闻 %d < limit=%d。"
-                "候选 %d，跳过重复 %d，正文成功 %d，抓取失败 %d。"
+                "[%s] 所有来源已耗尽：最终获得 %d 篇可读新闻（limit=%d，候选 %d 条）。"
+                "跳过重复 %d，正文成功 %d，抓取失败 %d。"
                 "可能原因：候选不足、数据库重复过多、或正文质量不达标。",
                 source_id,
                 ingest.usable,
@@ -203,7 +204,7 @@ class Pipeline:
             )
         elif not items:
             logger.warning(
-                "[%s] 无可发现的新候选（limit=%d），可能是数据库已包含全部可用文章",
+                "[%s] 所有来源已耗尽：无可发现的新候选（limit=%d），可能是数据库已包含全部可用文章",
                 source_id,
                 self.max_items,
             )
@@ -220,20 +221,36 @@ class Pipeline:
         title_suffixes: list[str],
         fetch_headers: dict | None = None,
         adapter=None,
+        target_usable: int | None = None,
     ) -> FetchStats:
         """处理一批已发现条目：去重 → 下载 → 提取 → 入库。
 
         独立成方法便于测试注入离线抓取器。
 
+        ``target_usable``：目标 usable 文章数上限。当 ``stats.usable >=
+        target_usable`` 时提前停止处理剩余候选（已达到 limit 目标）。
+        为 None 时处理所有候选（兼容旧测试直接调用）。
+
         新增 discovery content short-circuit：若 RSS 条目已带完整正文
         （``has_usable_content(item.content_html)`` 为 True），直接用它作为
         正文，跳过 ``fetcher.fetch()`` 与 ``extract()``（0 次额外请求）；
         否则照常 fetch 原文 URL + extract（含站点 adapter 的 HTML fallback）。
+
+        已存在 URL（数据库重复）不消耗 limit；正文失败 / 空正文 / 空标题
+        不消耗 limit；只有真正 usable（通过质量验证）才计数。
         """
         stats = FetchStats()
         site_extract = site_extract or {}
 
         for item in items:
+            # 已达目标 usable 数 → 提前停止（不消耗 limit 的候选被跳过）
+            if target_usable is not None and stats.usable >= target_usable:
+                logger.info(
+                    "[%s] 已达目标 %d 篇可读新闻，停止处理剩余候选",
+                    source_id, target_usable,
+                )
+                break
+
             article = item.to_article(source_id, source_name, language=language)
             canon = canonicalize_url(article.canonical_url)
 

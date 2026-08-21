@@ -821,8 +821,9 @@ class TestRssFirstPriority:
         fetcher = FakeFetcher(rss=rss_feed)
         adapter = get_adapter(cfg)
         items = adapter.discover(fetcher=fetcher, max_items=10)
-        # 只返回 RSS 的 10 篇
-        assert len(items) == 10
+        # 返回所有 15 篇新候选（不截断），RSS 已足够 → 不访问官网
+        assert len(items) == 15
+        assert all(it.title.startswith("RSS文章") for it in items)
         # RSS 已足够 → 不请求任何官网栏目页
         assert not any("www.rfi.fr/cn/" in u for u in fetcher.calls)
 

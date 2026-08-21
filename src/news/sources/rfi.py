@@ -502,16 +502,24 @@ class RfiAdapter(SourceAdapter):
         with_time.sort(key=lambda it: it.published_at, reverse=True)
         sorted_items = with_time + without_time
 
-        # 最终按 max_items 截断
-        result = sorted_items[:max_items]
-        logger.info(
-            "[RFI] 最终输出 %d 篇（RSS 新候选 %d + 官网补充 %d，去重后共 %d，limit=%d）",
-            len(result),
-            rss_final_new,
-            len(new_from_official),
-            len(all_items),
-            max_items,
-        )
+        # 返回所有过滤后的新候选（不截断到 max_items）。
+        # max_items 是目标 usable 数，不是候选数。
+        # 即使候选超过 max_items，也全部返回，由 pipeline 持续消费
+        # 直到 usable_count >= max_items 或候选耗尽（正文失败不消耗 limit）。
+        result = sorted_items
+        if len(result) < max_items:
+            logger.info(
+                "[RFI] 所有来源已耗尽：最终只找到 %d 篇新候选（limit=%d）",
+                len(result), max_items,
+            )
+        else:
+            logger.info(
+                "[RFI] 最终输出 %d 篇候选（RSS 新候选 %d + 官网补充 %d，limit=%d）",
+                len(result),
+                rss_final_new,
+                len(new_from_official),
+                max_items,
+            )
         return result
 
     def _discover_official_categories(
