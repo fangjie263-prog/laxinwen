@@ -346,6 +346,21 @@ class Storage:
             ).fetchone()
         return row is not None
 
+    def all_canonical_urls(self, source_id: Optional[str] = None) -> set[str]:
+        """返回数据库中已有的 canonical URL 集合。
+
+        可选按 source_id 过滤。用于 discovery 层在发现阶段跳过已入库文章
+        （不消耗 limit 名额）。
+        """
+        sql = "SELECT canonical_url FROM articles"
+        params: list = []
+        if source_id:
+            sql += " WHERE source_id = ?"
+            params.append(source_id)
+        with self._conn:
+            rows = self._conn.execute(sql, params).fetchall()
+        return {str(r["canonical_url"]) for r in rows}
+
     def title_fp_exists(self, source_id: str, title_fp: str) -> bool:
         """同源是否存在相同标题指纹（第二层去重）。"""
         if not title_fp:

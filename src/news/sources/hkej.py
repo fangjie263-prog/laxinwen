@@ -342,9 +342,17 @@ class HkejAdapter(SourceAdapter):
         super().__init__(source_id, source_name)
         self.base = BASE
 
-    def discover(self, *, fetcher: BaseFetcher, max_items: int) -> list[DiscoveredItem]:
+    def discover(
+        self,
+        *,
+        fetcher: BaseFetcher,
+        max_items: int,
+        existing_urls: set[str] | None = None,
+    ) -> list[DiscoveredItem]:
         items = discover_list(fetcher=fetcher, max_items=max_items)
-        # 达到 max_items 后按需截断（discover_list 内部已按 max_items 停止）
+        # HKEJ 保持原有语义（max_items = 候选发现数量）
+        # existing_urls 暂不支持：HKEJ 走列表页抓取，候选本身就少，
+        # 不做 existing 过滤（保持行为不变）。
         return items[:max_items]
 
     def fetch_custom_headers(self) -> Optional[dict[str, str]]:

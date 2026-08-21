@@ -149,9 +149,22 @@ class Pipeline:
                 custom_headers = adapter.fetch_custom_headers()
 
         # 1. 发现
-        items = discover_for_site(cfg, fetcher=self.fetcher, max_items=self.max_items)
+        # 获取数据库已有的 canonical URLs，让 discovery 层跳过已入库文章
+        # （重复文章不消耗 limit 名额）。
+        existing_urls = self.storage.all_canonical_urls(source_id=source_id)
+        items = discover_for_site(
+            cfg,
+            fetcher=self.fetcher,
+            max_items=self.max_items,
+            existing_urls=existing_urls,
+        )
         stats.discovered = len(items)
-        logger.info("[%s] 发现 %d 条候选文章", source_id, len(items))
+        logger.info(
+            "[%s] 发现 %d 条候选文章（已过滤 %d 条数据库已有）",
+            source_id,
+            len(items),
+            len(existing_urls),
+        )
 
         # 2. 逐个：去重 → 下载 → 提取 → 入库
         ingest = self._ingest_items(
@@ -165,6 +178,36 @@ class Pipeline:
             adapter=adapter,
         )
         ingest.discovered = len(items)
+
+        # 3. limit 达成情况报告
+        if ingest.usable >= self.max_items:
+            logger.info(
+                "[%s] 已达到 limit=%d（新增可读新闻 %d）",
+                source_id,
+                self.max_items,
+                ingest.usable,
+            )
+        elif ingest.usable < self.max_items and items:
+            # 未能达到 limit：给出明确原因
+            logger.warning(
+                "[%s] 新增可读新闻 %d < limit=%d。"
+                "候选 %d，跳过重复 %d，正文成功 %d，抓取失败 %d。"
+                "可能原因：候选不足、数据库重复过多、或正文质量不达标。",
+                source_id,
+                ingest.usable,
+                self.max_items,
+                ingest.discovered,
+                ingest.skipped_dup,
+                ingest.fetched_ok,
+                ingest.failed,
+            )
+        elif not items:
+            logger.warning(
+                "[%s] 无可发现的新候选（limit=%d），可能是数据库已包含全部可用文章",
+                source_id,
+                self.max_items,
+            )
+
         return ingest
 
     def _ingest_items(

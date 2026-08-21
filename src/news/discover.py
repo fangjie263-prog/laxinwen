@@ -489,6 +489,7 @@ def discover_for_site(
     *,
     fetcher: BaseFetcher,
     max_items: int = 50,
+    existing_urls: set[str] | None = None,
 ) -> list[DiscoveredItem]:
     """按站点配置执行发现流程。
 
@@ -504,7 +505,7 @@ def discover_for_site(
     source_id = cfg.get("id", "")
     source_name = cfg.get("name", "")
 
-    # Source Adapter 分发：声明了 adapter 的站点（如 HKEJ）直接走 adapter
+    # Source Adapter 分发：声明了 adapter 的站点（如 HKEJ / RFI）直接走 adapter
     if cfg.get("adapter"):
         from .sources import get_adapter
 
@@ -513,7 +514,11 @@ def discover_for_site(
             logger.info(
                 "[%s] 使用 source adapter: %s", source_id, type(adapter).__name__
             )
-            items = adapter.discover(fetcher=fetcher, max_items=max_items)
+            items = adapter.discover(
+                fetcher=fetcher,
+                max_items=max_items,
+                existing_urls=existing_urls,
+            )
             logger.info(
                 "[%s] adapter 发现 %d 条候选（去重后）", source_id, len(items)
             )
@@ -523,7 +528,7 @@ def discover_for_site(
         )
 
     collected: list[DiscoveredItem] = []
-    seen: set[str] = set()
+    seen: set[str] = set(existing_urls or set())
 
     def _add(items: list[DiscoveredItem]) -> int:
         """合并去重，返回新增条数。"""

@@ -36,11 +36,21 @@ class SourceAdapter(ABC):
         self.source_name = source_name
 
     @abstractmethod
-    def discover(self, *, fetcher: BaseFetcher, max_items: int) -> list[DiscoveredItem]:
+    def discover(
+        self,
+        *,
+        fetcher: BaseFetcher,
+        max_items: int,
+        existing_urls: set[str] | None = None,
+    ) -> list[DiscoveredItem]:
         """发现新闻条目（未下载正文）。
 
         ``max_items`` 为本次发现窗口上限（对应 ``--limit`` 语义：
         最多返回最近 ``max_items`` 篇候选文章，供后续去重/下载）。
+
+        ``existing_urls``：可选，数据库中已存在的 canonical URL 集合。
+        支持 adapter 在发现阶段就跳过已入库文章，持续从 RSS 等来源
+        寻找直到凑满 ``max_items`` 个真正的新候选（而不是被旧文章消耗名额）。
         """
 
     # ---------- 可选钩子 ----------

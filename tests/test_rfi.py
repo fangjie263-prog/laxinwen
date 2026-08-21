@@ -417,16 +417,33 @@ class TestRsshubFallbackWhenOfficialFails:
         # 结果来自第二个实例
         assert items[0].title == "高市致辞不谈反省 四阁僚参拜靖国神社"
 
-    def test_first_instance_succeeds_no_second_request(self):
-        """第一个 RSSHub 实例成功 → 不请求第二个实例。"""
+    def test_first_instance_succeeds_enough_items_skip_second(self):
+        """第一个 RSSHub 实例成功且已有足够条目 → 不请求第二个实例。"""
         cfg = load_site_config("rfi")
-        fetcher = FakeFetcher(_SUMMARY_RSS)
+        # RSS 包含 10 篇文章，max_items=5 → 第一个实例就足够
+        rss_many = _mk_rss([
+            (f"文章{i}", f"https://www.rfi.fr/cn/中国/20260817-{i}")
+            for i in range(10)
+        ])
+        fetcher = FakeFetcher(rss_many)
         self._fail_all_official(fetcher)
         adapter = get_adapter(cfg)
         items = adapter.discover(fetcher=fetcher, max_items=5)
         assert items
         assert adapter.rsshub_instances[0] in fetcher.calls
         assert adapter.rsshub_instances[1] not in fetcher.calls
+
+    def test_first_instance_insufficient_tries_second(self):
+        """第一个 RSSHub 实例返回不足 max_items → 尝试第二个实例补充。"""
+        cfg = load_site_config("rfi")
+        fetcher = FakeFetcher(_SUMMARY_RSS)  # 只有 1 篇文章
+        self._fail_all_official(fetcher)
+        adapter = get_adapter(cfg)
+        items = adapter.discover(fetcher=fetcher, max_items=5)
+        assert items
+        assert adapter.rsshub_instances[0] in fetcher.calls
+        # 第一个实例只有 1 篇 < max_items=5 → 继续尝试第二个实例
+        assert adapter.rsshub_instances[1] in fetcher.calls
 
     def test_all_instances_fail_returns_empty(self):
         """所有 RSSHub 实例也失败 → 返回空列表，不抛异常。"""
@@ -794,7 +811,7 @@ class TestRssFirstPriority:
         assert urls.count(canonicalize_url("https://www.rfi.fr/cn/中国/20260817-home")) == 1
 
     def test_rss_enough_items_no_categories_needed(self):
-        """RSS 已提供足够多文章时，不必为凑数量去请求官网。"""
+        """RSS 已提供足够多文章时，不请求官网栏目（降低反爬风险）。"""
         # RSS 提供 15 篇（max_items=10 足够）
         rss_feed = _mk_rss([
             (f"RSS文章{i}", f"https://www.rfi.fr/cn/中国/20260817-{i}")
@@ -804,10 +821,10 @@ class TestRssFirstPriority:
         fetcher = FakeFetcher(rss=rss_feed)
         adapter = get_adapter(cfg)
         items = adapter.discover(fetcher=fetcher, max_items=10)
-        # 只返回 RSS 的 10 篇，不请求官网栏目
+        # 只返回 RSS 的 10 篇
         assert len(items) == 10
-        # 但官网栏目仍会被请求（补充逻辑执行）
-        assert any("www.rfi.fr/cn/" in u for u in fetcher.calls)
+        # RSS 已足够 → 不请求任何官网栏目页
+        assert not any("www.rfi.fr/cn/" in u for u in fetcher.calls)
 
     def test_rss_success_with_limit_exact(self):
         """limit=max_items：RSS 找到 50 篇，官网补充，排序后取最新 N 篇。"""
@@ -857,7 +874,7 @@ class TestRssFirstPriority:
             items = adapter.discover(fetcher=fetcher, max_items=10)
         assert items  # 官网栏目仍然提供了文章
         # 日志中包含明确的 fallback 信息
-        assert any("[RFI] RSS 不可用 → 启用官网补充模式" in r.message for r in caplog.records)
+        assert any("[RFI] RSS 官方不可用 → 启用官网补充模式" in r.message for r in caplog.records)
 
     def test_rss_has_full_body_does_not_fetch_article_page(self, storage):
         """RSS 完整正文 → 直接入库，不请求官网文章页。"""
