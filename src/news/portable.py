@@ -514,6 +514,8 @@ def export_independent_html(
     rows = storage.list_articles_with_analysis(
         source_id=source_id, limit=limit if limit else 10**9
     )
+    # 只导出 usable article（排除 failed / 空标题 / 空正文 / [抓取失败] 前缀）
+    rows = [r for r in rows if storage.is_usable(r)]
     result = PortableResult()
     result.exported = len(rows)
     for row in rows:
@@ -577,6 +579,8 @@ def export_portable_package(
     rows = storage.list_articles_with_analysis(
         source_id=source_id, limit=limit if limit else 10**9
     )
+    # 只导出 usable article（排除 failed / 空标题 / 空正文 / [抓取失败] 前缀）
+    rows = [r for r in rows if storage.is_usable(r)]
     result = PortableResult()
     for row in rows:
         status = _ai_status(row)
@@ -696,6 +700,8 @@ def export_portable_reader_package(
     rows = storage.list_articles_with_analysis(
         source_id=source_id, limit=limit if limit else 10**9
     )
+    # 只导出 usable article（排除 failed / 空标题 / 空正文 / [抓取失败] 前缀）
+    rows = [r for r in rows if storage.is_usable(r)]
     result = PortableResult()
     for row in rows:
         status = _ai_status(row)

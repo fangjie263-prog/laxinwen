@@ -30,6 +30,10 @@ lists: []
 # 无需 JS（普通 HTTP 即可取得正文与列表）
 requires_js: false
 
+# 正文抓取的独立节流间隔（秒）。discovery 仍走普通 fetch（min_interval），
+# 只有正文 fetch_article() 使用此独立 15 秒节流，避免对 RFI 文章正文请求过快。
+article_interval: 15
+
 # Trafilatura 提取参数（作为 HTML fallback 未命中正文容器时的兜底）
 extract:
   favor_recall: true

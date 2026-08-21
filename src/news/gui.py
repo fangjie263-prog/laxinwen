@@ -320,7 +320,7 @@ class _NewsReaderApp:
         grid = ttk.Frame(self.status_card)
         grid.pack(fill="x")
         for i, key in enumerate(
-            ("db", "eco_count", "hkej_count", "rfi_count", "ai_ok", "ai_failed",
+            ("db", "eco_count", "hkej_count", "rfi_count", "usable", "ai_ok", "ai_failed",
              "ai_status", "current_source", "last_action", "last_fetch")
         ):
             lbl = ttk.Label(grid, text="")
@@ -445,6 +445,13 @@ class _NewsReaderApp:
                 self._http_server = None
         self.root.destroy()
 
+    def _count_failed(self, storage, source_id: str) -> int:
+        """返回指定站点抓取失败（status='failed'）的文章数，用于导出日志。"""
+        try:
+            return storage.count_by_status(source_id=source_id).get("failed", 0)
+        except Exception:
+            return 0
+
     def _status_text(self, value: str) -> str:
         try:
             if value and value.strip():
@@ -500,12 +507,14 @@ class _NewsReaderApp:
                 eco_count = storage.count(source_id="eco")
                 hkej_count = storage.count(source_id="hkej")
                 rfi_count = storage.count(source_id="rfi")
+                usable = sum(storage.count_usable(source_id=sid) for sid in site_ids)
                 self._last_fetch_at = self._read_last_fetch_at(storage, site_ids)
                 self._analysis_status = self._read_analysis_status(storage, site_ids)
         except Exception as exc:
             self.log(f"状态读取失败：{exc}")
             eco_count = 0
             hkej_count = 0
+            usable = 0
 
         ai_ok, ai_failed = self._analysis_status
         current = self.site_var.get()
@@ -514,6 +523,7 @@ class _NewsReaderApp:
             "eco_count": f"ECO 新闻：{eco_count}",
             "hkej_count": f"HKEJ 新闻：{hkej_count}",
             "rfi_count": f"RFI 新闻：{rfi_count}",
+            "usable": f"可读新闻：{usable}",
             "ai_ok": f"AI 已分析：{ai_ok}",
             "ai_failed": f"AI 失败：{ai_failed}",
             "ai_status": f"AI 状态：{self._ai_status_label()}",
@@ -722,8 +732,9 @@ class _NewsReaderApp:
                         f"{self._sep}\n"
                         f"[{self._source_display(sid)}] 发现：{s.discovered}\n"
                         f"重复：{s.skipped_dup}\n"
-                        f"新增：{s.fetched_ok}\n"
-                        f"失败：{s.failed}"
+                        f"正文成功：{s.fetched_ok}\n"
+                        f"抓取失败：{s.failed}\n"
+                        f"可读新闻：{s.usable}"
                     )
                     if s.errors:
                         self._bg_log(f"[{self._source_display(sid)}] 失败明细（前 5 条）：")
@@ -782,8 +793,11 @@ class _NewsReaderApp:
                 if not index.exists():
                     raise FileNotFoundError(f"News Archive 未生成：{index}")
                 self._bg_log(
-                    f"{self._source_display(sid)} News Archive 导出完成：{result.exported} 篇"
-                    f"（已分析 {result.analyzed_ok} / 失败 {result.analyzed_failed} / 未分析 {result.unanalyzed}）"
+                    f"{self._source_display(sid)} News Archive 导出完成：{result.exported} 篇\n"
+                    f"抓取失败（未导出）：{self._count_failed(storage, sid)}\n"
+                    f"AI 已分析：{result.analyzed_ok}\n"
+                    f"AI 分析失败：{result.analyzed_failed}\n"
+                    f"AI 未分析：{result.unanalyzed}"
                 )
                 # 本地 HTTP 阅读模式：打开 http://127.0.0.1:<port>/news-html/<site>/index.html
                 url = self._http_url_for(f"news-html/{sid}/index.html")
@@ -827,8 +841,11 @@ class _NewsReaderApp:
                 if not out_path.exists():
                     raise FileNotFoundError(f"独立 HTML 未生成：{out_path}")
                 self._bg_log(
-                    f"{self._source_display(sid)} 独立 HTML 导出完成：{result.exported} 篇"
-                    f"（已分析 {result.analyzed_ok} / 失败 {result.analyzed_failed} / 未分析 {result.unanalyzed}）"
+                    f"{self._source_display(sid)} 独立 HTML 导出完成：{result.exported} 篇\n"
+                    f"抓取失败（未导出）：{self._count_failed(storage, sid)}\n"
+                    f"AI 已分析：{result.analyzed_ok}\n"
+                    f"AI 分析失败：{result.analyzed_failed}\n"
+                    f"AI 未分析：{result.unanalyzed}"
                 )
                 self._bg_log(f"📦 独立 HTML 文件：\n{out_path}")
                 self._bg_log("可复制到没有 laxinwen 的电脑，双击即可阅读。")
@@ -850,8 +867,11 @@ class _NewsReaderApp:
                 if not index.exists():
                     raise FileNotFoundError(f"HTML 新闻包未生成：{index}")
                 self._bg_log(
-                    f"{self._source_display(sid)} HTML 新闻包导出完成：{result.exported} 篇"
-                    f"（已分析 {result.analyzed_ok} / 失败 {result.analyzed_failed} / 未分析 {result.unanalyzed}）"
+                    f"{self._source_display(sid)} HTML 新闻包导出完成：{result.exported} 篇\n"
+                    f"抓取失败（未导出）：{self._count_failed(storage, sid)}\n"
+                    f"AI 已分析：{result.analyzed_ok}\n"
+                    f"AI 分析失败：{result.analyzed_failed}\n"
+                    f"AI 未分析：{result.unanalyzed}"
                 )
                 self._bg_log(f"📚 HTML 新闻包目录：\n{out_dir}")
                 self._bg_log("可复制整个目录到其它电脑，双击 index.html 阅读。")
@@ -873,8 +893,11 @@ class _NewsReaderApp:
                 if not (out_dir / "index.html").exists() or not bat.exists():
                     raise FileNotFoundError(f"便携阅读包未生成：{out_dir}")
                 self._bg_log(
-                    f"{self._source_display(sid)} 便携阅读包导出完成：{result.exported} 篇"
-                    f"（已分析 {result.analyzed_ok} / 失败 {result.analyzed_failed} / 未分析 {result.unanalyzed}）"
+                    f"{self._source_display(sid)} 便携阅读包导出完成：{result.exported} 篇\n"
+                    f"抓取失败（未导出）：{self._count_failed(storage, sid)}\n"
+                    f"AI 已分析：{result.analyzed_ok}\n"
+                    f"AI 分析失败：{result.analyzed_failed}\n"
+                    f"AI 未分析：{result.unanalyzed}"
                 )
                 self._bg_log(f"📦 便携阅读包目录：\n{out_dir}")
                 self._bg_log(

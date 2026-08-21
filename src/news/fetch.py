@@ -36,6 +36,9 @@ class FetcherOptions:
     user_agent: Optional[str] = DEFAULT_USER_AGENT
     headers: dict[str, str] = field(default_factory=dict)
     respect_retry_after: bool = True
+    # 正文抓取的独立节流间隔（秒）。默认 None 表示与 discovery 共用 min_interval；
+    # 若设置（如 RFI 的 15 秒），fetch_article() 走独立的文章节流，与 discovery 完全分开。
+    article_interval: Optional[float] = None
 
 
 class FetchError(Exception):
@@ -53,6 +56,15 @@ class BaseFetcher(ABC):
     def fetch(self, url: str, **kwargs) -> str:
         """下载 URL 并返回文本（HTML/XML/JSON 字符串）。"""
 
+    def fetch_article(self, url: str, **kwargs) -> str:
+        """下载一篇文章的正文。
+
+        默认实现与 ``fetch`` 完全一致（无文章专用节流），保证 ECO / HKEJ 等
+        未配置 ``article_interval`` 的站点行为不变。
+        需要独立正文节流的 Fetcher（如 HttpxFetcher）会覆盖此方法。
+        """
+        return self.fetch(url, **kwargs)
+
     @abstractmethod
     def close(self) -> None:  # pragma: no cover - 接口定义
         ...
@@ -64,6 +76,10 @@ class HttpxFetcher(BaseFetcher):
     def __init__(self, options: Optional[FetcherOptions] = None):
         self.options = options or FetcherOptions()
         self._last_request: dict[str, float] = {}
+        # 文章专用节流（独立于 discovery）。初始取自 options.article_interval；
+        # pipeline 在 run_site 时按站点配置覆盖（RFI 15s，ECO/HKEJ 为 None）。
+        self._last_article_request: dict[str, float] = {}
+        self.article_interval: Optional[float] = self.options.article_interval
         headers = {
             "Accept": (
                 "text/html,application/xhtml+xml,application/xml;q=0.9,"
@@ -84,17 +100,30 @@ class HttpxFetcher(BaseFetcher):
     # ---------- 抓取礼仪 ----------
 
     def _throttle(self, url: str) -> None:
-        """同一域名最小请求间隔 + 随机抖动。"""
+        """同一域名最小请求间隔 + 随机抖动（discovery 节流）。"""
+        self._throttle_with(url, self.options.min_interval, self._last_request)
+
+    def _article_throttle(self, url: str) -> None:
+        """文章正文专用节流（与 discovery 完全独立）。
+
+        使用 ``self.article_interval``（未配置时回退到 ``min_interval``）；
+        追踪在 ``_last_article_request``，不干扰 discovery 的 ``_last_request``。
+        """
+        interval = self.article_interval if self.article_interval is not None else self.options.min_interval
+        self._throttle_with(url, interval, self._last_article_request)
+
+    def _throttle_with(self, url: str, interval: float, bucket: dict[str, float]) -> None:
+        """通用节流：在 ``bucket`` 内按域名记录上次请求，保证间隔 >= interval。"""
         host = httpx.URL(url).host or url
-        last = self._last_request.get(host, 0.0)
+        last = bucket.get(host, 0.0)
         elapsed = time.monotonic() - last
-        wait = self.options.min_interval - elapsed
+        wait = interval - elapsed
         if wait > 0:
-            # 在 [min_interval, max_interval] 之间随机抖动，避免规律性请求
-            jitter = random.uniform(0, self.options.max_interval - self.options.min_interval)
+            # 在 [interval, max_interval] 之间随机抖动，避免规律性请求
+            jitter = random.uniform(0, max(0.0, self.options.max_interval - interval))
             logger.debug("throttle %.2fs (host=%s)", wait + jitter, host)
             time.sleep(wait + jitter)
-        self._last_request[host] = time.monotonic()
+        bucket[host] = time.monotonic()
 
     def _respect_retry_after(self, response: httpx.Response, backoff: float) -> float:
         if not self.options.respect_retry_after:
@@ -110,12 +139,24 @@ class HttpxFetcher(BaseFetcher):
     # ---------- 主入口 ----------
 
     def fetch(self, url: str, **kwargs) -> str:
+        """下载 URL（discovery 节流），返回文本。"""
+        return self._fetch_with_throttle(url, self._throttle, **kwargs)
+
+    def fetch_article(self, url: str, **kwargs) -> str:
+        """下载文章正文（独立文章节流），返回文本。
+
+        每次真实 HTTP attempt 前都经过文章节流（retry=3 时 3 次 attempt
+        都分别节流），与 discovery 的普通节流完全独立。
+        """
+        return self._fetch_with_throttle(url, self._article_throttle, **kwargs)
+
+    def _fetch_with_throttle(self, url: str, throttle_fn, **kwargs) -> str:
         last_exc: Optional[Exception] = None
         last_status: Optional[int] = None
         # 可选：per-request headers（站点 adapter 可通过 kwargs 覆盖 UA 等）
         extra_headers = kwargs.get("headers") or {}
         for attempt in range(1, self.options.retries + 1):
-            self._throttle(url)
+            throttle_fn(url)
             try:
                 if extra_headers:
                     resp = self._client.get(url, headers=extra_headers)

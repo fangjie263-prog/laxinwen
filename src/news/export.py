@@ -40,6 +40,8 @@ def export_jsonl(
     articles = storage.list_articles(
         source_id=source_id, limit=limit if limit else 10**9
     )
+    # 只导出 usable article（排除 failed / 空标题 / 空正文 / [抓取失败] 前缀）
+    articles = [a for a in articles if storage.is_usable(a)]
     with out_path.open("w", encoding="utf-8") as fh:
         for art in articles:
             fh.write(json.dumps(art.to_dict(), ensure_ascii=False) + "\n")
@@ -77,6 +79,8 @@ def export_markdown(
     articles = storage.list_articles(
         source_id=source_id, limit=limit if limit else 10**9
     )
+    # 只导出 usable article（排除 failed / 空标题 / 空正文 / [抓取失败] 前缀）
+    articles = [a for a in articles if storage.is_usable(a)]
     for i, art in enumerate(articles, start=1):
         published = art.published_at or art.discovered_at
         if published.tzinfo is None:

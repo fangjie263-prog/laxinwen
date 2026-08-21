@@ -22,6 +22,62 @@ from .storage import Storage
 
 logger = logging.getLogger(__name__)
 
+# 抓取失败时写入 body_text 的前缀（与 storage.mark_failed 保持一致）
+_FAILURE_PREFIX = "[抓取失败]"
+
+# 正文可读性最小字符数（空标题/空正文/仅失败占位不能成为 usable article）
+_MIN_READABLE_BODY_CHARS = 10
+
+
+def _validate_extracted_body(article) -> bool:
+    """校验已提取的文章是否具备可读正文与标题。
+
+    至少满足：标题非空，且 ``body_html`` 或 ``body_text`` 真正有可读内容
+    （非空、非失败占位前缀、长度达到阈值）。返回 True 表示可作为 usable article。
+    """
+    title = (article.title or "").strip()
+    if not title:
+        return False
+    body_text = (article.body_text or "").strip()
+    body_html = (article.body_html or "").strip()
+    if not body_text and not body_html:
+        return False
+    if body_text.startswith(_FAILURE_PREFIX) or body_html.startswith(_FAILURE_PREFIX):
+        return False
+    # 取正文文本长度（body_html 存在时也确保有可读文本）
+    if body_text:
+        readable = body_text
+    else:
+        readable = _html_to_plain(body_html)
+    return len(readable.strip()) >= _MIN_READABLE_BODY_CHARS
+
+
+def _invalid_body_reason(article) -> str:
+    """返回正文质量校验失败的原因（用于日志 / mark_failed）。"""
+    title = (article.title or "").strip()
+    if not title:
+        return "空标题，不视为可用正文"
+    body_text = (article.body_text or "").strip()
+    body_html = (article.body_html or "").strip()
+    if not body_text and not body_html:
+        return "空正文，不视为可用正文"
+    if body_text.startswith(_FAILURE_PREFIX) or body_html.startswith(_FAILURE_PREFIX):
+        return "正文为失败占位，不视为可用正文"
+    if body_text:
+        readable = body_text
+    else:
+        readable = _html_to_plain(body_html)
+    if len(readable.strip()) < _MIN_READABLE_BODY_CHARS:
+        return f"正文过短（{len(readable.strip())} 字），不视为可用正文"
+    return "正文质量不达标"
+
+
+def _html_to_plain(html: str) -> str:
+    """简单去 HTML 标签得到纯文本（供正文质量校验）。"""
+    import re
+
+    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", html or "")).strip()
+
 
 @dataclass
 class FetchStats:
@@ -30,6 +86,7 @@ class FetchStats:
     fetched_ok: int = 0
     extracted_ok: int = 0
     failed: int = 0
+    usable: int = 0  # 通过正文质量验证、可读新闻数（usable article）
     errors: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict:
@@ -39,6 +96,7 @@ class FetchStats:
             "fetched_ok": self.fetched_ok,
             "extracted_ok": self.extracted_ok,
             "failed": self.failed,
+            "usable": self.usable,
             "errors": self.errors,
         }
 
@@ -67,6 +125,12 @@ class Pipeline:
     def run_site(self, site_id: str) -> FetchStats:
         cfg = load_site_config(site_id)
         stats = FetchStats()
+
+        # 站点级正文节流：把 rfi.yaml 的 article_interval 应用到共享 fetcher。
+        # discovery 仍走普通 fetch()；只有正文 fetch_article() 使用该独立间隔。
+        article_interval = cfg.get("article_interval")
+        if article_interval is not None and hasattr(self.fetcher, "article_interval"):
+            self.fetcher.article_interval = float(article_interval)
 
         source_id = cfg.get("id", site_id)
         source_name = cfg.get("name", source_id)
@@ -168,17 +232,19 @@ class Pipeline:
                 self._update_body(
                     article_id, article, source_id, stats, logger
                 )
+                stats.usable += 1
                 logger.info(
                     "[%s] 入库成功 #%d  %s（RSS 完整正文，0 fetch）",
                     source_id, article_id, article.title[:60],
                 )
                 continue
 
+            # 正文请求使用 fetch_article()（独立文章节流）；discovery 仍用 fetch()
             try:
                 if fetch_headers:
-                    html = self.fetcher.fetch(canon, headers=fetch_headers)
+                    html = self.fetcher.fetch_article(canon, headers=fetch_headers)
                 else:
-                    html = self.fetcher.fetch(canon)
+                    html = self.fetcher.fetch_article(canon)
                 article.fetched_at = fetched_at
                 article.status = "fetched"
                 stats.fetched_ok += 1
@@ -213,8 +279,19 @@ class Pipeline:
                 self.storage.mark_failed(article_id, error=err)
                 continue
 
-            # 5. 回填
+            # 4.5 正文质量验证：标题非空 + 正文有可读内容。
+            # 空标题 / 空正文 / [抓取失败] 前缀 都不能成为 usable article。
+            if not _validate_extracted_body(article):
+                stats.failed += 1
+                err = _invalid_body_reason(article)
+                stats.errors.append(f"{canon}: {err}")
+                logger.error("[%s] %s", source_id, err)
+                self.storage.mark_failed(article_id, error=err)
+                continue
+
+            # 5. 回填（通过验证 → 成为 usable article）
             self._update_body(article_id, article, source_id, stats, logger)
+            stats.usable += 1
             logger.info(
                 "[%s] 入库成功 #%d  %s", source_id, article_id, article.title[:60]
             )
@@ -258,6 +335,10 @@ class Pipeline:
             except FileNotFoundError:
                 cfg = {"id": sid, "name": sid}
             site_extract = cfg.get("extract") or {}
+            # 重试同样按站点应用正文节流
+            art_interval = cfg.get("article_interval")
+            if art_interval is not None and hasattr(self.fetcher, "article_interval"):
+                self.fetcher.article_interval = float(art_interval)
             # 重试同样使用站点 adapter 的自定义请求头（HKEJ 浏览器 UA 等）
             fetch_headers: dict | None = None
             if cfg.get("adapter"):
@@ -271,10 +352,11 @@ class Pipeline:
                     fetch_headers = None
             for art in articles:
                 try:
+                    # 重试同样使用 fetch_article()（独立文章节流）
                     if fetch_headers:
-                        html = self.fetcher.fetch(art.canonical_url, headers=fetch_headers)
+                        html = self.fetcher.fetch_article(art.canonical_url, headers=fetch_headers)
                     else:
-                        html = self.fetcher.fetch(art.canonical_url)
+                        html = self.fetcher.fetch_article(art.canonical_url)
                     art.fetched_at = utcnow()
                     if fetch_headers:
                         from .extract import apply_site_adapter_extraction
@@ -282,6 +364,14 @@ class Pipeline:
                         apply_site_adapter_extraction(art, html)
                     else:
                         apply_extraction_to_article(art, html, site_extract=site_extract)
+                    # 重试后同样验证正文质量
+                    if not _validate_extracted_body(art):
+                        stats.failed += 1
+                        err = _invalid_body_reason(art)
+                        stats.errors.append(f"{art.canonical_url}: {err}")
+                        logger.error("[%s] %s", sid, err)
+                        self.storage.mark_failed(art.id, error=err)  # type: ignore[arg-type]
+                        continue
                     art.status = "fetched"
                     self.storage.update_article_body(
                         art.id,  # type: ignore[arg-type]
@@ -298,6 +388,7 @@ class Pipeline:
                     )
                     stats.fetched_ok += 1
                     stats.extracted_ok += 1
+                    stats.usable += 1
                 except Exception as exc:
                     stats.failed += 1
                     err = f"重试失败: {exc}"

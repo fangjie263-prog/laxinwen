@@ -1112,6 +1112,8 @@ def export_news_archive(
             )
 
     rows = storage.list_articles_with_analysis(source_id=source_id, limit=limit)
+    # 只导出 usable article（排除 failed / 空标题 / 空正文 / [抓取失败] 前缀）
+    rows = [r for r in rows if storage.is_usable(r)]
     result = NewsArchiveResult()
 
     # article_id -> AI Research 相对路径（若存在成功分析，指向 data/export/html/ 对应页面）

@@ -275,6 +275,70 @@ class Storage:
             rows = self._conn.execute(sql, params).fetchall()
         return {r["status"]: int(r["c"]) for r in rows}
 
+    # ---------- usable article ----------
+
+    @staticmethod
+    def _usable_field(article, name: str, default="") -> str:
+        """从 Article / sqlite3.Row / dict 中安全读取字段值（用于 is_usable）。"""
+        if article is None:
+            return default
+        # dict 或 sqlite3.Row：支持下标访问
+        if hasattr(article, "__getitem__"):
+            try:
+                val = article[name]
+                return "" if val is None else str(val)
+            except (KeyError, IndexError, TypeError):
+                return default
+        # Article dataclass / 一般对象：属性访问
+        val = getattr(article, name, None)
+        return "" if val is None else str(val)
+
+    @staticmethod
+    def is_usable(article) -> bool:
+        """统一的 usable article 判断。
+
+        至少排除：
+        - ``status='failed'``；
+        - 空标题；
+        - 空正文（body_text 与 body_html 都为空）；
+        - ``[抓取失败]`` 前缀（mark_failed 写入的占位）。
+
+        返回 True 表示这是一篇真正可读的新闻。
+        """
+        if article is None:
+            return False
+        status = Storage._usable_field(article, "status")
+        if status == "failed":
+            return False
+        title = Storage._usable_field(article, "title").strip()
+        if not title:
+            return False
+        body_text = Storage._usable_field(article, "body_text").strip()
+        body_html = Storage._usable_field(article, "body_html").strip()
+        if not body_text and not body_html:
+            return False
+        if body_text.startswith("[抓取失败]") or body_html.startswith("[抓取失败]"):
+            return False
+        return True
+
+    def count_usable(self, source_id: Optional[str] = None) -> int:
+        """统计 usable article 数量（GUI 状态卡片使用）。"""
+        sql = (
+            "SELECT COUNT(*) AS c FROM articles "
+            "WHERE status != 'failed' "
+            "AND TRIM(title) != '' "
+            "AND (TRIM(COALESCE(body_text,'')) != '' OR TRIM(COALESCE(body_html,'')) != '') "
+            "AND body_text NOT LIKE '[抓取失败]%' "
+            "AND COALESCE(body_html,'') NOT LIKE '[抓取失败]%'"
+        )
+        params: list = []
+        if source_id:
+            sql += " AND source_id = ?"
+            params.append(source_id)
+        with self._conn:
+            row = self._conn.execute(sql, params).fetchone()
+        return int(row["c"])
+
     def url_exists(self, canonical_url: str) -> bool:
         with self._conn:
             row = self._conn.execute(

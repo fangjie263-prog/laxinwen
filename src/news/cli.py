@@ -73,8 +73,8 @@ def cmd_fetch(args: argparse.Namespace) -> int:
                 stats = pipeline.run_site(sid)
                 results[sid] = stats.as_dict()
                 print(f"[{sid}] 发现 {stats.discovered} 篇 | "
-                      f"跳过重复 {stats.skipped_dup} | 下载 {stats.fetched_ok} | "
-                      f"提取 {stats.extracted_ok} | 失败 {stats.failed}")
+                      f"跳过重复 {stats.skipped_dup} | 正文成功 {stats.fetched_ok} | "
+                      f"抓取失败 {stats.failed} | 可读新闻 {stats.usable}")
             except Exception as exc:  # 单个站点失败不影响其它站点
                 logger.error("[%s] 站点处理失败: %s", sid, exc)
                 results[sid] = {"error": str(exc)}
