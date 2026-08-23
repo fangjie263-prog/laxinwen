@@ -305,7 +305,9 @@ def test_export_failure_does_not_mark_fetch_failure(tmp_path):
     # 抓取本身成功 → 退出码 0（EXPORT FAILED 不导致 FETCH FAILED）
     assert rc == 0
     content = logf.read_text(encoding="utf-8")
-    assert "EXPORT FAILED" in content
+    # 分离记录：FETCH 成功 + EXPORT 失败，两者独立标记
+    assert "FETCH: SUCCESS" in content
+    assert "EXPORT: FAILED" in content
 
 
 # ---------------------------------------------------------------------------
@@ -392,3 +394,65 @@ def test_dedup_not_bypassed():
         assert isinstance(p, Pipeline)
         p.close()
         storage.close()
+
+
+# ---------------------------------------------------------------------------
+# 17. python -m news 入口可用（BAT / Task Scheduler 依赖此调用）
+# ---------------------------------------------------------------------------
+
+def test_python_m_news_entry_no_tkinter():
+    """`__main__` 模块可被 import，且不依赖 tkinter（headless 关键约束）。"""
+    import sys
+
+    saved = sys.modules.get("tkinter")
+    sys.modules["tkinter"] = None
+    try:
+        import news.__main__  # noqa: F401
+    finally:
+        if saved is not None:
+            sys.modules["tkinter"] = saved
+        else:
+            sys.modules.pop("tkinter", None)
+    assert True
+
+
+def test_build_arguments_uses_module_entry():
+    """后台入口参数为 `-m news scheduled-fetch`，配合 __main__ 可被 python -m news 执行。"""
+    from news.scheduler_config import SchedulerConfig
+    from news.task_scheduler import build_arguments
+
+    assert build_arguments(SchedulerConfig()) == "-m news scheduled-fetch"
+
+
+# ---------------------------------------------------------------------------
+# 18. 相对路径基于项目根解析（工作目录无关，满足 Task Scheduler 要求）
+# ---------------------------------------------------------------------------
+
+def test_main_resolves_relative_paths_against_project_root(monkeypatch, tmp_path):
+    """`python -m news scheduled-fetch` 传相对 log/db 路径时应落到项目根。"""
+    import news.scheduled_fetch as sf
+    from news.scheduler_config import SchedulerConfig
+
+    captured = {}
+
+    def fake_run(cfg, **kw):
+        captured["cfg"] = cfg
+        captured["db_path"] = kw["db_path"]
+        captured["log_file"] = kw["log_file"]
+        return 0
+
+    monkeypatch.setattr(sf, "run_scheduled_fetch", fake_run)
+    # 强制项目根为 tmp_path（模拟不同工作目录）
+    monkeypatch.setattr(sf, "_PROJECT_ROOT", tmp_path)
+
+    cfg = SchedulerConfig(source="rfi", limit=3)
+    # 写一个默认配置，让 load_config 读取
+    (tmp_path / "data").mkdir(parents=True)
+    from news.scheduler_config import save_config
+    save_config(cfg, tmp_path / "data" / "scheduler.json")
+
+    # 用相对路径（模拟 Windows Task Scheduler 从 System32 启动）
+    rc = sf.main(["--db", "data/news.db", "--log-file", "data/logs/scheduled-fetch.log"])
+    assert rc == 0
+    assert str(captured["db_path"]) == str(tmp_path / "data" / "news.db")
+    assert str(captured["log_file"]) == str(tmp_path / "data" / "logs" / "scheduled-fetch.log")

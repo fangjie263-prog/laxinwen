@@ -250,8 +250,11 @@ def run_scheduled_fetch(
             fetch_ok = True  # 候选耗尽不算失败；只有异常才算
             for err in s.errors:
                 logger.error("失败明细: %s", err)
+            # 明确标记抓取阶段结果（候选耗尽不视为失败）
+            logger.info("FETCH: SUCCESS（usable=%d / 目标 %d）", s.usable, limit)
 
             # 自动导出
+            export_ok = False
             if auto_export:
                 try:
                     logger.info("开始自动导出（%s）……", export_type)
@@ -264,13 +267,14 @@ def run_scheduled_fetch(
                         research_dir=research_dir,
                         portable_export=portable_export,
                     )
-                    logger.info("导出结果: %s", export_result)
+                    logger.info("EXPORT: SUCCESS → %s", export_result)
+                    export_ok = True
                 except Exception:
-                    # 导出失败不影响抓取结果
-                    logger.error("EXPORT FAILED")
+                    # 导出失败不影响抓取结果（已在上方标记 FETCH: SUCCESS）
+                    logger.error("EXPORT: FAILED")
                     logger.error("导出失败 traceback:\n%s", traceback.format_exc())
             else:
-                logger.info("自动导出: 未开启，跳过")
+                logger.info("EXPORT: SKIPPED（未开启自动导出）")
 
             logger.info("结束时间: %s", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
             logger.info("========== 自动定时抓取结束（exit=0）==========")
@@ -348,12 +352,23 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("-v", "--verbose", action="store_true", help="调试日志")
     args = parser.parse_args(argv)
 
+    # 解析路径：相对路径统一基于项目根解析，避免因工作目录不同
+    # （Windows Task Scheduler 默认从 C:\Windows\System32 启动）导致
+    # 日志/数据库/配置写到错误位置。
+    def _abs(p: str) -> str:
+        pth = Path(p)
+        return str(pth if pth.is_absolute() else (_PROJECT_ROOT / pth))
+
+    db_path = _abs(args.db)
+    log_file = _abs(args.log_file)
+    config = _abs(args.config) if args.config else None
+
     # 配置日志（verbose 时提升为 DEBUG）
-    _setup_logging(args.log_file)
+    _setup_logging(log_file)
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
 
-    cfg = load_config(args.config)
+    cfg = load_config(config)
     if args.source:
         cfg.source = args.source
     if args.limit is not None:
@@ -369,8 +384,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     # 这里不拦截，保证手动运行始终可用。
     return run_scheduled_fetch(
         cfg,
-        db_path=args.db,
-        log_file=args.log_file,
+        db_path=db_path,
+        log_file=log_file,
         portable_dir=DEFAULT_PORTABLE_DIR,
         research_dir=DEFAULT_RESEARCH_DIR,
     )
