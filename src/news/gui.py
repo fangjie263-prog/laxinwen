@@ -732,10 +732,17 @@ class _NewsReaderApp:
                         f"{self._sep}\n"
                         f"[{self._source_display(sid)}] 发现：{s.discovered}\n"
                         f"重复：{s.skipped_dup}\n"
-                        f"正文成功：{s.fetched_ok}\n"
-                        f"抓取失败：{s.failed}\n"
+                        f"正文下载成功：{s.fetched_ok}\n"
+                        f"正文提取成功：{s.extracted_ok}\n"
+                        f"质量不合格：{s.low_quality}\n"
+                        f"抓取/提取失败：{s.failed}\n"
                         f"可读新闻：{s.usable}"
                     )
+                    if s.usable < limit and s.discovered > 0:
+                        # 候选耗尽但 usable < limit：明确报告“候选不足”，不伪装成抓取失败
+                        self._bg_log(
+                            f"[{self._source_display(sid)}] 候选已耗尽，可读新闻 {s.usable} / 目标 {limit}"
+                        )
                     if s.errors:
                         self._bg_log(f"[{self._source_display(sid)}] 失败明细（前 5 条）：")
                         for err in s.errors[:5]:
@@ -794,7 +801,7 @@ class _NewsReaderApp:
                     raise FileNotFoundError(f"News Archive 未生成：{index}")
                 self._bg_log(
                     f"{self._source_display(sid)} News Archive 导出完成：{result.exported} 篇\n"
-                    f"抓取失败（未导出）：{self._count_failed(storage, sid)}\n"
+                    f"数据库历史抓取失败记录（未导出）：{self._count_failed(storage, sid)}\n"
                     f"AI 已分析：{result.analyzed_ok}\n"
                     f"AI 分析失败：{result.analyzed_failed}\n"
                     f"AI 未分析：{result.unanalyzed}"
@@ -842,7 +849,7 @@ class _NewsReaderApp:
                     raise FileNotFoundError(f"独立 HTML 未生成：{out_path}")
                 self._bg_log(
                     f"{self._source_display(sid)} 独立 HTML 导出完成：{result.exported} 篇\n"
-                    f"抓取失败（未导出）：{self._count_failed(storage, sid)}\n"
+                    f"数据库历史抓取失败记录（未导出）：{self._count_failed(storage, sid)}\n"
                     f"AI 已分析：{result.analyzed_ok}\n"
                     f"AI 分析失败：{result.analyzed_failed}\n"
                     f"AI 未分析：{result.unanalyzed}"
@@ -868,7 +875,7 @@ class _NewsReaderApp:
                     raise FileNotFoundError(f"HTML 新闻包未生成：{index}")
                 self._bg_log(
                     f"{self._source_display(sid)} HTML 新闻包导出完成：{result.exported} 篇\n"
-                    f"抓取失败（未导出）：{self._count_failed(storage, sid)}\n"
+                    f"数据库历史抓取失败记录（未导出）：{self._count_failed(storage, sid)}\n"
                     f"AI 已分析：{result.analyzed_ok}\n"
                     f"AI 分析失败：{result.analyzed_failed}\n"
                     f"AI 未分析：{result.unanalyzed}"
@@ -894,7 +901,7 @@ class _NewsReaderApp:
                     raise FileNotFoundError(f"便携阅读包未生成：{out_dir}")
                 self._bg_log(
                     f"{self._source_display(sid)} 便携阅读包导出完成：{result.exported} 篇\n"
-                    f"抓取失败（未导出）：{self._count_failed(storage, sid)}\n"
+                    f"数据库历史抓取失败记录（未导出）：{self._count_failed(storage, sid)}\n"
                     f"AI 已分析：{result.analyzed_ok}\n"
                     f"AI 分析失败：{result.analyzed_failed}\n"
                     f"AI 未分析：{result.unanalyzed}"

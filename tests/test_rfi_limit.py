@@ -541,9 +541,9 @@ class TestOnly9Usable:
             <content:encoded xmlns:content="http://purl.org/rss/1.0/modules/content/"><![CDATA[
             <p class="t-content__chapo">导语段落内容。</p>
             <div class="t-content__body">
-            <p>这是完整的正文第一段，包含足够的可读内容。</p>
-            <p>这是完整的正文第二段，继续提供更多细节。</p>
-            <p>这是完整的正文第三段，总结全部内容。</p>
+            <p>这是完整的正文第一段，包含足够的可读内容和新闻报道的主要事实，交代了事件的时间地点与经过，供读者了解完整背景。</p>
+            <p>这是完整的正文第二段，继续提供更多细节，包括各方的反应和后续进展，并引述相关人士的观点作为佐证。</p>
+            <p>这是完整的正文第三段，总结全部内容并对事件影响作出简要分析，同时说明可能的后续走向与观察角度。</p>
             </div>
             ]]></content:encoded>
             <pubDate>Sat, 15 Aug 2026 10:00:00 GMT</pubDate>
@@ -565,7 +565,11 @@ class TestOnly9Usable:
         with caplog.at_level(logging.WARNING, logger="news"):
             stats = pipe.run_site("rfi")
         assert stats.usable == 9
-        assert any("所有来源已耗尽" in r.message for r in caplog.records)
+        # 候选耗尽 → 日志应明确报告“候选已耗尽 / 候选不足”，而非伪装成抓取失败。
+        exhaust_records = [r for r in caplog.records if "候选已耗尽" in r.message]
+        assert exhaust_records, "应存在“候选已耗尽”日志"
+        # 报告的是“候选不足/质量不达标”，而不是把候选不足伪装成“本次运行失败”。
+        assert all("本次运行失败" not in r.message for r in exhaust_records)
 
 
 # ---------------------------------------------------------------------------

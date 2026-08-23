@@ -41,7 +41,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from selectolax.parser import HTMLParser
@@ -54,11 +54,10 @@ from .base import SourceAdapter
 
 logger = logging.getLogger(__name__)
 
-# 桌面 Chrome UA（RSSHub / RFI 均对非浏览器 UA 更友好）
-RFI_UA = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-)
+# 不再注入 Chrome 风格浏览器 UA：实验确认 Chrome UA 会触发 RFI 等站点的 403。
+# fetch_custom_headers() 返回 None，让 RFI article fetch 使用 httpx 默认 UA
+# （python-httpx/...），避免 403。不要重新引入 Cookie / Referer / 浏览器伪装
+# 头 / Playwright——这些不属于本次 RFI GUI 主线范围。
 
 # 官方 RSS（法广中文）—— 实践中常返回 404，404 后直接进入官网栏目方案
 OFFICIAL_RSS = "https://www.rfi.fr/zh/rss"
@@ -96,6 +95,30 @@ RFI_CN_CATEGORY_NAMES: tuple[str, ...] = tuple(name for name, _ in RFI_CN_CATEGO
 # RFI 文章 URL 模式：``https://www.rfi.fr/cn/<分类>/<YYYYMMDD>-<slug>``。
 # 匹配含日期段的文章链接，用于从栏目页筛选文章并解析日期。
 _RFI_ARTICLE_URL_RE = re.compile(r"/cn/[^/\s]+/(\d{8})-")
+
+# RFI discovery 的硬性时间窗口（天）。只接受最近 ``RFI_DISCOVERY_MAX_AGE_DAYS``
+# 天以内的 RFI 文章，防止栏目页中的“推荐阅读 / 相关文章 / 专题 / 历史内容”等
+# 模块把历史文章带进候选池。这是 discovery candidate filter，不是 storage filter。
+# 不允许因为凑 limit 而无限向历史文章扩展。
+RFI_DISCOVERY_MAX_AGE_DAYS = 7
+
+
+def _within_discovery_window(
+    published_at: Optional[datetime],
+    *,
+    now: Optional[datetime] = None,
+) -> bool:
+    """判断 RFI 文章发布日期是否在 discovery 时间窗口内（默认最近 7 天）。
+
+    - 无发布时间（无法判断）→ 保留，避免误伤无法解析日期的正常候选；
+    - ``published_at`` 超过窗口 → 返回 False，候选被过滤（不进 candidate pool、
+      不触发 article fetch、也不计入 failed）；
+    - 参考时间默认取当前 UTC 时间；测试可注入固定 ``now`` 保证确定性、避免时区 bug。
+    """
+    if published_at is None:
+        return True
+    reference = now if now is not None else datetime.now(timezone.utc)
+    return published_at >= reference - timedelta(days=RFI_DISCOVERY_MAX_AGE_DAYS)
 
 # JSON-LD 中 ``datePublished`` 的键
 _JSONLD_DATE_KEYS = ("datePublished", "dateModified")
@@ -267,14 +290,17 @@ def _absolute_url(base_url: str, href: str) -> str:
 
 
 def _extract_articles_from_category_page(
-    html: str, page_url: str
+    html: str, page_url: str, *, now: Optional[datetime] = None
 ) -> list[DiscoveredItem]:
     """从 RFI 中文栏目页 HTML 提取文章链接列表。
 
     - 匹配 RFI 文章 URL 模式（含日期段 ``/cn/<分类>/<YYYYMMDD>-``）；
     - 用 ``canonicalize_url`` 去重；
     - 解析 ``published_at``：优先 JSON-LD 按 URL 精确关联，其次页面
-      ``<time>`` 元素（尽力关联），最后回退到文章 URL 自带日期。
+      ``<time>`` 元素（尽力关联），最后回退到文章 URL 自带日期；
+    - **discovery 时间窗口过滤**：超过 ``RFI_DISCOVERY_MAX_AGE_DAYS`` 天的
+      历史文章直接跳过（不进 candidate pool），避免栏目页的“推荐阅读 /
+      相关文章 / 专题 / 历史内容”模块把老文章带进候选池。
 
     标题取自 ``<a>`` 文本；若无标题则留空（由 pipeline 后续 fetch 时补全）。
     """
@@ -312,6 +338,9 @@ def _extract_articles_from_category_page(
         # 2) URL 自带日期
         if published is None:
             published = _parse_date_from_url(canon)
+        # discovery 时间窗口过滤：超过最近 7 天的历史文章跳过，不进候选池。
+        if not _within_discovery_window(published, now=now):
+            continue
         items.append(
             DiscoveredItem(url=canon, title=title, published_at=published)
         )
@@ -338,6 +367,7 @@ class RfiAdapter(SourceAdapter):
         fetcher: BaseFetcher,
         max_items: int,
         existing_urls: set[str] | None = None,
+        now: Optional[datetime] = None,
     ) -> list[DiscoveredItem]:
         """发现 RFI 中文新闻（RSS 第一优先级，官网只是补充）。
 
@@ -471,6 +501,7 @@ class RfiAdapter(SourceAdapter):
                 fetcher=fetcher,
                 existing_urls=rss_seen | db_existing,
                 max_items=max_items - rss_final_new,
+                now=now,
             )
 
             # 官网新增（RSS 未覆盖且数据库不存在）的条目
@@ -528,6 +559,7 @@ class RfiAdapter(SourceAdapter):
         fetcher: BaseFetcher,
         existing_urls: set[str] | None = None,
         max_items: int = 100,
+        now: Optional[datetime] = None,
     ) -> list[DiscoveredItem]:
         """从 RFI 中文官网栏目页聚合发现 RSS 未覆盖的文章。
 
@@ -562,7 +594,7 @@ class RfiAdapter(SourceAdapter):
                 break
             try:
                 html = fetcher.fetch(cat_url)
-                cat_items = _extract_articles_from_category_page(html, cat_url)
+                cat_items = _extract_articles_from_category_page(html, cat_url, now=now)
                 added = _add(cat_items)
                 logger.info(
                     "[RFI] 官网栏目%s：发现 %d，新增 %d，累计 %d",
@@ -594,11 +626,11 @@ class RfiAdapter(SourceAdapter):
         return sorted_items[:max_items]
 
     def fetch_custom_headers(self) -> Optional[dict[str, str]]:
-        # RFI / RSSHub 用浏览器 UA + 中文语言更友好
-        return {
-            "User-Agent": RFI_UA,
-            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-        }
+        # 返回 None，让 RFI article fetch 使用 httpx 默认 UA。
+        # 实验确认 Chrome 风格 UA 会触发 RFI 等站点的 403。
+        # 不要重新设置 Chrome UA / 浏览器头 / Cookie，也不要引入 Playwright。
+        # discovery 仍走现有 fetch()，article fetch 仍走现有 fetch_article()。
+        return None
 
     def extract_article(self, article: Article, html: str, url: str = "") -> bool:
         """RFI HTML fallback：从原文 HTML 提取完整正文并回填 ``article``。

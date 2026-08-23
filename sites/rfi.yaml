@@ -38,6 +38,20 @@ article_interval: 15
 extract:
   favor_recall: true
 
+# 正文质量门槛（RFI 专用，配置化）：
+# - 去除空白后正文少于 80 字符 → 判为 low_quality（多为纯导航/无正文的无效页）；
+# - 标题命中播音/节目关键词 → 判为节目/广播页，不入普通新闻池。
+# 这些只作用于 RFI 数据源，不污染 ECO / HKEJ 等通用源。
+quality_min_chars: 80
+quality_program_keywords:
+  - "第一次播音"
+  - "第二次播音"
+  - "第三次播音"
+  - "广播"
+  - "播音"
+  - "节目"
+  - "电台"
+
 title_suffixes:
   - " - RFI"
   - " - 法广"

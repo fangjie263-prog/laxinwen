@@ -221,6 +221,18 @@ class Storage:
                 (f"[抓取失败] {error}", article_id),
             )
 
+    def mark_low_quality(self, article_id: int, *, error: str = "") -> None:
+        """把已提取正文但质量偏低（节目/短文）的文章标记为 ``low_quality``。
+
+        与 ``failed`` 明确区分：low_quality 表示已成功抓取/提取，但正文质量
+        不足以进入普通新闻池；不入 usable、不导出。
+        """
+        with self._tx() as conn:
+            conn.execute(
+                "UPDATE articles SET status='low_quality' WHERE id=?",
+                (article_id,),
+            )
+
     # ---------- 查询 ----------
 
     def get_article(self, article_id: int) -> Optional[Article]:
@@ -299,6 +311,7 @@ class Storage:
 
         至少排除：
         - ``status='failed'``；
+        - ``status='low_quality'``（正文质量偏低，不入普通新闻池）；
         - 空标题；
         - 空正文（body_text 与 body_html 都为空）；
         - ``[抓取失败]`` 前缀（mark_failed 写入的占位）。
@@ -308,7 +321,7 @@ class Storage:
         if article is None:
             return False
         status = Storage._usable_field(article, "status")
-        if status == "failed":
+        if status in ("failed", "low_quality"):
             return False
         title = Storage._usable_field(article, "title").strip()
         if not title:
@@ -322,10 +335,14 @@ class Storage:
         return True
 
     def count_usable(self, source_id: Optional[str] = None) -> int:
-        """统计 usable article 数量（GUI 状态卡片使用）。"""
+        """统计 usable article 数量（GUI 状态卡片使用）。
+
+        排除 failed 与 low_quality（正文质量偏低）——low_quality 不入普通新闻池。
+        """
         sql = (
             "SELECT COUNT(*) AS c FROM articles "
             "WHERE status != 'failed' "
+            "AND status != 'low_quality' "
             "AND TRIM(title) != '' "
             "AND (TRIM(COALESCE(body_text,'')) != '' OR TRIM(COALESCE(body_html,'')) != '') "
             "AND body_text NOT LIKE '[抓取失败]%' "

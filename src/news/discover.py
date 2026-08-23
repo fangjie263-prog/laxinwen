@@ -490,6 +490,7 @@ def discover_for_site(
     fetcher: BaseFetcher,
     max_items: int = 50,
     existing_urls: set[str] | None = None,
+    now=None,
 ) -> list[DiscoveredItem]:
     """按站点配置执行发现流程。
 
@@ -501,6 +502,9 @@ def discover_for_site(
     通用发现与旧实现一致：多个来源**合并**而不是遇到一个就 return。
     目标是把候选文章凑到 ``max_items``（--limit 的语义：最近 N 篇的发现窗口）。
     各来源之间用 canonical URL 去重；load-more 仅在 RSS/栏目页不足时触发。
+
+    ``now``：可选参考时间，供支持 discovery 时间窗口的 adapter（如 RFI）
+    做确定性过滤；不支持该参数的 adapter（HKEJ / ECO）保持不变。
     """
     source_id = cfg.get("id", "")
     source_name = cfg.get("name", "")
@@ -514,15 +518,27 @@ def discover_for_site(
             logger.info(
                 "[%s] 使用 source adapter: %s", source_id, type(adapter).__name__
             )
-            items = adapter.discover(
-                fetcher=fetcher,
-                max_items=max_items,
-                existing_urls=existing_urls,
-            )
+            # 仅对支持 discovery 时间窗口的 adapter 传入 ``now``（RFI）；
+            # HKEJ 等不支持该参数的 adapter 保持原有调用不变。
+            discover_kwargs: dict = {
+                "fetcher": fetcher,
+                "max_items": max_items,
+                "existing_urls": existing_urls,
+            }
+            if now is not None and hasattr(adapter, "discover"):
+                import inspect as _inspect
+
+                sig = _inspect.signature(adapter.discover)
+                if "now" in sig.parameters:
+                    discover_kwargs["now"] = now
+            items = adapter.discover(**discover_kwargs)
             logger.info(
                 "[%s] adapter 发现 %d 条候选（去重后）", source_id, len(items)
             )
-            return items[:max_items]
+            # 不截断候选：max_items 是目标 usable 数，不是候选数。
+            # adapter 返回所有过滤后的新候选，由 pipeline 持续消费
+            # 直到 usable >= max_items 或候选耗尽（正文失败不消耗 limit）。
+            return items
         raise ValueError(
             f"站点 {source_id!r} 声明了 adapter={cfg.get('adapter')!r} 但无法加载"
         )

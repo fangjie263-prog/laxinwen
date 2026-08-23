@@ -28,6 +28,95 @@ _FAILURE_PREFIX = "[抓取失败]"
 # 正文可读性最小字符数（空标题/空正文/仅失败占位不能成为 usable article）
 _MIN_READABLE_BODY_CHARS = 10
 
+# RFI 候选池相对 usable limit 的放大系数。
+# 语义分离：``limit``（``Pipeline.max_items``）表示**目标 usable 数量**；
+# discovery 返回的 **candidate pool** 应大于 usable 目标，这样即使部分候选
+# 抓取失败，也能从近期候选里凑够 usable，而不必向历史文章扩展。
+# 由于 RFI discovery 已带 7 天时间窗口，candidate pool 天然有时间边界，
+# 不会因放大而无限制地向更老文章寻找。
+RFI_CANDIDATE_MULTIPLIER = 3
+
+# 音频节目/播音页标题特征。RFI 等站点存在“第一次播音 06:00 - 07:00”这类
+# 音频节目页，其正文质量差（只有节目描述），不能作为普通新闻。
+# 此类页面若正文过短（低于 _AUDIO_PROGRAM_MIN_BODY_CHARS）则判为 low_quality。
+_AUDIO_PROGRAM_TITLE_PATTERNS = (
+    "第一次播音",
+    "第二次播音",
+    "第三次播音",
+    "广播",
+    "播音",
+    "节目",
+    "电台",
+)
+
+# 音频节目页正文最小长度（字符）。低于此阈值视为“仅节目介绍”，判为 low_quality。
+_AUDIO_PROGRAM_MIN_BODY_CHARS = 200
+
+# 节目/广播页关键词（供站点配置 quality_program_keywords 的默认参考）。
+# 实际生效值来自站点 yaml；此处为代码级兜底。
+_PROGRAM_KEYWORDS_DEFAULT = _AUDIO_PROGRAM_TITLE_PATTERNS
+
+
+def _is_audio_program_page(title: str) -> bool:
+    """判断标题是否命中音频节目/播音页特征。"""
+    t = (title or "").strip().lower()
+    return any(p.lower() in t for p in _AUDIO_PROGRAM_TITLE_PATTERNS)
+
+
+def _html_to_plain(html: str) -> str:
+    """简单去 HTML 标签得到纯文本（供正文质量校验）。"""
+    import re
+
+    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", html or "")).strip()
+
+
+def _body_length(article) -> int:
+    """返回正文去除空白后的字符数。"""
+    import re
+
+    body_text = (article.body_text or "").strip()
+    if body_text:
+        return len(re.sub(r"\s+", "", body_text))
+    return len(re.sub(r"\s+", "", _html_to_plain(article.body_html or "")))
+
+
+def _assess_low_quality(article, quality_cfg: dict | None = None) -> tuple[bool, str]:
+    """评估文章是否判为 low_quality（正文质量偏低，不入普通新闻池）。
+
+    返回 ``(is_low, reason)``。
+
+    判定规则（RFI 专用，通过站点配置驱动，不污染通用源）：
+    - ``quality_min_chars``：正文去除空白后字符数低于该阈值 → low（"正文过短"）；
+    - ``quality_program_keywords``：标题命中节目/播音/广播关键词 → low（"疑似节目/广播页"）；
+    - 内置音频节目页检测：标题命中播音/广播/节目特征且正文过短（< 200）→ low。
+
+    仅当站点配置或内置检测触发时才判 low；ECO / HKEJ 等通用源未配置
+    quality 参数时恒为 ``(False, "")``，保持原有行为。
+    """
+    q = quality_cfg or {}
+    min_chars = q.get("min_chars")
+    program_keywords = tuple(q.get("program_keywords") or ())
+
+    title = (article.title or "").strip()
+    body_len = _body_length(article)
+
+    if min_chars is not None:
+        if body_len < min_chars:
+            return True, f"正文过短（{body_len} 字符 < {min_chars}）"
+
+    if program_keywords:
+        if title:
+            for kw in program_keywords:
+                if kw in title:
+                    return True, f"疑似节目/广播页（标题命中: {kw}）"
+
+    # 内置音频节目页检测：标题命中节目特征且正文过短（仅节目介绍）→ low。
+    if _is_audio_program_page(title):
+        if body_len < _AUDIO_PROGRAM_MIN_BODY_CHARS:
+            return True, f"音频节目页正文过短（{body_len} 字），仅节目介绍，不视为可读新闻"
+
+    return False, ""
+
 
 def _validate_extracted_body(article) -> bool:
     """校验已提取的文章是否具备可读正文与标题。
@@ -72,19 +161,13 @@ def _invalid_body_reason(article) -> str:
     return "正文质量不达标"
 
 
-def _html_to_plain(html: str) -> str:
-    """简单去 HTML 标签得到纯文本（供正文质量校验）。"""
-    import re
-
-    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", html or "")).strip()
-
-
 @dataclass
 class FetchStats:
     discovered: int = 0
     skipped_dup: int = 0
     fetched_ok: int = 0
     extracted_ok: int = 0
+    low_quality: int = 0  # 正文质量偏低（节目/短文），不入普通新闻池
     failed: int = 0
     usable: int = 0  # 通过正文质量验证、可读新闻数（usable article）
     errors: list[str] = field(default_factory=list)
@@ -95,6 +178,7 @@ class FetchStats:
             "skipped_dup": self.skipped_dup,
             "fetched_ok": self.fetched_ok,
             "extracted_ok": self.extracted_ok,
+            "low_quality": self.low_quality,
             "failed": self.failed,
             "usable": self.usable,
             "errors": self.errors,
@@ -128,9 +212,16 @@ class Pipeline:
 
         # 站点级正文节流：把 rfi.yaml 的 article_interval 应用到共享 fetcher。
         # discovery 仍走普通 fetch()；只有正文 fetch_article() 使用该独立间隔。
+        # 必须总是重置（包括 None），否则上一个站点的 interval 会残留；
+        # 同时清理上次站点的文章节流记录，避免跨站点串扰（ECO/HKEJ 保持 None）。
         article_interval = cfg.get("article_interval")
-        if article_interval is not None and hasattr(self.fetcher, "article_interval"):
-            self.fetcher.article_interval = float(article_interval)
+        if hasattr(self.fetcher, "article_interval"):
+            self.fetcher.article_interval = (
+                float(article_interval) if article_interval is not None else None
+            )
+        # 站点切换时清理文章节流 bucket（避免上一个站点的记录影响当前站点）
+        if hasattr(self.fetcher, "_last_article_request"):
+            self.fetcher._last_article_request.clear()
 
         source_id = cfg.get("id", site_id)
         source_name = cfg.get("name", source_id)
@@ -152,10 +243,21 @@ class Pipeline:
         # 获取数据库已有的 canonical URLs，让 discovery 层跳过已入库文章
         # （重复文章不消耗 limit 名额）。
         existing_urls = self.storage.all_canonical_urls(source_id=source_id)
+        # candidate pool 与 usable limit 分离：
+        # - ``target_usable``（= ``self.max_items``）是本次希望得到的可读新闻数；
+        # - discovery 的 ``max_items`` 是 **candidate pool 上限**。
+        # RFI 因 discovery 已带 7 天时间窗口，可安全放大候选池，给失败候选留缓冲，
+        # 且不会向历史文章扩展；ECO/HKEJ 等站点保持原有候选上限不变。
+        discovery_limit = self.max_items
+        if cfg.get("adapter") == "rfi":
+            discovery_limit = max(
+                self.max_items * RFI_CANDIDATE_MULTIPLIER,
+                self.max_items,
+            )
         items = discover_for_site(
             cfg,
             fetcher=self.fetcher,
-            max_items=self.max_items,
+            max_items=discovery_limit,
             existing_urls=existing_urls,
         )
         stats.discovered = len(items)
@@ -167,6 +269,11 @@ class Pipeline:
         )
 
         # 2. 逐个：去重 → 下载 → 提取 → 入库，直到 usable >= max_items 或候选耗尽
+        # 正文质量门槛（RFI 专用，配置化）：quality_min_chars / quality_program_keywords。
+        quality_cfg = {
+            "min_chars": cfg.get("quality_min_chars"),
+            "program_keywords": tuple(cfg.get("quality_program_keywords") or ()),
+        }
         ingest = self._ingest_items(
             items,
             source_id,
@@ -177,6 +284,7 @@ class Pipeline:
             fetch_headers=custom_headers,
             adapter=adapter,
             target_usable=self.max_items,
+            quality_cfg=quality_cfg,
         )
         ingest.discovered = len(items)
 
@@ -189,17 +297,18 @@ class Pipeline:
                 ingest.usable,
             )
         elif ingest.usable < self.max_items and items:
-            # 未能达到 limit：所有来源已耗尽
+            # 未能达到 limit：所有来源已耗尽（候选不足，不是抓取失败）
             logger.warning(
-                "[%s] 所有来源已耗尽：最终获得 %d 篇可读新闻（limit=%d，候选 %d 条）。"
-                "跳过重复 %d，正文成功 %d，抓取失败 %d。"
-                "可能原因：候选不足、数据库重复过多、或正文质量不达标。",
+                "[%s] 候选已耗尽，可读新闻 %d / 目标 %d（候选 %d 条）。"
+                "跳过重复 %d，正文成功 %d，质量不合格 %d，抓取/提取失败 %d。"
+                "原因：候选不足、数据库重复过多、或正文质量不达标，而非抓取失败。",
                 source_id,
                 ingest.usable,
                 self.max_items,
                 ingest.discovered,
                 ingest.skipped_dup,
                 ingest.fetched_ok,
+                ingest.low_quality,
                 ingest.failed,
             )
         elif not items:
@@ -222,6 +331,7 @@ class Pipeline:
         fetch_headers: dict | None = None,
         adapter=None,
         target_usable: int | None = None,
+        quality_cfg: dict | None = None,
     ) -> FetchStats:
         """处理一批已发现条目：去重 → 下载 → 提取 → 入库。
 
@@ -230,6 +340,10 @@ class Pipeline:
         ``target_usable``：目标 usable 文章数上限。当 ``stats.usable >=
         target_usable`` 时提前停止处理剩余候选（已达到 limit 目标）。
         为 None 时处理所有候选（兼容旧测试直接调用）。
+
+        ``quality_cfg``：站点正文质量门槛（quality_min_chars /
+        quality_program_keywords）。命中 → 判为 low_quality（不入普通新闻池，
+        与 failed 明确区分）。未配置则保持原行为。
 
         新增 discovery content short-circuit：若 RSS 条目已带完整正文
         （``has_usable_content(item.content_html)`` 为 True），直接用它作为
@@ -289,6 +403,17 @@ class Pipeline:
                 article.status = "fetched"
                 stats.fetched_ok += 1
                 stats.extracted_ok += 1
+                # RSS 完整正文同样走质量判定（节目/短文不入普通池）。
+                low, low_reason = _assess_low_quality(article, quality_cfg)
+                if low:
+                    stats.low_quality += 1
+                    article.status = "low_quality"
+                    self.storage.mark_low_quality(article_id)
+                    logger.warning(
+                        "[%s] 正文质量偏低（RSS），不入普通新闻池 #%d  %s（%s）",
+                        source_id, article_id, article.title[:50], low_reason,
+                    )
+                    continue
                 self._update_body(
                     article_id, article, source_id, stats, logger
                 )
@@ -339,14 +464,26 @@ class Pipeline:
                 self.storage.mark_failed(article_id, error=err)
                 continue
 
-            # 4.5 正文质量验证：标题非空 + 正文有可读内容。
-            # 空标题 / 空正文 / [抓取失败] 前缀 都不能成为 usable article。
+            # 4.5 正文结构验证：标题非空 + 正文有可读内容。
+            # 空标题 / 空正文 / [抓取失败] 前缀 都不能成为 usable article（→ failed）。
             if not _validate_extracted_body(article):
                 stats.failed += 1
                 err = _invalid_body_reason(article)
                 stats.errors.append(f"{canon}: {err}")
                 logger.error("[%s] %s", source_id, err)
                 self.storage.mark_failed(article_id, error=err)
+                continue
+
+            # 4.6 正文质量判定（RFI 专用，配置化）：命中 → low_quality（与 failed 区分）。
+            low, low_reason = _assess_low_quality(article, quality_cfg)
+            if low:
+                stats.low_quality += 1
+                article.status = "low_quality"
+                self.storage.mark_low_quality(article_id)
+                logger.warning(
+                    "[%s] 正文质量偏低，不入普通新闻池 #%d  %s（%s）",
+                    source_id, article_id, article.title[:50], low_reason,
+                )
                 continue
 
             # 5. 回填（通过验证 → 成为 usable article）
@@ -395,10 +532,14 @@ class Pipeline:
             except FileNotFoundError:
                 cfg = {"id": sid, "name": sid}
             site_extract = cfg.get("extract") or {}
-            # 重试同样按站点应用正文节流
+            # 重试同样按站点应用正文节流（总是重置，包括 None；并清理节流 bucket）
             art_interval = cfg.get("article_interval")
-            if art_interval is not None and hasattr(self.fetcher, "article_interval"):
-                self.fetcher.article_interval = float(art_interval)
+            if hasattr(self.fetcher, "article_interval"):
+                self.fetcher.article_interval = (
+                    float(art_interval) if art_interval is not None else None
+                )
+            if hasattr(self.fetcher, "_last_article_request"):
+                self.fetcher._last_article_request.clear()
             # 重试同样使用站点 adapter 的自定义请求头（HKEJ 浏览器 UA 等）
             fetch_headers: dict | None = None
             if cfg.get("adapter"):
@@ -410,6 +551,10 @@ class Pipeline:
                         fetch_headers = adapter.fetch_custom_headers()
                 except Exception:
                     fetch_headers = None
+            quality_cfg = {
+                "min_chars": cfg.get("quality_min_chars"),
+                "program_keywords": tuple(cfg.get("quality_program_keywords") or ()),
+            }
             for art in articles:
                 try:
                     # 重试同样使用 fetch_article()（独立文章节流）
@@ -424,13 +569,24 @@ class Pipeline:
                         apply_site_adapter_extraction(art, html)
                     else:
                         apply_extraction_to_article(art, html, site_extract=site_extract)
-                    # 重试后同样验证正文质量
+                    # 重试后同样验证正文结构（空标题/空正文/失败占位 → failed）
                     if not _validate_extracted_body(art):
                         stats.failed += 1
                         err = _invalid_body_reason(art)
                         stats.errors.append(f"{art.canonical_url}: {err}")
                         logger.error("[%s] %s", sid, err)
                         self.storage.mark_failed(art.id, error=err)  # type: ignore[arg-type]
+                        continue
+                    # 重试后同样做质量判定（节目/短文 → low_quality，与 failed 区分）
+                    low, low_reason = _assess_low_quality(art, quality_cfg)
+                    if low:
+                        stats.low_quality += 1
+                        art.status = "low_quality"
+                        self.storage.mark_low_quality(art.id)  # type: ignore[arg-type]
+                        logger.warning(
+                            "[%s] 重试后质量偏低，不入普通池 %s（%s）",
+                            sid, art.canonical_url, low_reason,
+                        )
                         continue
                     art.status = "fetched"
                     self.storage.update_article_body(
