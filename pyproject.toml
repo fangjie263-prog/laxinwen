@@ -32,6 +32,7 @@ packages = ["src/news"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+pythonpath = ["src"]
 markers = [
     "network: 需要外部网络访问的在线测试（默认跳过）",
 ]

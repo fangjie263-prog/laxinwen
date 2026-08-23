@@ -6,6 +6,7 @@
     news export --format jsonl|markdown|html|news-html|portable|package [--site <id>] [--article-id <id>] [--limit N]
     news status [--source <id>]
     news process [--site <id>] [--limit N] [--article-id <id>] [--retry-failed]
+    news scheduled-fetch [--source <id>] [--limit N] [--config <path>]
 """
 
 from __future__ import annotations
@@ -401,6 +402,68 @@ def cmd_export(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_scheduled_fetch(args: argparse.Namespace) -> int:
+    """news scheduled-fetch —— headless 自动定时抓取后台入口。
+
+    被 Windows Task Scheduler 调用；复用现有 pipeline，不 import tkinter。
+    读取 data/scheduler.json 配置（可被 --source / --limit 覆盖）。
+    """
+    from .scheduled_fetch import main as scheduled_fetch_main
+
+    return scheduled_fetch_main(argv=_build_scheduled_fetch_argv(args))
+
+
+def cmd_scheduler(args: argparse.Namespace) -> int:
+    """news scheduler <install|delete|run|status> —— Windows Task Scheduler 管理。
+
+    读取 data/scheduler.json 配置执行对应操作。供 GUI / BAT 复用同一套逻辑。
+    """
+    from .scheduler_config import load_config
+    from .task_scheduler import (
+        delete_task,
+        install_task,
+        query_task,
+        run_now,
+    )
+
+    cfg = load_config(args.config)
+    action = args.scheduler_action
+    op = {
+        "install": install_task,
+        "delete": delete_task,
+        "run": run_now,
+        "status": query_task,
+    }[action]
+    result = op(cfg, project_root=args.project_root) if action == "install" else op(cfg)
+    ok = result.get("ok")
+    print(f"{'OK' if ok else 'ERROR'}: {result.get('message', '')}")
+    cmd = result.get("cmd")
+    if cmd:
+        print("命令:", " ".join(cmd))
+    if action == "status" and ok:
+        print(result.get("message", ""))
+    if not ok:
+        return 1
+    if result.get("executed") is False:
+        # 在 Linux/headless 上仅生成命令，不真正执行
+        print("（当前环境无法执行 Windows Task Scheduler —— REQUIRES WINDOWS REAL TEST）")
+    return 0
+
+
+def _build_scheduled_fetch_argv(args: argparse.Namespace) -> list[str]:
+    """把 cli 的 args 转发给 scheduled_fetch.main（避免重复构造 argparse）。"""
+    argv = ["--db", str(args.db), "--log-file", str(args.log_file)]
+    if args.config:
+        argv += ["--config", args.config]
+    if args.source:
+        argv += ["--source", args.source]
+    if args.limit:
+        argv += ["--limit", str(args.limit)]
+    if getattr(args, "verbose", False):
+        argv += ["-v"]
+    return argv
+
+
 def _add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--db", default=str(DEFAULT_DB), help="SQLite 数据库路径")
     parser.add_argument("-v", "--verbose", action="store_true", help="调试日志")
@@ -464,6 +527,35 @@ def build_parser() -> argparse.ArgumentParser:
     p_process.add_argument("--ai-model", default=None, help="临时覆盖 AI_MODEL")
     _add_common_args(p_process)
     p_process.set_defaults(func=cmd_process)
+
+    p_sched = sub.add_parser(
+        "scheduled-fetch",
+        help="headless 自动定时抓取（被 Windows Task Scheduler 调用）",
+    )
+    p_sched.add_argument("--source", default=None, help="覆盖新闻来源（默认读取配置）")
+    p_sched.add_argument("--limit", type=int, default=None, help="覆盖抓取数量（默认读取配置）")
+    p_sched.add_argument("--config", default=None, help="scheduler 配置文件路径（默认 data/scheduler.json）")
+    p_sched.add_argument(
+        "--log-file",
+        default=str(Path("data") / "logs" / "scheduled-fetch.log"),
+        help="日志文件路径（默认 data/logs/scheduled-fetch.log）",
+    )
+    _add_common_args(p_sched)
+    p_sched.set_defaults(func=cmd_scheduled_fetch)
+
+    p_scheduler = sub.add_parser(
+        "scheduler",
+        help="Windows Task Scheduler 管理：install / delete / run / status",
+    )
+    p_scheduler.add_argument(
+        "scheduler_action",
+        choices=["install", "delete", "run", "status"],
+        help="操作：install=安装/更新，delete=删除，run=立即运行，status=查询",
+    )
+    p_scheduler.add_argument("--config", default=None, help="scheduler 配置文件路径（默认 data/scheduler.json）")
+    p_scheduler.add_argument("--project-root", default=None, help="项目根目录（默认自动探测）")
+    _add_common_args(p_scheduler)
+    p_scheduler.set_defaults(func=cmd_scheduler)
 
     p_export = sub.add_parser(
         "export",
