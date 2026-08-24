@@ -849,6 +849,7 @@ class TestPortableExportButtons:
             "📦 便携阅读包",
             "📄 独立 HTML",
             "📚 HTML 新闻包",
+            "📝 Word 研究阅读包",
         )
         # 默认导出方式 = 便携阅读包
         assert app.export_mode_var.get() == "📦 便携阅读包"

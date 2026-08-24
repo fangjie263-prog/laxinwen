@@ -32,8 +32,16 @@ FREQ_DAILY = "daily"
 FREQ_HOURLY = "hourly"
 FREQUENCIES = (FREQ_DAILY, FREQ_HOURLY)
 
-# 自动导出类型（对应现有 portable export）
+# 自动导出类型
+#   portable —— 只生成 Portable HTML（便携阅读包）
+#   word     —— 只生成 Word（DOCX 研究阅读包）
+#   both     —— 同时生成 HTML + Word
+# 向后兼容：旧的 "export_type": "portable" 仍按原语义只生成 HTML。
 EXPORT_PORTABLE = "portable"
+EXPORT_WORD = "word"
+EXPORT_BOTH = "both"
+# 所有合法导出类型（用于校验 / GUI 下拉 / CLI choices）
+EXPORT_TYPES = (EXPORT_PORTABLE, EXPORT_WORD, EXPORT_BOTH)
 
 # 支持的新闻来源（与 GUI _SOURCE_OPTIONS 中的实际站点 id 保持一致）
 SUPPORTED_SOURCES = ("rfi", "eco", "hkej")

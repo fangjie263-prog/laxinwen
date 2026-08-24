@@ -24,6 +24,8 @@ from .export import export_jsonl, export_markdown
 from .html_export import export_html
 from .news_archive import export_news_archive
 from .portable import export_independent_html, export_portable_package
+from .scheduler_config import EXPORT_BOTH, EXPORT_PORTABLE, EXPORT_WORD
+from .word_export import export_word_package, default_word_path
 from .fetch import FetcherOptions, HttpxFetcher
 from .pipeline import Pipeline
 from .storage import Storage
@@ -242,164 +244,216 @@ def cmd_process(args: argparse.Namespace) -> int:
         storage.close()
 
 
+def _export_format(args: argparse.Namespace, storage: Storage, fmt: str) -> int:
+    """导出单个格式，返回退出码。``fmt`` 为 --format 值（word/portable/reader/...）。"""
+    if fmt == "html":
+        # HTML 默认输出到 data/export/html/（研究结果展示层专用目录）
+        out_dir = Path(args.output) if args.output else Path("data") / "export" / "html"
+        result = export_html(
+            storage,
+            out_dir,
+            source_id=args.site or args.source,
+            article_id=args.article_id,
+        )
+        print(f"HTML 导出目录：\n{out_dir}/")
+        print(f"成功导出：\n{result.exported}")
+        print(f"跳过：\n{result.skipped}")
+        print(f"失败：\n{result.failed}")
+        return 0
+
+    if fmt == "word":
+        # Word 研究阅读包：单个 .docx 文件，默认输出到 data/export/word/
+        site = args.site or args.source
+        if not site:
+            sites = list_available_sites()
+            if len(sites) == 1:
+                site = sites[0]
+            else:
+                print(
+                    "Word 导出需要指定站点：--site <id>（当前可用："
+                    + ", ".join(sites)
+                    + "）",
+                    file=sys.stderr,
+                )
+                return 2
+        out = (
+            Path(args.output)
+            if args.output
+            else default_word_path(site, job_id=args.job_id)
+        )
+        result = export_word_package(
+            storage,
+            out,
+            source_id=site,
+            limit=args.limit,
+            job_id=args.job_id,
+        )
+        print(f"Word 研究阅读包导出：\n{out}")
+        print(f"共 {result.exported} 篇（已分析 {result.analyzed_ok} / 失败 {result.analyzed_failed} / 未分析 {result.unanalyzed}）")
+        print("目录条目可点击跳转到对应新闻；原文链接可在 Word 中点击打开浏览器。")
+        return 0
+
+    if fmt in ("portable", "package"):
+        # 便携式导出：独立 HTML / HTML 新闻包（默认输出到 data/export/portable/）
+        site = args.site or args.source
+        if not site:
+            sites = list_available_sites()
+            if len(sites) == 1:
+                site = sites[0]
+            else:
+                print(
+                    "便携式导出需要指定站点：--site <id>（当前可用："
+                    + ", ".join(sites)
+                    + "）",
+                    file=sys.stderr,
+                )
+                return 2
+        from .portable import default_independent_path, default_package_path
+
+        research_root = Path("data") / "export" / "html"
+        if fmt == "portable":
+            out = (
+                Path(args.output)
+                if args.output
+                else default_independent_path(site)
+            )
+            result = export_independent_html(
+                storage,
+                out,
+                source_id=site,
+                limit=args.limit,
+                research_root=research_root,
+            )
+            print(f"独立 HTML 导出：\n{out}")
+            print(f"共 {result.exported} 篇（已分析 {result.analyzed_ok} / 失败 {result.analyzed_failed} / 未分析 {result.unanalyzed}）")
+            print("双击该 .html 即可在没有 laxinwen 的电脑上直接阅读。")
+            return 0
+
+        out = (
+            Path(args.output)
+            if args.output
+            else default_package_path(site)
+        )
+        result = export_portable_package(
+            storage,
+            out,
+            source_id=site,
+            limit=args.limit,
+            research_root=research_root,
+        )
+        print(f"HTML 新闻包导出目录：\n{out}/")
+        print(f"共 {result.exported} 篇（已分析 {result.analyzed_ok} / 失败 {result.analyzed_failed} / 未分析 {result.unanalyzed}）")
+        print("可直接复制整个目录到其它电脑，双击 index.html 阅读。")
+        return 0
+
+    if fmt in ("reader", "portable-reader"):
+        # 便携阅读包：index + articles + server.py + Open-Reader.bat
+        site = args.site or args.source
+        if not site:
+            sites = list_available_sites()
+            if len(sites) == 1:
+                site = sites[0]
+            else:
+                print(
+                    "便携阅读包导出需要指定站点：--site <id>（当前可用："
+                    + ", ".join(sites)
+                    + "）",
+                    file=sys.stderr,
+                )
+                return 2
+        from .portable import export_portable_reader_package, default_reader_path
+
+        research_root = Path("data") / "export" / "html"
+        out = (
+            Path(args.output)
+            if args.output
+            else default_reader_path(site)
+        )
+        result = export_portable_reader_package(
+            storage,
+            out,
+            source_id=site,
+            limit=args.limit,
+            research_root=research_root,
+        )
+        print(f"便携阅读包导出目录：\n{out}/")
+        print(f"共 {result.exported} 篇（已分析 {result.analyzed_ok} / 失败 {result.analyzed_failed} / 未分析 {result.unanalyzed}）")
+        print("给他人使用：复制整个目录，双击 Open-Reader.bat，")
+        print("浏览器将通过 http://127.0.0.1 打开（而非 file://），沉浸式翻译等扩展可正常工作。")
+        return 0
+
+    if fmt == "news-html":
+        # News Archive HTML：默认输出到 data/export/news-html/<site>/（阅读目录专用目录）
+        site = args.site or args.source
+        if not site:
+            # 若数据库只有一个站点则自动推断；否则报错提示 --site
+            from .config import list_available_sites as _las
+
+            sites = _las()
+            if len(sites) == 1:
+                site = sites[0]
+            else:
+                print(
+                    "News Archive 导出需要指定站点：--site <id>（当前可用："
+                    + ", ".join(sites)
+                    + "）",
+                    file=sys.stderr,
+                )
+                return 2
+        out_dir = (
+            Path(args.output)
+            if args.output
+            else Path("data") / "export" / "news-html" / site
+        )
+        result = export_news_archive(
+            storage,
+            out_dir,
+            source_id=site,
+            limit=args.limit,
+        )
+        print(f"News Archive 导出目录：\n{out_dir}/")
+        print(f"最近 {result.exported} 条：")
+        print(f"  ✓ AI 已分析 {result.analyzed_ok}")
+        print(f"  ⚠ AI 分析失败 {result.analyzed_failed}")
+        print(f"  ○ 尚未分析 {result.unanalyzed}")
+        print(f"  失败（导出错误）{result.failed}")
+        return 0
+
+    output = Path(args.output) if args.output else Path(DEFAULT_EXPORTS)
+    if fmt == "jsonl":
+        path = output / "news.jsonl"
+        n = export_jsonl(storage, path, source_id=args.site or args.source)
+        print(f"已导出 {n} 篇 → {path}")
+        return 0
+    if fmt == "markdown":
+        n = export_markdown(storage, output, source_id=args.site or args.source)
+        print(f"已导出 {n} 篇 → {output}/YYYY/MM/")
+        return 0
+    print(f"不支持的格式: {fmt}", file=sys.stderr)
+    return 2
+
+
 def cmd_export(args: argparse.Namespace) -> int:
     storage = _open_storage(args.db)
     try:
-        if args.format == "html":
-            # HTML 默认输出到 data/export/html/（研究结果展示层专用目录）
-            out_dir = Path(args.output) if args.output else Path("data") / "export" / "html"
-            result = export_html(
-                storage,
-                out_dir,
-                source_id=args.site or args.source,
-                article_id=args.article_id,
-            )
-            print(f"HTML 导出目录：\n{out_dir}/")
-            print(f"成功导出：\n{result.exported}")
-            print(f"跳过：\n{result.skipped}")
-            print(f"失败：\n{result.failed}")
-            return 0
+        # --type 批量导出：portable / word / both（等价于对应 --format 组合）
+        if args.type:
+            if args.type == EXPORT_BOTH:
+                rc = _export_format(args, storage, "reader")  # portable 阅读包
+                if rc != 0:
+                    return rc
+                return _export_format(args, storage, "word")
+            if args.type == EXPORT_WORD:
+                return _export_format(args, storage, "word")
+            # EXPORT_PORTABLE → 便携阅读包
+            return _export_format(args, storage, "reader")
 
-        if args.format in ("portable", "package"):
-            # 便携式导出：独立 HTML / HTML 新闻包（默认输出到 data/export/portable/）
-            site = args.site or args.source
-            if not site:
-                sites = list_available_sites()
-                if len(sites) == 1:
-                    site = sites[0]
-                else:
-                    print(
-                        "便携式导出需要指定站点：--site <id>（当前可用："
-                        + ", ".join(sites)
-                        + "）",
-                        file=sys.stderr,
-                    )
-                    return 2
-            from .portable import default_independent_path, default_package_path, default_reader_path
-
-            research_root = Path("data") / "export" / "html"
-            if args.format == "portable":
-                out = (
-                    Path(args.output)
-                    if args.output
-                    else default_independent_path(site)
-                )
-                result = export_independent_html(
-                    storage,
-                    out,
-                    source_id=site,
-                    limit=args.limit,
-                    research_root=research_root,
-                )
-                print(f"独立 HTML 导出：\n{out}")
-                print(f"共 {result.exported} 篇（已分析 {result.analyzed_ok} / 失败 {result.analyzed_failed} / 未分析 {result.unanalyzed}）")
-                print("双击该 .html 即可在没有 laxinwen 的电脑上直接阅读。")
-                return 0
-
-            out = (
-                Path(args.output)
-                if args.output
-                else default_package_path(site)
-            )
-            result = export_portable_package(
-                storage,
-                out,
-                source_id=site,
-                limit=args.limit,
-                research_root=research_root,
-            )
-            print(f"HTML 新闻包导出目录：\n{out}/")
-            print(f"共 {result.exported} 篇（已分析 {result.analyzed_ok} / 失败 {result.analyzed_failed} / 未分析 {result.unanalyzed}）")
-            print("可直接复制整个目录到其它电脑，双击 index.html 阅读。")
-            return 0
-
-        if args.format in ("reader", "portable-reader"):
-            # 便携阅读包：index + articles + server.py + Open-Reader.bat
-            site = args.site or args.source
-            if not site:
-                sites = list_available_sites()
-                if len(sites) == 1:
-                    site = sites[0]
-                else:
-                    print(
-                        "便携阅读包导出需要指定站点：--site <id>（当前可用："
-                        + ", ".join(sites)
-                        + "）",
-                        file=sys.stderr,
-                    )
-                    return 2
-            from .portable import export_portable_reader_package, default_reader_path
-
-            research_root = Path("data") / "export" / "html"
-            out = (
-                Path(args.output)
-                if args.output
-                else default_reader_path(site)
-            )
-            result = export_portable_reader_package(
-                storage,
-                out,
-                source_id=site,
-                limit=args.limit,
-                research_root=research_root,
-            )
-            print(f"便携阅读包导出目录：\n{out}/")
-            print(f"共 {result.exported} 篇（已分析 {result.analyzed_ok} / 失败 {result.analyzed_failed} / 未分析 {result.unanalyzed}）")
-            print("给他人使用：复制整个目录，双击 Open-Reader.bat，")
-            print("浏览器将通过 http://127.0.0.1 打开（而非 file://），沉浸式翻译等扩展可正常工作。")
-            return 0
-
-        if args.format == "news-html":
-            # News Archive HTML：默认输出到 data/export/news-html/<site>/（阅读目录专用目录）
-            site = args.site or args.source
-            if not site:
-                # 若数据库只有一个站点则自动推断；否则报错提示 --site
-                from .config import list_available_sites as _las
-
-                sites = _las()
-                if len(sites) == 1:
-                    site = sites[0]
-                else:
-                    print(
-                        "News Archive 导出需要指定站点：--site <id>（当前可用："
-                        + ", ".join(sites)
-                        + "）",
-                        file=sys.stderr,
-                    )
-                    return 2
-            out_dir = (
-                Path(args.output)
-                if args.output
-                else Path("data") / "export" / "news-html" / site
-            )
-            result = export_news_archive(
-                storage,
-                out_dir,
-                source_id=site,
-                limit=args.limit,
-            )
-            print(f"News Archive 导出目录：\n{out_dir}/")
-            print(f"最近 {result.exported} 条：")
-            print(f"  ✓ AI 已分析 {result.analyzed_ok}")
-            print(f"  ⚠ AI 分析失败 {result.analyzed_failed}")
-            print(f"  ○ 尚未分析 {result.unanalyzed}")
-            print(f"  失败（导出错误）{result.failed}")
-            return 0
-
-        output = Path(args.output) if args.output else Path(DEFAULT_EXPORTS)
-        if args.format == "jsonl":
-            path = output / "news.jsonl"
-            n = export_jsonl(storage, path, source_id=args.site or args.source)
-            print(f"已导出 {n} 篇 → {path}")
-        elif args.format == "markdown":
-            n = export_markdown(storage, output, source_id=args.site or args.source)
-            print(f"已导出 {n} 篇 → {output}/YYYY/MM/")
-        else:
-            print(f"不支持的格式: {args.format}", file=sys.stderr)
+        if args.format is None:
+            print("需要指定 --format 或 --type", file=sys.stderr)
             return 2
+        return _export_format(args, storage, args.format)
     finally:
         storage.close()
-    return 0
 
 
 def cmd_scheduled_fetch(args: argparse.Namespace) -> int:
@@ -575,18 +629,25 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_export = sub.add_parser(
         "export",
-        help="导出 JSONL / Markdown / HTML / News Archive HTML / 便携 HTML",
+        help="导出 JSONL / Markdown / HTML / News Archive HTML / 便携 HTML / Word",
     )
     p_export.add_argument(
         "--format",
-        choices=["jsonl", "markdown", "html", "news-html", "portable", "package", "reader"],
-        required=True,
+        choices=["jsonl", "markdown", "html", "news-html", "portable", "package", "reader", "word"],
+        help="导出格式（word = Word DOCX 研究阅读包）",
     )
-    p_export.add_argument("--site", help="按站点过滤（HTML / news-html 导出）")
+    p_export.add_argument(
+        "--type",
+        choices=[EXPORT_PORTABLE, EXPORT_WORD, EXPORT_BOTH],
+        default=None,
+        help="按自动导出类型批量导出：portable / word / both（等价于对应 --format 组合）",
+    )
+    p_export.add_argument("--site", help="按站点过滤（HTML / news-html / word 导出）")
     p_export.add_argument("--source", help="按站点过滤（兼容旧参数）")
     p_export.add_argument("--article-id", type=int, default=None, help="只导出指定文章（HTML）")
     p_export.add_argument("--limit", type=int, default=100, help="News Archive 显示最近 N 条（默认 100）")
-    p_export.add_argument("--output", default=None, help="导出目录（HTML 默认 data/export/html/，news-html 默认 data/export/news-html/<site>/，portable/package 默认 data/export/portable/）")
+    p_export.add_argument("--job-id", default=None, help="job id（用于 Word 文件名的 job 后缀，区分不同任务）")
+    p_export.add_argument("--output", default=None, help="导出目录（HTML 默认 data/export/html/，news-html 默认 data/export/news-html/<site>/，portable/package 默认 data/export/portable/，word 默认 data/export/word/）")
     _add_common_args(p_export)
     p_export.set_defaults(func=cmd_export)
 

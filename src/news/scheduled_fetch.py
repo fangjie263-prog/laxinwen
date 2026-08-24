@@ -31,7 +31,9 @@ from typing import Optional
 
 from .config import list_available_sites
 from .scheduler_config import (
+    EXPORT_BOTH,
     EXPORT_PORTABLE,
+    EXPORT_WORD,
     SchedulerConfig,
     load_config,
 )
@@ -47,6 +49,8 @@ DEFAULT_LOG_FILE = DEFAULT_LOG_DIR / "scheduled-fetch.log"
 
 # 便携阅读包输出根目录（与 GUI / CLI 保持一致）
 DEFAULT_PORTABLE_DIR = _PROJECT_ROOT / "data" / "export" / "portable"
+# Word 研究阅读包输出根目录（与 GUI / CLI 保持一致）
+DEFAULT_WORD_DIR = _PROJECT_ROOT / "data" / "export" / "word"
 # AI 研究结果根目录（portable export 需要，用于内嵌 AI 详情）
 DEFAULT_RESEARCH_DIR = _PROJECT_ROOT / "data" / "export" / "html"
 
@@ -179,6 +183,15 @@ def _default_portable_export(storage, out_dir, *, source_id, limit, research_roo
     )
 
 
+def _default_word_export(storage, out_path, *, source_id, limit, job_id=""):
+    """Word（DOCX）研究阅读包导出（与 CLI / GUI 一致）。"""
+    from .word_export import export_word_package
+
+    return export_word_package(
+        storage, out_path, source_id=source_id, limit=limit, job_id=job_id
+    )
+
+
 def _source_label(source_id: str) -> str:
     """来源 id → 显示名（用于日志/导出目录）。"""
     return source_id.upper()
@@ -190,9 +203,11 @@ def run_scheduled_fetch(
     db_path: str | Path = DEFAULT_DB,
     log_file: str | Path = DEFAULT_LOG_FILE,
     portable_dir: str | Path = DEFAULT_PORTABLE_DIR,
+    word_dir: str | Path = DEFAULT_WORD_DIR,
     research_dir: str | Path = DEFAULT_RESEARCH_DIR,
     pipeline_factory=None,
     portable_export=None,
+    word_export=None,
     storage_factory=None,
 ) -> int:
     """执行一次 headless 自动抓取（复用现有 pipeline）。
@@ -277,8 +292,10 @@ def run_scheduled_fetch(
                         export_type,
                         job_id=cfg.job_id,
                         portable_dir=portable_dir,
+                        word_dir=word_dir,
                         research_dir=research_dir,
                         portable_export=portable_export,
+                        word_export=word_export,
                     )
                     logger.info("EXPORT: SUCCESS → %s", export_result)
                     export_ok = True
@@ -308,6 +325,69 @@ def _default_storage_factory(db_path):
     return Storage(db_path)
 
 
+def _run_portable_export(
+    storage,
+    source_id: str,
+    limit: int,
+    *,
+    job_id: str = "",
+    portable_dir: str | Path,
+    research_dir: str | Path,
+    portable_export=None,
+):
+    """便携阅读包导出。返回描述字符串。"""
+    from datetime import datetime as _dt
+
+    portable_dir = Path(portable_dir)
+    # 独立、可识别的目录：source + 日期 + 执行时间（秒级）+ 可选 job id，
+    # 不同 job 互不覆盖；同一 job 若在同一秒重复执行，追加序号避免覆盖。
+    job_suffix = f"-{job_id}" if job_id else ""
+    base = portable_dir / (
+        f"Laxinwen-{_source_label(source_id)}-"
+        f"{_dt.now().strftime('%Y-%m-%d-%H%M%S')}{job_suffix}"
+    )
+    out_dir = _unique_dir(base)
+    export = portable_export or _default_portable_export
+    result = export(
+        storage,
+        out_dir,
+        source_id=source_id,
+        limit=limit,
+        research_root=research_dir,
+    )
+    return f"便携阅读包已导出 {result.exported} 篇 → {out_dir}"
+
+
+def _run_word_export(
+    storage,
+    source_id: str,
+    limit: int,
+    *,
+    job_id: str = "",
+    word_dir: str | Path = DEFAULT_WORD_DIR,
+    word_export=None,
+):
+    """Word（DOCX）研究阅读包导出。返回描述字符串。"""
+    from datetime import datetime as _dt
+
+    word_dir = Path(word_dir)
+    job_suffix = f"-{job_id}" if job_id else ""
+    out_path = word_dir / (
+        f"Laxinwen-{_source_label(source_id)}-"
+        f"{_dt.now().strftime('%Y-%m-%d-%H%M%S')}{job_suffix}.docx"
+    )
+    out_path = _unique_path(out_path)
+    export = word_export or _default_word_export
+    result = export(
+        storage,
+        out_path,
+        source_id=source_id,
+        limit=limit,
+        job_id=job_id,
+    )
+    return f"Word 阅读包已导出 {result.exported} 篇 → {out_path}"
+
+
 def _run_auto_export(
     storage,
     source_id: str,
@@ -316,39 +396,71 @@ def _run_auto_export(
     *,
     job_id: str = "",
     portable_dir: str | Path,
+    word_dir: str | Path = DEFAULT_WORD_DIR,
     research_dir: str | Path,
     portable_export=None,
+    word_export=None,
 ):
-    """执行自动导出。目前仅支持 portable（便携阅读包）。
+    """执行自动导出，按 ``export_type`` 生成对应交付物。
 
-    返回导出结果描述字符串。
+    - ``portable``：只生成 Portable HTML（便携阅读包）；
+    - ``word``：只生成 Word（DOCX 研究阅读包）；
+    - ``both``：同时生成 HTML + Word；
+    - 其它值（含旧配置里的未知值）：安全降级为 ``portable``，保证老配置不崩溃。
+
+    返回导出结果描述字符串（多个交付物用 ``; `` 连接）。
     """
-    from datetime import datetime as _dt
-
-    if export_type == EXPORT_PORTABLE:
-        portable_dir = Path(portable_dir)
-        # 独立、可识别的目录：source + 日期 + 执行时间（秒级）+ 可选 job id，
-        # 不同 job 互不覆盖；同一 job 若在同一秒重复执行，追加序号避免覆盖。
-        job_suffix = f"-{job_id}" if job_id else ""
-        base = portable_dir / (
-            f"Laxinwen-{_source_label(source_id)}-"
-            f"{_dt.now().strftime('%Y-%m-%d-%H%M%S')}{job_suffix}"
-        )
-        out_dir = _unique_dir(base)
-        export = portable_export or _default_portable_export
-        result = export(
+    if export_type == EXPORT_WORD:
+        return _run_word_export(
             storage,
-            out_dir,
-            source_id=source_id,
-            limit=limit,
-            research_root=research_dir,
+            source_id,
+            limit,
+            job_id=job_id,
+            word_dir=word_dir,
+            word_export=word_export,
         )
-        return f"便携阅读包已导出 {result.exported} 篇 → {out_dir}"
-    return f"不支持的导出类型：{export_type}（跳过）"
+
+    if export_type == EXPORT_BOTH:
+        parts = [
+            _run_portable_export(
+                storage,
+                source_id,
+                limit,
+                job_id=job_id,
+                portable_dir=portable_dir,
+                research_dir=research_dir,
+                portable_export=portable_export,
+            ),
+            _run_word_export(
+                storage,
+                source_id,
+                limit,
+                job_id=job_id,
+                word_dir=word_dir,
+                word_export=word_export,
+            ),
+        ]
+        return "; ".join(parts)
+
+    # 默认 / 旧配置 portable（含未知值降级为 portable，保证向后兼容）
+    return _run_portable_export(
+        storage,
+        source_id,
+        limit,
+        job_id=job_id,
+        portable_dir=portable_dir,
+        research_dir=research_dir,
+        portable_export=portable_export,
+    )
 
 
 def _unique_dir(base: Path) -> Path:
     """若目录已存在（同一秒重复执行），追加 -2 / -3 … 序号避免覆盖。"""
+    return _unique_path(base)
+
+
+def _unique_path(base: Path) -> Path:
+    """若文件/目录已存在（同一秒重复执行），追加 -2 / -3 … 序号避免覆盖。"""
     cand = base
     n = 2
     while cand.exists():
@@ -429,5 +541,6 @@ def main(argv: Optional[list[str]] = None) -> int:
         db_path=db_path,
         log_file=log_file,
         portable_dir=DEFAULT_PORTABLE_DIR,
+        word_dir=DEFAULT_WORD_DIR,
         research_dir=DEFAULT_RESEARCH_DIR,
     )

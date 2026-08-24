@@ -127,6 +127,24 @@ uv run news export --format reader --site eco --limit 100
 #   ├── server.py          # 内嵌的迷你本地 HTTP 服务器（纯 Python 标准库，只监听 127.0.0.1）
 #   └── Open-Reader.bat    # Windows 双击启动器（无需安装 laxinwen，自动开浏览器）
 
+# ---------- Word（DOCX）研究阅读包 ----------
+# 把同一批新闻导出为适合研究阅读的 Word 简报：
+#   - 首页有目录，目录条目可点击直接跳转到对应新闻正文（内部超链接，无需手动“更新域”）；
+#   - 每篇完整保留标题 / 来源 / 发布时间（北京时间）/ 正文；
+#   - 原文 URL 为真正可点击的外部超链接，在 Word 里点击即在浏览器打开原网页；
+#   - 纯 Python（python-docx）生成标准 .docx，不需要 LibreOffice / Word COM / Windows Office。
+# 与 Portable HTML 使用同一批新闻数据、同一排序（发布时间倒序）。
+uv run news export --format word --site rfi --limit 100
+#   默认输出到 data/export/word/Laxinwen-<SITE>-<日期>-<时间>[-<job>].docx
+# 也支持按“自动导出类型”批量导出：
+uv run news export --type portable   # 只生成 Portable HTML
+uv run news export --type word       # 只生成 Word
+uv run news export --type both       # 同时生成 HTML + Word
+#   示例：
+#   data/export/word/
+#   └── Laxinwen-ECO-2026-08-24-142002-test.docx
+#   └── Laxinwen-RFI-2026-08-24-080001-rfi-morning.docx
+
 # 所有导出的 HTML 展示时间统一为北京时间（Asia/Shanghai），24 小时制。
 
 # ---------- Windows 桌面 GUI（Laxinwen News Reader） ----------
@@ -181,8 +199,8 @@ uv run news gui --site all          # 初始来源全部
 | ⚙ AI 设置 | 打开独立设置窗口，配置 Provider / API Base URL / API Key / Model，提供「测试连接」「保存」；保存后立即生效，无需重启 |
 | 📊 打开 AI 研究结果 | 按当前来源导出 `news export --format html --site <id>`，通过**本地 HTTP 阅读模式**打开 `http://127.0.0.1:<port>/html/<id>/index.html` |
 | 导出数量 | 数字输入框（默认 100），用于下方“导出”按钮 |
-| 导出方式 | 下拉框：**📦 便携阅读包 / 📄 独立 HTML / 📚 HTML 新闻包**（**默认 = 便携阅读包**） |
-| 导出 | **单一导出按钮**：根据「导出方式」下拉调用对应的现有导出器（便携阅读包 / 独立 HTML / HTML 新闻包），三种能力全部保留，只是 GUI 层统一为下拉选择 + 一个按钮 |
+| 导出方式 | 下拉框：**📦 便携阅读包 / 📄 独立 HTML / 📚 HTML 新闻包 / 📝 Word 研究阅读包**（**默认 = 便携阅读包**） |
+| 导出 | **单一导出按钮**：根据「导出方式」下拉调用对应的现有导出器（便携阅读包 / 独立 HTML / HTML 新闻包 / Word 研究阅读包），能力全部保留，只是 GUI 层统一为下拉选择 + 一个按钮 |
 | 日志区 | 实时显示抓取/AI/导出过程与结果（发现/重复/新增/失败），全部来源时分别显示 `[ECO]` 与 `[HKEJ]`；并明确显示 `新闻库已启动：http://127.0.0.1:<port>/...` |
 | 状态区 | 数据库路径、ECO 新闻数、HKEJ 新闻数、AI 已分析/失败、当前来源、最后操作、最后抓取时间（从现有 storage/status 读取，不硬编码） |
 
@@ -197,6 +215,7 @@ uv run news gui --site all          # 初始来源全部
 | 导出（📦 便携阅读包） | `uv run news export --format reader --site eco|hkej --limit N`（index.html + articles + server.py + Open-Reader.bat） |
 | 导出（📄 独立 HTML） | `uv run news export --format portable --site eco|hkej --limit N`（单个自包含 HTML，双击可读） |
 | 导出（📚 HTML 新闻包） | `uv run news export --format package --site eco|hkej --limit N`（index.html + articles/NNN.html） |
+| 导出（📝 Word 研究阅读包） | `uv run news export --format word --site eco|hkej --limit N`（单个 .docx，目录可点击跳转，原文 URL 超链接） |
 
 > **本地 HTTP 阅读模式**：GUI 启动一个轻量级 localhost HTTP 静态服务器
 > （Python 标准库 `http.server`，**只监听 127.0.0.1**，端口被占用自动选择可用端口），
@@ -264,6 +283,7 @@ ECO 每日        ECO    每日 09:00       50    已启用
 | 每日执行时间 | 每日模式下的时间（`HH:MM`） |
 | 每小时执行间隔 | 每小时模式下的间隔（`1 / 2 / 3 / 6` 小时） |
 | 自动导出 | **固定启用**，普通用户无需（也无法）关闭 |
+| 导出格式 | **Portable HTML / Word / HTML + Word**（对应 `export_type` = `portable` / `word` / `both`） |
 
 列表下方提供操作按钮：
 
@@ -354,6 +374,7 @@ Windows Task Scheduler 可以独立启动后台抓取。GUI 只是配置界面�
 - scheduler 运行时配置：`data/scheduler.json`（多任务 `jobs[]` 结构）
 - 日志：`data/logs/scheduled-fetch.log`（每个任务记录 JOB ID）
 - 阅读包：`data/export/portable/`
+- Word 阅读包：`data/export/word/`
 
 明确说明：`data/` 已被 `.gitignore` 排除；`scheduler.json` 是运行时本地配置，**不进入 Git**。
 配置中只包含来源、频率、时间、数量、是否自动导出，**不含任何密钥 / 敏感信息**。
@@ -424,8 +445,14 @@ EXPORT: FAILED
 
 ### 9. 自动导出（固定执行）
 
-每个定时任务完成后**必须**调用现有 portable export（复用 `export_portable_reader_package()`），
-**不复制一套 export 逻辑**，不重写 HTML reader。
+每个定时任务完成后按 ``export_type`` 自动生成对应交付物，**不复制 pipeline / fetch 逻辑**：
+
+- ``export_type: "portable"`` —— 只生成 Portable HTML（便携阅读包，复用 `export_portable_reader_package()`）；
+- ``export_type: "word"`` —— 只生成 Word（DOCX 研究阅读包，复用 `export_word_package()`）；
+- ``export_type: "both"`` —— 同时生成 HTML + Word；
+- 其它值（含旧配置里的未知值）安全降级为 ``portable``，保证老配置不崩溃。
+
+**向后兼容**：旧的 ``"export_type": "portable"`` 配置仍按原语义只生成 HTML，不会生成 Word。
 
 自动导出是定时任务的**固定行为**，普通用户不再需要在“抓取后再决定是否导出”。
 即使本次 `discovery=0 / usable=0`（没有新文章），仍会 `FETCH: SUCCESS`，并继续自动导出最近 N 篇
@@ -433,7 +460,7 @@ EXPORT: FAILED
 
 #### 每个任务生成独立阅读包
 
-输出目录包含 **source + 日期 + 执行时间（秒级）+ job id**，不同任务 / 同任务多次执行都不互相覆盖，且能从目录名看出是哪个 job：
+输出目录/文件名包含 **source + 日期 + 执行时间（秒级）+ job id**，不同任务 / 同任务多次执行都不互相覆盖，且能从目录名看出是哪个 job：
 
 ```
 data/export/portable/
@@ -441,7 +468,14 @@ data/export/portable/
   Laxinwen-RFI-2026-08-24-090000-rfi-morning/
   Laxinwen-RFI-2026-08-24-100000-rfi-hourly/
   Laxinwen-ECO-2026-08-24-090000-eco-morning/
+
+data/export/word/
+  Laxinwen-ECO-2026-08-24-142002-test.docx
+  Laxinwen-RFI-2026-08-24-080001-rfi-morning.docx
 ```
+
+> Windows 自动定时任务同样可以自动生成 Word：只要在 GUI 的定时任务设置里选择「导出格式 = Word 或 HTML + Word」，
+> 或直接编辑 `scheduler.json` 把该 job 的 `export_type` 设为 `word` / `both`。
 
 ### 10. RFI 抓取逻辑保持不变
 

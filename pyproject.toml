@@ -11,6 +11,7 @@ dependencies = [
     "selectolax>=0.3.21",
     "PyYAML>=6.0.1",
     "python-dateutil>=2.9.0",
+    "python-docx>=1.1.2",
 ]
 
 [project.optional-dependencies]

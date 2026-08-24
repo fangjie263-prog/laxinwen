@@ -36,7 +36,9 @@ from .reader_server import ReaderServer
 
 # 定时抓取相关（延迟导入默认实现，便于测试注入）
 from .scheduler_config import (
+    EXPORT_BOTH,
     EXPORT_PORTABLE,
+    EXPORT_WORD,
     FREQ_DAILY,
     FREQ_HOURLY,
     HOURLY_INTERVALS,
@@ -118,9 +120,25 @@ _EXPORT_OPTIONS = (
     ("reader", "📦 便携阅读包"),
     ("html", "📄 独立 HTML"),
     ("package", "📚 HTML 新闻包"),
+    ("word", "📝 Word 研究阅读包"),
 )
 # 默认导出方式 = 便携阅读包
 _DEFAULT_EXPORT_MODE = "reader"
+
+# 定时任务自动导出格式选项：(内部 id, 显示名)
+_EXPORT_TYPE_OPTIONS = (
+    (EXPORT_PORTABLE, "Portable HTML"),
+    (EXPORT_WORD, "Word"),
+    (EXPORT_BOTH, "HTML + Word"),
+)
+
+
+def _export_type_label(export_type: str) -> str:
+    """导出类型内部 id → 显示名（未知值安全回退为 Portable HTML）。"""
+    for tid, label in _EXPORT_TYPE_OPTIONS:
+        if tid == export_type:
+            return label
+    return dict(_EXPORT_TYPE_OPTIONS)[EXPORT_PORTABLE]
 
 
 class _NewsReaderApp:
@@ -141,6 +159,7 @@ class _NewsReaderApp:
         portable_html_export=None,
         portable_package_export=None,
         portable_reader_export=None,
+        word_export=None,
         open_url=None,
         news_archive_dir: str | Path = DEFAULT_NEWS_ARCHIVE_DIR,
         research_dir: str | Path = DEFAULT_RESEARCH_DIR,
@@ -183,6 +202,7 @@ class _NewsReaderApp:
         self._portable_html_export = portable_html_export or _default_portable_html_export
         self._portable_package_export = portable_package_export or _default_portable_package_export
         self._portable_reader_export = portable_reader_export or _default_portable_reader_export
+        self._word_export = word_export or _default_word_export
         self._open_url = open_url or _default_open_url
         # 注意：_default_ai_config_store 是「返回 config_store 模块」的函数，
         # 必须调用它拿到模块对象，否则 self._ai_config_store 会变成函数对象，
@@ -1311,6 +1331,8 @@ class _NewsReaderApp:
                     self._run_export_portable_reader(limit)
                 elif mode == "html":
                     self._run_export_independent_html(limit)
+                elif mode == "word":
+                    self._run_export_word(limit)
                 else:
                     self._run_export_portable_package(limit)
             except Exception as exc:
@@ -2160,6 +2182,33 @@ class _NewsReaderApp:
                     "沉浸式翻译等扩展可正常工作。无需安装 laxinwen。"
                 )
 
+    def _run_export_word(self, limit: int) -> None:
+        """导出 Word（DOCX）研究阅读包（目录可点击跳转 + 原文 URL 超链接）。"""
+        site_ids = self._selected_site_ids()
+        word_dir = self.export_root / "word"
+        word_dir.mkdir(parents=True, exist_ok=True)
+        with self._storage_factory(self.db_path) as storage:
+            for sid in site_ids:
+                out_path = word_dir / f"Laxinwen-{sid.upper()}-{datetime.now().strftime('%Y-%m-%d-%H%M%S')}.docx"
+                self._bg_log(
+                    f"正在导出 {self._source_display(sid)} Word 研究阅读包（最近 {limit} 篇）→ {out_path}"
+                )
+                result = self._word_export(
+                    storage, out_path, source_id=sid, limit=limit
+                )
+                if not out_path.exists():
+                    raise FileNotFoundError(f"Word 阅读包未生成：{out_path}")
+                self._bg_log(
+                    f"{self._source_display(sid)} Word 研究阅读包导出完成：{result.exported} 篇\n"
+                    f"AI 已分析：{result.analyzed_ok}\n"
+                    f"AI 分析失败：{result.analyzed_failed}\n"
+                    f"AI 未分析：{result.unanalyzed}"
+                )
+                self._bg_log(f"📝 Word 研究阅读包：\n{out_path}")
+                self._bg_log(
+                    "目录条目可点击跳转到对应新闻；原文链接可在 Word 中点击打开浏览器。"
+                )
+
 
 # ---------- 定时任务新建/编辑对话框 ----------
 
@@ -2245,17 +2294,27 @@ class _JobsDialog:
             row=7, column=1, sticky="w", padx=(6, 0), pady=3
         )
 
-        # 自动导出：固定启用（不提供开关）
+        # 自动导出：固定启用 + 导出格式选择
         ttk.Label(
             body, text="自动导出：", foreground="#666"
         ).grid(row=8, column=0, sticky="e", pady=3)
+        export_default = _export_type_label(job.export_type)
+        self.export_type_var = tk.StringVar(value=export_default)
+        export_combo = ttk.Combobox(
+            body,
+            textvariable=self.export_type_var,
+            state="readonly",
+            width=16,
+            values=[_export_type_label(t) for t in (_EXPORT_TYPE_OPTIONS)],
+        )
+        export_combo.grid(row=8, column=1, sticky="w", padx=(6, 0), pady=3)
         ttk.Label(
-            body, text="已启用（任务完成后自动生成便携阅读包）", foreground="#666"
-        ).grid(row=8, column=1, sticky="w", padx=(6, 0), pady=3)
+            body, text="任务完成后自动生成对应格式", foreground="#888"
+        ).grid(row=9, column=1, sticky="w", padx=(6, 0))
 
         # 按钮
         btns = ttk.Frame(body)
-        btns.grid(row=9, column=0, columnspan=2, pady=(12, 0))
+        btns.grid(row=10, column=0, columnspan=2, pady=(12, 0))
         ttk.Button(btns, text="确定", command=self._ok, style="Accent.TButton").pack(
             side="left", padx=(0, 8)
         )
@@ -2296,7 +2355,12 @@ class _JobsDialog:
             cfg.limit = 50
         # 自动导出固定启用（产品原则：定时任务的最终交付物是阅读包）
         cfg.auto_export = True
-        cfg.export_type = EXPORT_PORTABLE
+        # 导出格式：从下拉选择（portable / word / both）
+        label = self.export_type_var.get()
+        cfg.export_type = next(
+            (tid for tid, lab in _EXPORT_TYPE_OPTIONS if lab == label),
+            EXPORT_PORTABLE,
+        )
         return cfg
 
     def _ok(self) -> None:
@@ -2396,6 +2460,14 @@ def _default_portable_reader_export(storage, out_dir, *, source_id, limit, resea
 
     return export_portable_reader_package(
         storage, out_dir, source_id=source_id, limit=limit, research_root=research_root
+    )
+
+
+def _default_word_export(storage, out_path, *, source_id, limit, job_id=""):
+    from .word_export import export_word_package
+
+    return export_word_package(
+        storage, out_path, source_id=source_id, limit=limit, job_id=job_id
     )
 
 
