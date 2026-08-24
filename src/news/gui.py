@@ -672,40 +672,60 @@ class _NewsReaderApp:
         m = re.search(r"-?\d+", text)
         return int(m.group()) if m else None
 
+    def _monitor_identity(self, task: dict) -> str:
+        """生成任务身份串：`JOB · SOURCE`。
+
+        JOB 是任务身份（如 rfi-morning / rfi-hourly），SOURCE 是新闻来源
+        （RFI / HKEJ / ECO）。两者都可能缺失：
+        - 后台任务两者都有 → 显示 `test · ECO`；
+        - 手动抓取只有来源 → 显示 `ECO`；
+        - 只有 JOB 没有 SOURCE → 显示 `test`；
+        - 都缺失 → 回退为“任务”（绝不显示裸 `?`）。
+        """
+        job = (task.get("job") or "").strip()
+        src = (task.get("source") or "").strip()
+        label = self._monitor_source_label(src)
+        if job and label and label != "?":
+            return f"{job} · {label}"
+        if job:
+            return job
+        if label and label != "?":
+            return label
+        return "任务"
+
     def _monitor_finalize(self, *, failed: bool = False) -> None:
         """根据累积的 _monitor_task 生成一条完成摘要并显示。"""
         task = self._monitor_task
         self._monitor_task = None
         if not task:
             return
-        source = task.get("source") or "?"
+        ident = self._monitor_identity(task)
         limit = task.get("limit")
         discovered = task.get("discovered")
         usable = task.get("usable")
         export = task.get("export")
-        label = self._monitor_source_label(source)
 
         if failed:
-            self._monitor_set_cur(f"{label} · 失败")
-            self._monitor_add_entry(f"{label}  失败：抓取异常")
+            self._monitor_set_cur(f"{ident} · 抓取失败")
+            self._monitor_add_entry(f"{ident}  抓取失败")
             return
 
-        # 判断“无新增”
-        if discovered is not None and discovered == 0 and usable in (None, 0):
-            new_txt = "无新增新闻"
+        # “无新文章”不是失败（usable=0 / discovered=0 但 FETCH SUCCESS）
+        if usable == 0 or (discovered == 0 and usable in (None, 0)):
+            new_txt = "无新文章"
         else:
             new_n = usable if usable is not None else discovered
             new_txt = f"新增 {new_n} 条" if new_n is not None else "已完成"
         export_txt = {None: "", "成功": "，导出成功", "失败": "，导出失败",
                       "跳过": "，未导出"}.get(export, "")
-        # 导出失败也算完成，但结果提示失败
-        self._monitor_set_cur(f"{label} · 已完成 · {new_txt}{export_txt}")
+        # 导出失败也算完成，但结果提示失败（FETCH 与 EXPORT 保持独立）
+        self._monitor_set_cur(f"{ident} · 已完成 · {new_txt}{export_txt}")
         if limit is not None:
             self._monitor_add_entry(
-                f"{label}  完成：{new_txt}（目标 {limit} 条）{export_txt}"
+                f"{ident}  完成：{new_txt}（目标 {limit} 条）{export_txt}"
             )
         else:
-            self._monitor_add_entry(f"{label}  完成：{new_txt}{export_txt}")
+            self._monitor_add_entry(f"{ident}  完成：{new_txt}{export_txt}")
 
     def _monitor_feed_line(self, line: str) -> None:
         """实时链路：喂入一行日志，更新监控状态机。主线程调用。
@@ -732,6 +752,13 @@ class _NewsReaderApp:
             else:
                 self._monitor_add_entry(f"{label}  开始抓取")
             return
+        # 后台：JOB（任务身份）+ SOURCE（新闻来源），来自 scheduled-fetch.log
+        if line.startswith("JOB:"):
+            job = line.split("JOB:", 1)[1].strip()
+            if task is None:
+                task = self._monitor_task = {}
+            task["job"] = job
+            return
         # 后台："SOURCE: rfi"（仅当尚未记录来源时设置）
         if line.startswith("SOURCE:") and not (task and task.get("source")):
             src = line.split("SOURCE:", 1)[1].strip()
@@ -739,7 +766,7 @@ class _NewsReaderApp:
                 task = self._monitor_task = {}
             task["source"] = src
             self._monitor_set_cur(
-                f"{self._monitor_source_label(src)} · 抓取中……"
+                f"{self._monitor_identity(task)} · 抓取中……"
             )
             return
         if not task:
@@ -771,7 +798,7 @@ class _NewsReaderApp:
                 n = self._monitor_int(seg)
                 if n is not None:
                     task["usable"] = n
-        if "TARGET:" in line and "limit" in line:
+        if "TARGET:" in line:
             n = self._monitor_int(line.split("TARGET:", 1)[1])
             if n is not None:
                 task["limit"] = n

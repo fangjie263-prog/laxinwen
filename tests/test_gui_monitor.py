@@ -161,14 +161,16 @@ class TestMonitorParser:
             "抓取完成（RFI，limit=50）",
         ]:
             app._monitor_feed_line(ln)
-        assert "无新增新闻" in app._monitor_entries[-1]
+        # “无新文章”是正常完成，不是失败
+        assert "无新文章" in app._monitor_entries[-1]
+        assert "抓取失败" not in app._monitor_entries[-1]
 
     def test_failure(self):
         app = self._bare()
         app._monitor_task = {"source": "rfi", "limit": 50}
         app._monitor_feed_line("抓取失败：连接超时")
-        assert app._monitor_entries[0].endswith("失败：抓取异常")
-        assert app._monitor_cur == "RFI · 失败"
+        assert app._monitor_entries[0].endswith("抓取失败")
+        assert app._monitor_cur == "RFI · 抓取失败"
 
     def test_background_log_parse(self):
         app = self._bare()
@@ -210,6 +212,199 @@ class TestMonitorParser:
         # 两个任务：各一条开始 + 一条完成，共 4 条
         assert len(app._monitor_entries) == 4
         assert sum("完成" in e for e in app._monitor_entries) == 2
+
+
+# ------------------------------------------------------------------ JOB + SOURCE 解析
+
+
+class TestMonitorJobSourceParsing:
+    """覆盖任务身份（JOB + SOURCE）解析与多任务区分。
+
+    对应验收：JOB=test + SOURCE=eco 正确关联；同 source 不同 job 显示成
+    两个不同任务；FETCH / EXPORT 独立；usable=0 不是失败。
+    """
+
+    def _bare(self):
+        app = object.__new__(_NewsReaderApp)
+        app._monitor_entries = []
+        app._monitor_cur = "空闲"
+        app._monitor_task = None
+        app._monitor_render = lambda: None
+        app._monitor_set_cur = lambda text: setattr(app, "_monitor_cur", text)
+        return app
+
+    def test_job_and_source_parsed(self):
+        app = self._bare()
+        app._monitor_feed_line("JOB: test")
+        app._monitor_feed_line("SOURCE: eco")
+        assert app._monitor_task["job"] == "test"
+        assert app._monitor_task["source"] == "eco"
+        assert app._monitor_identity(app._monitor_task) == "test · ECO"
+
+    def test_identity_never_question_mark(self):
+        """绝不出裸 `?`：只有 job / 只有 source / 都没有时都能回退。"""
+        app = self._bare()
+        # 只有 job
+        t1 = {"job": "test"}
+        assert app._monitor_identity(t1) == "test"
+        # 只有 source
+        t2 = {"source": "eco"}
+        assert app._monitor_identity(t2) == "ECO"
+        # 都没有
+        t3 = {}
+        assert app._monitor_identity(t3) != "?"
+        assert app._monitor_identity(t3) == "任务"
+
+    def test_windows_verified_full_sample(self):
+        """与本次 Windows 实机验证完全一致的日志样本。"""
+        app = self._bare()
+        sched = [
+            "========== 自动定时抓取开始 ==========",
+            "JOB: test",
+            "NAME: test",
+            "SOURCE: eco",
+            "TARGET: 200（usable limit）",
+            "自动导出: 开启",
+            "JOB: test",
+            "SOURCE: eco",
+            "TARGET: 200",
+            "发现数量: 200",
+            "重复数量: 0",
+            "正文下载成功: 200",
+            "正文提取成功: 200",
+            "质量不合格: 0",
+            "抓取/提取失败: 0",
+            "可读新闻: 200 / 目标 200",
+            "FETCH: SUCCESS（usable=200 / 目标 200）",
+            "EXPORT: SUCCESS → 便携阅读包已导出 200 篇 → data/export/portable/Laxinwen-ECO-2026-08-24-142002-test",
+            "========== 自动定时抓取结束（exit=0）==========",
+        ]
+        app._monitor_parse_sched_log(sched)
+        assert len(app._monitor_entries) == 1
+        entry = app._monitor_entries[0]
+        assert "test · ECO" in entry
+        assert "完成：新增 200 条" in entry
+        assert "导出成功" in entry
+        assert "?" not in entry
+        assert app._monitor_cur == "test · ECO · 已完成 · 新增 200 条，导出成功"
+
+    def test_same_source_different_job_distinguished(self):
+        """rfi-morning 与 rfi-hourly 同 source 但必须区分成两个任务。"""
+        app = self._bare()
+        sched = [
+            "========== 自动定时抓取开始 ==========",
+            "JOB: rfi-morning", "SOURCE: rfi", "TARGET: 50（usable limit）",
+            "发现数量: 53", "可读新闻: 50 / 目标 50",
+            "FETCH: SUCCESS（usable=50 / 目标 50）", "EXPORT: SUCCESS → ...",
+            "========== 自动定时抓取结束（exit=0）==========",
+            "========== 自动定时抓取开始 ==========",
+            "JOB: rfi-hourly", "SOURCE: rfi", "TARGET: 10（usable limit）",
+            "发现数量: 12", "可读新闻: 10 / 目标 10",
+            "FETCH: SUCCESS（usable=10 / 目标 10）", "EXPORT: SUCCESS → ...",
+            "========== 自动定时抓取结束（exit=0）==========",
+        ]
+        app._monitor_parse_sched_log(sched)
+        assert len(app._monitor_entries) == 2
+        assert any("rfi-morning · RFI" in e and "新增 50 条" in e
+                   for e in app._monitor_entries)
+        assert any("rfi-hourly · RFI" in e and "新增 10 条" in e
+                   for e in app._monitor_entries)
+
+    def test_fetch_success_export_success(self):
+        app = self._bare()
+        for ln in [
+            "JOB: test", "SOURCE: eco", "TARGET: 200（usable limit）",
+            "可读新闻: 200 / 目标 200",
+            "FETCH: SUCCESS（usable=200 / 目标 200）",
+            "EXPORT: SUCCESS → ...", "自动定时抓取结束（exit=0）",
+        ]:
+            app._monitor_feed_line(ln)
+        assert "test · ECO" in app._monitor_entries[0]
+        assert "完成：新增 200 条" in app._monitor_entries[0]
+        assert "导出成功" in app._monitor_entries[0]
+
+    def test_fetch_success_export_failed(self):
+        """EXPORT FAILED 不应把整个 FETCH 标记成失败。"""
+        app = self._bare()
+        for ln in [
+            "JOB: test", "SOURCE: eco", "TARGET: 200（usable limit）",
+            "可读新闻: 200 / 目标 200",
+            "FETCH: SUCCESS（usable=200 / 目标 200）",
+            "EXPORT: FAILED", "自动定时抓取结束（exit=0）",
+        ]:
+            app._monitor_feed_line(ln)
+        entry = app._monitor_entries[0]
+        assert "test · ECO" in entry
+        assert "完成：新增 200 条" in entry
+        assert "导出失败" in entry
+        assert "抓取失败" not in entry
+
+    def test_fetch_failed(self):
+        app = self._bare()
+        for ln in [
+            "JOB: test", "SOURCE: eco", "TARGET: 200（usable limit）",
+            "FETCH: FAILED",
+        ]:
+            app._monitor_feed_line(ln)
+        assert "test · ECO  抓取失败" in app._monitor_entries[0]
+        assert app._monitor_cur == "test · ECO · 抓取失败"
+
+    def test_usable_zero_is_not_failure(self):
+        """usable=0 + FETCH SUCCESS → 显示无新文章，不是失败。"""
+        app = self._bare()
+        for ln in [
+            "JOB: rfi-hourly", "SOURCE: rfi", "TARGET: 50（usable limit）",
+            "发现数量: 0", "可读新闻: 0 / 目标 50",
+            "FETCH: SUCCESS（usable=0 / 目标 50）",
+            "EXPORT: SUCCESS → ...", "自动定时抓取结束（exit=0）",
+        ]:
+            app._monitor_feed_line(ln)
+        entry = app._monitor_entries[0]
+        assert "rfi-hourly · RFI" in entry
+        assert "无新文章" in entry
+        assert "导出成功" in entry
+        assert "抓取失败" not in entry
+
+    def test_no_duplicate_consumption(self):
+        """同一段日志不应被消费两次（增量读取不回放）。"""
+        app = self._bare()
+        sched = [
+            "========== 自动定时抓取开始 ==========",
+            "JOB: test", "SOURCE: eco", "TARGET: 200（usable limit）",
+            "可读新闻: 200 / 目标 200",
+            "FETCH: SUCCESS（usable=200 / 目标 200）",
+            "EXPORT: SUCCESS → ...", "========== 自动定时抓取结束（exit=0）==========",
+        ]
+        app._monitor_parse_sched_log(sched)
+        assert len(app._monitor_entries) == 1
+        # 再次解析同一日志：不应新增重复摘要
+        app._monitor_entries = []
+        app._monitor_task = None
+        app._monitor_parse_sched_log(sched)
+        assert len(app._monitor_entries) == 1
+
+    def test_incremental_poll_new_task(self):
+        """GUI 打开期间增量读取：新任务出现时能识别为新段落并终结上一个。"""
+        app = self._bare()
+        # 第一段已完整
+        app._monitor_sched_tail_pos = 0
+        part1 = [
+            "========== 自动定时抓取开始 ==========",
+            "JOB: test", "SOURCE: eco", "TARGET: 200（usable limit）",
+            "可读新闻: 200 / 目标 200",
+            "FETCH: SUCCESS（usable=200 / 目标 200）",
+            "EXPORT: SUCCESS → ...", "========== 自动定时抓取结束（exit=0）==========",
+        ]
+        app._monitor_parse_sched_log(part1)
+        assert len(app._monitor_entries) == 1
+        assert "test · ECO" in app._monitor_entries[0]
+
+    def test_run_now_not_treated_as_success(self):
+        """「立即运行一次」只显示已请求执行，不能把 /Run 成功当抓取成功。"""
+        app = self._bare()
+        app._monitor_feed_line("已请求 Windows Task Scheduler 执行任务：test")
+        # 没有 FETCH/EXPORT 结果 → 不应出现“完成/导出成功”
+        assert not app._monitor_entries
 
 
 # ------------------------------------------------------------------ 集成测试
@@ -313,3 +508,66 @@ class TestMonitorIntegration:
         app = _make_monitor_app(root, tmp_path)
         # __init__ 已调用 _load_recent_scheduled_log
         assert any("HKEJ" in e and "新增 100 条" in e for e in app._monitor_entries)
+
+    def test_incremental_poll_reads_new_background_task(self, root, tmp_path, monkeypatch):
+        """GUI 打开期间增量读取：新后台任务完成 → 追加新摘要。"""
+        import news.gui as gui_mod
+
+        log_dir = tmp_path / "data" / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_file = log_dir / "scheduled-fetch.log"
+        log_file.write_text(
+            "========== 自动定时抓取开始 ==========\n"
+            "JOB: test\nSOURCE: eco\nTARGET: 200（usable limit）\n"
+            "发现数量: 200\n可读新闻: 200 / 目标 200\n"
+            "FETCH: SUCCESS（usable=200 / 目标 200）\n"
+            "EXPORT: SUCCESS → ...\n"
+            "========== 自动定时抓取结束（exit=0）==========\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(gui_mod, "_scheduled_log_path", lambda: log_file)
+        app = _make_monitor_app(root, tmp_path)
+        # 启动已读取历史
+        assert any("test · ECO" in e for e in app._monitor_entries)
+        before = len(app._monitor_entries)
+        # 后台新增一段任务
+        with log_file.open("a", encoding="utf-8") as f:
+            f.write(
+                "========== 自动定时抓取开始 ==========\n"
+                "JOB: rfi-morning\nSOURCE: rfi\nTARGET: 50（usable limit）\n"
+                "发现数量: 53\n可读新闻: 50 / 目标 50\n"
+                "FETCH: SUCCESS（usable=50 / 目标 50）\n"
+                "EXPORT: SUCCESS → ...\n"
+                "========== 自动定时抓取结束（exit=0）==========\n"
+            )
+        app._monitor_poll_sched_log()
+        # 新增了 rfi-morning 任务摘要
+        assert len(app._monitor_entries) == before + 1
+        assert any("rfi-morning · RFI" in e and "新增 50 条" in e
+                   for e in app._monitor_entries)
+
+    def test_incremental_poll_no_duplicate(self, root, tmp_path, monkeypatch):
+        """增量轮询不重复消费同一任务（已消费行不回放）。"""
+        import news.gui as gui_mod
+
+        log_dir = tmp_path / "data" / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_file = log_dir / "scheduled-fetch.log"
+        log_file.write_text(
+            "========== 自动定时抓取开始 ==========\n"
+            "JOB: test\nSOURCE: eco\nTARGET: 200（usable limit）\n"
+            "发现数量: 200\n可读新闻: 200 / 目标 200\n"
+            "FETCH: SUCCESS（usable=200 / 目标 200）\n"
+            "EXPORT: SUCCESS → ...\n"
+            "========== 自动定时抓取结束（exit=0）==========\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(gui_mod, "_scheduled_log_path", lambda: log_file)
+        app = _make_monitor_app(root, tmp_path)
+        # 启动已消费全文
+        assert len(app._monitor_entries) == 1
+        # 连续轮询（日志未变化）不应新增摘要
+        app._monitor_poll_sched_log()
+        app._monitor_poll_sched_log()
+        assert len(app._monitor_entries) == 1
+        assert sum("test · ECO" in e for e in app._monitor_entries) == 1
