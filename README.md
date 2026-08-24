@@ -233,6 +233,226 @@ pipeline 出错不崩溃且按钮恢复、status 读取数据库统计、GUI 关
 
 ---
 
+## Windows 自动定时抓取
+
+> 第八阶段新增：把「自动抓取」接入 **Windows 原生计划任务（Task Scheduler）**。
+> 它只是决定 **“什么时候启动一次抓取”**，真正抓取、发现、提取、质量判断、去重、入库、导出
+> 全部复用现有 pipeline / portable export，**绝不复制** 一套抓取或导出逻辑。
+
+### 1. GUI 自动抓取 / 定时任务
+
+GUI 中新增「**自动抓取 / 定时任务**」设置卡片，可以配置：
+
+| 配置项 | 说明 |
+| --- | --- |
+| 启用自动抓取 | 开关。勾选后点击「安装/更新定时任务」才会创建计划任务；未勾选时点击该按钮会**移除**已存在的任务 |
+| 新闻来源 | `rfi` / `eco` / `hkej` |
+| 每次抓取数量 | 每次后台抓取的 **usable limit**（见下文 [limit 的语义](#9-limit-的语义)） |
+| 频率 | `每日` / `每小时` |
+| 每日执行时间 | 每日模式下的时间（`HH:MM`，默认 `08:00`） |
+| 每小时执行间隔 | 每小时模式下的间隔（`1 / 2 / 3 / 6` 小时） |
+| 自动导出 | 是否在后台抓取完成后自动导出便携阅读包 |
+| 导出类型 | 目前为 `便携阅读包` |
+
+卡片下方提供三个操作按钮：
+
+- **「安装/更新定时任务」**：把当前 GUI 配置保存到 `data/scheduler.json`，并写入 Windows Task Scheduler。
+  如果同名任务已经存在，则**更新**同一个任务，而不是不断创建重复任务。
+  任务名称固定为 `Laxinwen-<SOURCE>-AutoFetch`（如 `Laxinwen-RFI-AutoFetch`）。
+  若当前未勾选「启用自动抓取」，此按钮会**删除**已存在的同名任务（保证“未启用 = 不自动抓取”）。
+- **「删除定时任务」**：删除对应的 Windows Task Scheduler 任务，并停止自动抓取。
+- **「立即运行一次」**：不改变原来的定时计划，立即按照当前配置启动一次后台抓取任务。
+
+> 手动抓取与自动抓取配置是**相互独立**的两套配置：GUI 上方的「抓取设置」（新闻来源、抓取数量等）
+> 只影响手动操作；下方的「自动抓取 / 定时任务」只影响定时任务。例如手动抓取当前选择 `ECO`，
+> 同时自动定时任务可以配置为 `RFI`——上方手动来源不会覆盖下方定时任务来源。
+
+### 2. 每日 / 每小时调度
+
+- **每日**：Windows Task Scheduler 使用 `DAILY` trigger（`/SC DAILY` + `/ST <HH:MM>`）。
+- **每小时**：Windows Task Scheduler 使用 `HOURLY` trigger（`/SC HOURLY` + `/MO <间隔>`）。
+
+**Windows Task Scheduler 才是真正的调度器。** Python 并不是常驻后台等待时间。
+每到触发时间，Windows 启动一次 `python -m news scheduled-fetch`，任务执行完成后 Python 进程退出。
+
+> 重复运行保护：计划任务层面使用任务的“仅运行一次”语义，应用层再用 lock 文件兜底，
+> 避免同一来源有两个 pipeline 同时抓取。
+
+### 3. GUI 关闭以后仍然可以执行
+
+安装 Windows Task Scheduler 任务以后，**Laxinwen News Reader GUI 不需要保持打开**。
+Windows Task Scheduler 可以独立启动后台抓取。
+
+```
+GUI 设置
+   ↓
+data/scheduler.json
+   ↓
+Windows Task Scheduler
+   ↓
+python -m news scheduled-fetch
+   ↓
+现有 Pipeline
+   ↓
+Discovery → Fetch → Extraction → Quality → Storage
+   ↓
+Portable Export
+   ↓
+data/export/portable/
+```
+
+### 4. 后台入口
+
+`python -m news scheduled-fetch` 是自动任务使用的 **headless 后台入口**。
+
+- 它 **不依赖 tkinter GUI**，也不会弹出任何窗口；
+- 它读取 `data/scheduler.json` 中的配置执行一次抓取；
+- 它 **不复制一套新的抓取逻辑**，而是复用现有 `Pipeline.run_site()`。
+
+> 同样地，`python -m news scheduler install|delete|run|status` 提供命令行方式管理计划任务
+> （`install`=安装/更新，`delete`=删除，`run`=立即运行，`status`=查询）。
+
+### 5. 数据与配置
+
+- 数据库：`data/news.db`
+- scheduler 运行时配置：`data/scheduler.json`
+- 日志：`data/logs/scheduled-fetch.log`
+
+明确说明：`data/` 已被 `.gitignore` 排除；`scheduler.json` 是运行时本地配置，**不进入 Git**。
+配置中只包含来源、频率、时间、数量、是否自动导出，**不含任何密钥 / 敏感信息**。
+
+### 6. 日志
+
+`scheduled-fetch.log` 会记录：
+
+- 开始时间 / 结束时间；
+- 新闻来源、目标数量（usable limit）、自动导出开关；
+- discovery：`发现数量`、`重复数量`；
+- 正文下载成功、正文提取成功、`质量不合格`、`抓取/提取失败`、`可读新闻`（usable）；
+- `候选已耗尽`（usable 不足 limit 且候选 > 0）、`无可发现的新候选`（候选 = 0）；
+- `FETCH` 与 `EXPORT` 状态；
+- 异常 traceback（如果有）。
+
+日志把 **FETCH 和 EXPORT 分开记录**：
+
+```
+FETCH: SUCCESS
+FETCH: FAILED
+
+EXPORT: SUCCESS
+EXPORT: FAILED
+EXPORT: SKIPPED
+```
+
+并明确：**EXPORT 失败不会被错误地伪装成 FETCH 失败**（导出失败不影响抓取结果）。
+
+### 7. 自动导出
+
+当 `auto_export=true` 时，后台抓取完成后调用现有 portable export（默认便携阅读包），
+**不复制一套 export 逻辑**。
+
+输出目录：`data/export/portable/`，例如：
+
+```
+data/export/portable/Laxinwen-RFI-2026-08-24/
+```
+
+### 8. RFI 抓取逻辑保持不变
+
+Windows scheduler **不绕过现有 RFI 抓取体系**。RFI 仍然使用现有：
+
+- `article_interval=15`（正文抓取独立节流，`sites/rfi.yaml`）；
+- `fetch_article()`；
+- 数据库去重（URL + 标题指纹）；
+- 7 天 discovery window（`RFI_DISCOVERY_MAX_AGE_DAYS = 7`）；
+- RFI quality filtering（正文长度 / 关键词等）；
+- candidate / usable limit 逻辑。
+
+自动任务只是“**什么时候启动**”发生了变化。真正的抓取、发现、提取、质量判断、去重、入库
+仍然复用现有 Pipeline。
+
+### 9. limit 的语义
+
+`limit` 是 **usable limit**（目标可读新闻数）。
+
+例如 `limit=50` 并不意味着系统必须强行抓到 50 篇。如果当天只有 7 篇新的、符合质量要求的新闻，
+那么 `usable=7`，程序可以正常结束。**不会**为了凑够 50 篇而突破当前 RFI discovery 时间窗口
+（候选池会从近期候选放大，但不会向 7 天窗口之外的历史文章扩展）。
+
+### 10. “没有新文章”不等于“抓取失败”
+
+请区分两种情况：
+
+- **情况 A：没有新的候选文章**。例如 `发现 0 / 抓取失败 0 / usable 0`，
+  这仍然是 `FETCH: SUCCESS`——因为这是正常的“今天没有新文章”。
+- **情况 B：真正的网络请求、下载、提取等发生异常**，才属于 `FETCH: FAILED`。
+
+不要把 `usable=0` 自动解释成“抓取失败”。`FETCH` 状态只反映抓取阶段是否发生异常，
+候选耗尽 / 没有新文章 **不算**失败。
+
+### 11. Windows 命令示例
+
+项目根目录：
+
+```bat
+cd /d D:\AIProjects\test
+```
+
+手动运行后台抓取：
+
+```bat
+.venv\Scripts\python.exe -m news scheduled-fetch --source rfi --limit 10
+```
+
+查询任务：
+
+```bat
+schtasks /Query /TN "Laxinwen-RFI-AutoFetch" /V /FO LIST
+```
+
+手动触发：
+
+```bat
+schtasks /Run /TN "Laxinwen-RFI-AutoFetch"
+```
+
+删除任务：
+
+```bat
+scripts\windows\delete-scheduled-fetch.bat
+```
+
+### 12. BAT 文件
+
+项目提供三个 Windows 批处理文件（双击即可）：
+
+| 文件 | 用途 |
+| --- | --- |
+| `scripts/windows/install-scheduled-fetch.bat` | 安装 / 更新定时任务 |
+| `scripts/windows/delete-scheduled-fetch.bat` | 删除定时任务 |
+| `scripts/windows/run-scheduled-fetch-now.bat` | 立即执行一次后台抓取 |
+
+> 仅列出上述三个真实存在的 BAT，不存在其它自动抓取 BAT。
+
+### 13. Windows 实机验证
+
+已在 Windows 实机验证：
+
+- ✓ Task Scheduler 成功创建（`Laxinwen-RFI-AutoFetch`）；
+- ✓ `schtasks /Run` 成功；
+- ✓ `scheduled-fetch` 后台入口成功执行；
+- ✓ RFI discovery 成功；
+- ✓ 数据库去重正常；
+- ✓ `FETCH: SUCCESS`；
+- ✓ `EXPORT: SUCCESS`；
+- ✓ Task Scheduler 最终 `Last Result = 0`。
+
+> ⚠ **尚未完成**“等待计划时间由 Windows 自动触发”的自然触发验证（目前只验证了 `schtasks /Run`
+> 手动触发）。因此**不要写成**“每天 08:00 自动触发已经验证成功”。
+> 正确表述：**Windows Task Scheduler 手动触发已验证成功；实际按计划时间自动触发仍可继续观察验证。**
+
+---
+
 ## 三种 HTML 导出方式
 
 Laxinwen 提供三种 HTML 导出方式，底层三个导出器全部保留，GUI 通过「导出方式」下拉选择 + 单一「导出」按钮调用。
@@ -372,6 +592,8 @@ Model / Provider 名称 / Base URL 全部支持手工输入，不强制限定。
 | --- | --- |
 | `news gui [--site <id>] [--db PATH]` | 启动 Windows 桌面 GUI（Laxinwen News Reader，来源 ECO/HKEJ/全部） |
 | `news serve [--export-root DIR]` | 启动本地 HTTP 阅读服务器（仅 127.0.0.1，端口自动选择，Ctrl+C 停止） |
+| `news scheduled-fetch [--source <id>] [--limit N] [--config <path>] [--db PATH]` | headless 自动抓取后台入口（被 Windows Task Scheduler 调用，复用现有 pipeline） |
+| `news scheduler install\|delete\|run\|status [--config <path>] [--project-root DIR]` | 管理 Windows Task Scheduler 定时任务（install=安装/更新，delete=删除，run=立即运行，status=查询） |
 | `news fetch [--site <id>] [--limit N] [--timeout S] [--retries N] [--interval S] [--retry-failed]` | 抓取新闻（`--limit` = 最近 N 篇发现窗口） |
 | `news list [--source <id>] [--limit N]` | 列出最近新闻 |
 | `news status [--source <id>]` | 显示数据库与抓取状态（含 AI 分析统计） |
@@ -407,10 +629,16 @@ laxinwen/
 ├── NewsReader-Console.bat     # Windows 控制台启动器（查看完整命令行日志）
 ├── sites/                  # 站点配置（一个网站一个 YAML）
 │   ├── eco.yaml            # ECO – Economia Online（已跑通）
-│   └── hkej.yaml           # HKEJ 信报（预留，见“已知问题”）
+│   ├── hkej.yaml           # HKEJ 信报（预留，见“已知问题”）
+│   └── rfi.yaml            # RFI 法国国际广播电台（中文，多栏目聚合 + 7 天 discovery window）
+├── scripts/windows/       # Windows 自动抓取定时任务批处理（第八阶段）
+│   ├── install-scheduled-fetch.bat  # 安装 / 更新定时任务
+│   ├── delete-scheduled-fetch.bat   # 删除定时任务
+│   └── run-scheduled-fetch-now.bat  # 立即执行一次后台抓取
 ├── src/news/
 │   ├── __init__.py
-│   ├── cli.py              # 命令行入口（fetch / list / status / gui / process / export）
+│   ├── __main__.py        # `python -m news` 入口（headless 后台调用）
+│   ├── cli.py              # 命令行入口（fetch / list / status / gui / process / export / scheduled-fetch / scheduler）
 │   ├── config.py           # 站点配置加载
 │   ├── model.py            # 统一 Article 数据模型
 │   ├── normalize.py        # URL 规范化 + 标题指纹
@@ -425,7 +653,10 @@ laxinwen/
 │   ├── portable.py         # 便携式 HTML 导出（独立 HTML / HTML 新闻包 / 便携阅读包，第七阶段）
 │   ├── beijing.py          # 北京时间（Asia/Shanghai）展示辅助（第七阶段）
 │   ├── reader_server.py    # 本地 HTTP 阅读模式（第五阶段，仅 127.0.0.1）
-│   ├── gui.py              # Windows 桌面 GUI（Laxinwen News Reader，第四+六阶段，tkinter）
+│   ├── gui.py              # Windows 桌面 GUI（Laxinwen News Reader，第四+六+八阶段，tkinter）
+│   ├── scheduler_config.py # 自动抓取配置持久化（data/scheduler.json，第八阶段）
+│   ├── scheduled_fetch.py  # headless 自动抓取后台入口（第八阶段）
+│   ├── task_scheduler.py   # Windows Task Scheduler 命令构建与调度管理（第八阶段）
 │   └── ai/                 # AI Processing Layer（第二阶段）
 │       ├── __init__.py
 │       ├── provider.py         # Provider 抽象与配置（环境变量 / .env）
