@@ -307,8 +307,9 @@ Laxinwen-HKEJ-hkej-evening
 每到触发时间，Windows 启动一次 `python -m news scheduled-fetch --job-id <id>`，
 任务执行完成后 Python 进程退出。
 
-> 重复运行保护：计划任务层面使用任务的“仅运行一次”语义，应用层再用 lock 文件兜底，
-> 避免同一来源有两个 pipeline 同时抓取。
+> 重复运行保护：计划任务层面使用任务的“仅运行一次”语义，应用层再用 **job-specific lock** 兜底，
+> 避免同一 job 有两个 pipeline 同时抓取。不同 job（即使同一来源）互不阻塞，可独立并行。
+> 锁文件位于 `data/scheduler/locks/<job_id>.lock`。
 
 ### 4. 工作流
 
@@ -406,7 +407,7 @@ FETCH: SUCCESS
 USABLE: 8 / 10
 
 EXPORT: SUCCESS
-OUTPUT: data/export/portable/Laxinwen-RFI-2026-08-24-100000/
+OUTPUT: data/export/portable/Laxinwen-RFI-2026-08-24-100000-rfi-hourly/
 ```
 
 日志把 **FETCH 和 EXPORT 分开记录**：
@@ -432,14 +433,14 @@ EXPORT: FAILED
 
 #### 每个任务生成独立阅读包
 
-输出目录包含 **source + 日期 + 执行时间（秒级）**，不同任务 / 同任务多次执行都不互相覆盖：
+输出目录包含 **source + 日期 + 执行时间（秒级）+ job id**，不同任务 / 同任务多次执行都不互相覆盖，且能从目录名看出是哪个 job：
 
 ```
 data/export/portable/
-  Laxinwen-RFI-2026-08-24-080000/
-  Laxinwen-RFI-2026-08-24-090000/
-  Laxinwen-RFI-2026-08-24-100000/
-  Laxinwen-ECO-2026-08-24-090000/
+  Laxinwen-RFI-2026-08-24-080000-rfi-hourly/
+  Laxinwen-RFI-2026-08-24-090000-rfi-morning/
+  Laxinwen-RFI-2026-08-24-100000-rfi-hourly/
+  Laxinwen-ECO-2026-08-24-090000-eco-morning/
 ```
 
 ### 10. RFI 抓取逻辑保持不变

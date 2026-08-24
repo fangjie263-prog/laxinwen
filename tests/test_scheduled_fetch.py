@@ -789,3 +789,57 @@ def test_scheduler_json_not_in_git(tmp_path):
     text = gitignore.read_text(encoding="utf-8")
     assert "data/" in text
     assert "scheduler.json" not in text or "data" in text
+
+
+def test_auto_export_dir_includes_job_id(tmp_path):
+    """导出目录名应包含 job id（最好能看出 job）。"""
+    from news.scheduled_fetch import _run_auto_export
+    seen = []
+
+    def fake_export(storage, out_dir, *, source_id, limit, research_root=None):
+        Path(out_dir).mkdir(parents=True, exist_ok=True)
+        seen.append(str(out_dir))
+        class R:
+            exported = 0
+        return R()
+
+    class _FakeStorage3:
+        pass
+
+    _run_auto_export(
+        _FakeStorage3(), "rfi", 10, "portable",
+        job_id="rfi-hourly",
+        portable_dir=tmp_path / "portable",
+        research_dir=tmp_path / "html",
+        portable_export=fake_export,
+    )
+    assert len(seen) == 1
+    # 目录名包含 source、日期时间戳和 job id
+    assert "Laxinwen-RFI-" in seen[0]
+    assert seen[0].endswith("-rfi-hourly")
+    assert any(ch.isdigit() for ch in seen[0])
+
+
+def test_lock_is_job_specific_not_source_specific(tmp_path):
+    """lock 按 job id 区分：同 source 不同 job 不互斥，同一 job 用同一锁文件。"""
+    from news.scheduled_fetch import _Lock
+
+    locks_dir = tmp_path / "locks"
+
+    # 同 source（rfi）的两个 job：应使用不同锁文件，可同时持有
+    lock_hourly = _Lock(locks_dir / "rfi-hourly.lock")
+    lock_morning = _Lock(locks_dir / "rfi-morning.lock")
+    assert lock_hourly.acquire() is True
+    assert lock_morning.acquire() is True  # 不同 job 不互斥，可并行
+    lock_hourly.release()
+    lock_morning.release()
+
+    # 同一 job 不能并发持有：先持有 rfi-hourly，再试图获取同一锁应失败
+    lock_a = _Lock(locks_dir / "rfi-hourly.lock")
+    lock_a2 = _Lock(locks_dir / "rfi-hourly.lock")
+    assert lock_a.acquire() is True
+    assert lock_a2.acquire() is False  # 同一 job 已持有，不能再次启动
+    lock_a.release()
+    # 释放后再次可获取
+    assert lock_a2.acquire() is True
+    lock_a2.release()

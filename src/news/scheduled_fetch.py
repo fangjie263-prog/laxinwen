@@ -217,10 +217,17 @@ def run_scheduled_fetch(
     logger.info("TARGET: %d（usable limit）", limit)
     logger.info("自动导出: %s", "开启" if auto_export else "关闭")
 
-    # 重复运行保护（应用层 lock）
-    lock = _Lock(_PROJECT_ROOT / "data" / "logs" / f"scheduled-fetch-{source_id}.lock")
+    # 重复运行保护（应用层 lock）：按 job id 加锁，保证同一 job 不会并发启动两次，
+    # 同时不同 job（即使同 source，如 rfi-hourly / rfi-morning）可以独立并行。
+    lock = _Lock(
+        _PROJECT_ROOT
+        / "data"
+        / "scheduler"
+        / "locks"
+        / f"{cfg.job_id}.lock"
+    )
     if not lock.acquire():
-        logger.warning("检测到已有 %s 抓取任务在运行，跳过本次调度（Do not start a new instance）。", source_id)
+        logger.warning("检测到已有 job %s 在运行，跳过本次调度（Do not start a new instance）。", cfg.job_id)
         return 0
     try:
         storage_factory = storage_factory or _default_storage_factory
@@ -268,6 +275,7 @@ def run_scheduled_fetch(
                         source_id,
                         limit,
                         export_type,
+                        job_id=cfg.job_id,
                         portable_dir=portable_dir,
                         research_dir=research_dir,
                         portable_export=portable_export,
@@ -306,6 +314,7 @@ def _run_auto_export(
     limit: int,
     export_type: str,
     *,
+    job_id: str = "",
     portable_dir: str | Path,
     research_dir: str | Path,
     portable_export=None,
@@ -318,11 +327,12 @@ def _run_auto_export(
 
     if export_type == EXPORT_PORTABLE:
         portable_dir = Path(portable_dir)
-        # 独立、可识别的目录：source + 日期 + 执行时间（秒级），
+        # 独立、可识别的目录：source + 日期 + 执行时间（秒级）+ 可选 job id，
         # 不同 job 互不覆盖；同一 job 若在同一秒重复执行，追加序号避免覆盖。
+        job_suffix = f"-{job_id}" if job_id else ""
         base = portable_dir / (
             f"Laxinwen-{_source_label(source_id)}-"
-            f"{_dt.now().strftime('%Y-%m-%d-%H%M%S')}"
+            f"{_dt.now().strftime('%Y-%m-%d-%H%M%S')}{job_suffix}"
         )
         out_dir = _unique_dir(base)
         export = portable_export or _default_portable_export
