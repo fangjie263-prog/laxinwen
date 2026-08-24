@@ -173,6 +173,16 @@ def build_schtasks_run(cfg: SchedulerConfig) -> list[str]:
     return ["schtasks", "/Run", "/TN", cfg.task_name()]
 
 
+def build_schtasks_enable(cfg: SchedulerConfig) -> list[str]:
+    """构建「启用任务」命令列表（schtasks /Change /ENABLE）。"""
+    return ["schtasks", "/Change", "/TN", cfg.task_name(), "/ENABLE"]
+
+
+def build_schtasks_disable(cfg: SchedulerConfig) -> list[str]:
+    """构建「停用任务」命令列表（schtasks /Change /DISABLE）。"""
+    return ["schtasks", "/Change", "/TN", cfg.task_name(), "/DISABLE"]
+
+
 # ---------------------------------------------------------------------------
 # 执行层（仅 Windows 可用；Linux/headless 上调用会明确报错）
 # ---------------------------------------------------------------------------
@@ -276,3 +286,25 @@ def query_task(cfg: SchedulerConfig) -> dict:
     if rc == 0:
         return {"ok": True, "task_name": task_name, "message": out, "executed": True}
     return {"ok": False, "task_name": task_name, "message": f"查询失败：{out}", "executed": True}
+
+
+def enable_task(cfg: SchedulerConfig) -> dict:
+    """启用定时任务（schtasks /Change /ENABLE）。返回 {ok, task_name, message, executed}。"""
+    task_name = cfg.task_name()
+    if not is_windows():
+        return {"ok": True, "task_name": task_name, "message": "命令已生成（REQUIRES WINDOWS REAL TEST）", "cmd": build_schtasks_enable(cfg), "executed": False}
+    rc, out = run_schtasks(build_schtasks_enable(cfg))
+    if rc == 0:
+        return {"ok": True, "task_name": task_name, "message": f"已启用：{task_name}", "executed": True}
+    return {"ok": False, "task_name": task_name, "message": f"启用失败：{out}", "executed": True}
+
+
+def disable_task(cfg: SchedulerConfig) -> dict:
+    """停用定时任务（schtasks /Change /DISABLE）。返回 {ok, task_name, message, executed}。"""
+    task_name = cfg.task_name()
+    if not is_windows():
+        return {"ok": True, "task_name": task_name, "message": "命令已生成（REQUIRES WINDOWS REAL TEST）", "cmd": build_schtasks_disable(cfg), "executed": False}
+    rc, out = run_schtasks(build_schtasks_disable(cfg))
+    if rc == 0:
+        return {"ok": True, "task_name": task_name, "message": f"已停用：{task_name}", "executed": True}
+    return {"ok": False, "task_name": task_name, "message": f"停用失败：{out}", "executed": True}

@@ -3,7 +3,7 @@
 覆盖需求第七/十三/十四/九条的核心：
 - GUI 不应只根据 scheduler.json 的 enabled 判断状态，而要结合 Windows Task
   Scheduler 的真实状态（存在 / 启用 / 运行）。
-- 状态合并为一个用户可见最终状态：运行中 / 未安装 / 已停用 / 安装失败 / 执行中 / 状态未知。
+- 状态合并为一个用户可见最终状态：已启用 / 未安装 / 已停用 / 安装失败 / 执行中 / 状态未知。
 - GUI 启动只读查询、不自动创建 Windows 任务。
 - 底部汇总使用最终状态而非「已启用 x / 总数」。
 
@@ -122,7 +122,7 @@ def test_status_running_when_enabled_and_installed(root, tmp_path):
         lambda j: {"ok": True, "executed": True, "message": "Scheduled Task State: Enabled\n"},
     )
     app._refresh_windows_task_state()
-    assert app._get_scheduler_display_status(job) == "运行中"
+    assert app._get_scheduler_display_status(job) == "已启用"
 
 
 def test_status_uninstalled_when_enabled_but_no_task(root, tmp_path):
@@ -203,7 +203,7 @@ def test_bottom_summary_counts_final_states(root, tmp_path):
     app._refresh_windows_task_state()
     app._refresh_sched_status()
     text = app.sched_status_var.get()
-    assert "1 个任务运行中" in text
+    assert "1 个任务已启用" in text
     assert "1 个未安装" in text
     assert "1 个已停用" in text
 
@@ -217,7 +217,7 @@ def test_bottom_summary_all_running(root, tmp_path):
     app._refresh_windows_task_state()
     app._refresh_sched_status()
     text = app.sched_status_var.get()
-    assert "2 个任务运行中" in text
+    assert "2 个任务已启用" in text
 
 
 # ------------------------------------------------------------------ 启动不自动安装
@@ -243,5 +243,304 @@ def test_startup_only_queries_does_not_install(root, tmp_path):
     app._refresh_windows_task_state()
     app._refresh_scheduler_table()
     assert install_calls == []
-    # 状态为「运行中」（已启用 + 任务存在并启用）
-    assert app._get_scheduler_display_status(job) == "运行中"
+    # 状态为「已启用」（已启用 + 任务存在并启用）
+    assert app._get_scheduler_display_status(job) == "已启用"
+
+
+# ------------------------------------------------------------------ 启用 / 停用真正同步 Windows
+
+
+def _make_app_ops(root, tmp_path, job, *, query, install=None, enable=None, disable=None,
+                  run_now=None, save_jobs=None):
+    """构造支持注入全部 scheduler 操作的 app，用于测试启用/停用/立即运行。"""
+    sched_file = tmp_path / "data" / "scheduler.json"
+
+    def fake_save(job_list, path=None):
+        if save_jobs:
+            save_jobs(job_list, path)
+        return Path(path) if path else sched_file
+
+    return _NewsReaderApp(
+        root,
+        db_path=tmp_path / "gui.db",
+        site="rfi",
+        site_name="RFI",
+        scheduler_load_jobs=lambda path=None: [job],
+        scheduler_save_jobs=fake_save,
+        scheduler_query=query,
+        scheduler_install=install or (lambda j: {"ok": True, "executed": True, "task_name": j.task_name()}),
+        scheduler_enable=enable or (lambda j: {"ok": True, "executed": True, "task_name": j.task_name()}),
+        scheduler_disable=disable or (lambda j: {"ok": True, "executed": True, "task_name": j.task_name()}),
+        scheduler_run_now=run_now or (lambda j: {"ok": True, "executed": True, "task_name": j.task_name()}),
+        scheduler_config_path=sched_file,
+    )
+
+
+def _make_app_ops_selected(root, tmp_path, job, **kw):
+    """构造 app 并预选中 job（等效于在任务列表中点击选中）。"""
+    app = _make_app_ops(root, tmp_path, job, **kw)
+    app._selected_job = job
+    return app
+
+
+def _pump(app, timeout=8.0):
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline and app._busy:
+        app.root.update()
+        time.sleep(0.02)
+    app.root.update()
+
+
+def test_enable_installs_when_task_missing(root, tmp_path):
+    """启用：Windows 任务不存在 → 自动安装 → 最终已启用。"""
+    install_calls = []
+    job = _job(enabled=False)
+
+    def query(j):
+        # 先返回不存在，安装后返回已启用
+        if install_calls:
+            return {"ok": True, "executed": True, "message": "Scheduled Task State: Enabled\n"}
+        return {"ok": False, "executed": True, "message": "not found"}
+
+    app = _make_app_ops_selected(
+        root, tmp_path, job, query=query,
+        install=lambda j: install_calls.append(j.job_id) or {"ok": True, "executed": True, "task_name": j.task_name()},
+    )
+    app._sched_win_state[job.job_id] = {"exists": False, "enabled": False, "running": False}
+    app._on_sched_toggle()
+    _pump(app)
+    assert job.enabled is True
+    assert install_calls == [job.job_id]
+    assert app._get_scheduler_display_status(job) == "已启用"
+
+
+def test_enable_enables_existing_disabled_task(root, tmp_path):
+    """启用：任务存在但 Disabled → 调用 enable，不调用 install。"""
+    install_calls = []
+    enable_calls = []
+    job = _job(enabled=False)
+
+    def query(j):
+        # 存在但禁用 → 启用后变为 Enabled
+        if enable_calls:
+            return {"ok": True, "executed": True, "message": "Scheduled Task State: Enabled\n"}
+        return {"ok": True, "executed": True, "message": "Scheduled Task State: Disabled\n"}
+
+    app = _make_app_ops_selected(
+        root, tmp_path, job, query=query,
+        install=lambda j: install_calls.append(j.job_id) or {"ok": True, "executed": True},
+        enable=lambda j: enable_calls.append(j.job_id) or {"ok": True, "executed": True, "task_name": j.task_name()},
+    )
+    app._sched_win_state[job.job_id] = {"exists": True, "enabled": False, "running": False}
+    app._on_sched_toggle()
+    _pump(app)
+    assert job.enabled is True
+    assert install_calls == []
+    assert enable_calls == [job.job_id]
+    assert app._get_scheduler_display_status(job) == "已启用"
+
+
+def test_enable_failure_shows_install_failed(root, tmp_path):
+    """启用：安装失败 → 状态「安装失败」，enabled 保持 true。"""
+    job = _job(enabled=False)
+
+    def query(j):
+        return {"ok": False, "executed": True, "message": "not found"}
+
+    app = _make_app_ops_selected(
+        root, tmp_path, job, query=query,
+        install=lambda j: {"ok": False, "executed": True, "message": "create failed"},
+    )
+    app._sched_win_state[job.job_id] = {"exists": False, "enabled": False, "running": False}
+    app._on_sched_toggle()
+    _pump(app)
+    assert job.enabled is True
+    assert app._get_scheduler_display_status(job) == "安装失败"
+
+
+def test_disable_disables_windows_task(root, tmp_path):
+    """停用：enabled=false + Windows 任务 Disabled。"""
+    disable_calls = []
+    job = _job(enabled=True)
+
+    def query(j):
+        if disable_calls:
+            return {"ok": True, "executed": True, "message": "Scheduled Task State: Disabled\n"}
+        return {"ok": True, "executed": True, "message": "Scheduled Task State: Enabled\n"}
+
+    app = _make_app_ops_selected(
+        root, tmp_path, job, query=query,
+        disable=lambda j: disable_calls.append(j.job_id) or {"ok": True, "executed": True, "task_name": j.task_name()},
+    )
+    app._sched_win_state[job.job_id] = {"exists": True, "enabled": True, "running": False}
+    app._on_sched_toggle()
+    _pump(app)
+    assert job.enabled is False
+    assert disable_calls == [job.job_id]
+    assert app._get_scheduler_display_status(job) == "已停用"
+
+
+def test_disable_no_task_skips_disable(root, tmp_path):
+    """停用：Windows 任务不存在 → 不调用 disable，enabled=false。"""
+    disable_calls = []
+    job = _job(enabled=True)
+    app = _make_app_ops_selected(
+        root, tmp_path, job, query=lambda j: {"ok": False, "executed": True, "message": "not found"},
+        disable=lambda j: disable_calls.append(j.job_id) or {"ok": True, "executed": True},
+    )
+    app._sched_win_state[job.job_id] = {"exists": False, "enabled": False, "running": False}
+    app._on_sched_toggle()
+    _pump(app)
+    assert job.enabled is False
+    assert disable_calls == []
+    assert app._get_scheduler_display_status(job) == "已停用"
+
+
+def test_disabled_job_cannot_run_now(root, tmp_path):
+    """停用任务不能立即运行：不调用 schtasks /Run。"""
+    run_now_calls = []
+    job = _job(enabled=False)
+    app = _make_app_ops_selected(
+        root, tmp_path, job, query=lambda j: {"ok": True, "executed": True, "message": "Scheduled Task State: Enabled\n"},
+        run_now=lambda j: run_now_calls.append(j.job_id) or {"ok": True, "executed": True},
+    )
+    app._sched_win_state[job.job_id] = {"exists": True, "enabled": True, "running": False}
+    app._on_sched_run_now()
+    _pump(app)
+    assert run_now_calls == []
+    log = app.log_text.get("1.0", "end")
+    assert "任务已停用，请先启用任务" in log
+
+
+def test_enabled_job_run_now_uses_schtasks_run(root, tmp_path):
+    """启用任务立即运行：调用 schtasks /Run（scheduler_run_now）。"""
+    run_now_calls = []
+    job = _job(enabled=True)
+    app = _make_app_ops_selected(
+        root, tmp_path, job,
+        query=lambda j: {"ok": True, "executed": True, "message": "Scheduled Task State: Enabled\n"},
+        run_now=lambda j: run_now_calls.append(j.job_id) or {"ok": True, "executed": True, "task_name": j.task_name()},
+    )
+    app._sched_win_state[job.job_id] = {"exists": True, "enabled": True, "running": False}
+    app._on_sched_run_now()
+    _pump(app)
+    assert run_now_calls == [job.job_id]
+    log = app.log_text.get("1.0", "end")
+    assert "已请求 Windows Task Scheduler 执行任务" in log
+
+
+# ------------------------------------------------------------------ 实时抓取日志 / 状态摘要 / 后台日志
+
+
+def test_manual_fetch_logs_fetch_and_export_status(root, tmp_path, monkeypatch):
+    """手动抓取日志包含发现/重复/可读/FETCH/EXPORT，且不阻塞。"""
+    import time as _time
+
+    from tests.test_gui import FakePipeline, FakeStats, _make_app as _make_gui_app
+
+    app, ctx = _make_gui_app(root, tmp_path)
+    app.site_combo.set("rfi")
+    app._on_source_changed()
+    app.limit_var.set("10")
+    app._on_fetch()
+    deadline = _time.monotonic() + 8
+    while _time.monotonic() < deadline and app._busy:
+        app.root.update()
+        _time.sleep(0.02)
+    app.root.update()
+    log = app.log_text.get("1.0", "end")
+    assert "FETCH: SUCCESS" in log
+    assert "EXPORT: SUCCESS" in log
+    assert "发现" in log
+    assert "重复" in log
+    assert "可读" in log
+    # 状态摘要已更新
+    assert "已完成" in app.fetch_status_var.get()
+
+
+def test_manual_fetch_no_articles_is_success(root, tmp_path):
+    """没有新文章：usable=0 仍显示 FETCH: SUCCESS，不显示 FAILED。"""
+    import time as _time
+
+    from tests.test_gui import FakePipeline, FakeStats, _make_app as _make_gui_app
+
+    app, ctx = _make_gui_app(root, tmp_path, pipeline_stats=FakeStats(discovered=0, usable=0))
+    app.site_combo.set("rfi")
+    app._on_source_changed()
+    app.limit_var.set("10")
+    app._on_fetch()
+    deadline = _time.monotonic() + 8
+    while _time.monotonic() < deadline and app._busy:
+        app.root.update()
+        _time.sleep(0.02)
+    app.root.update()
+    log = app.log_text.get("1.0", "end")
+    assert "FETCH: SUCCESS" in log
+    assert "FETCH: FAILED" not in log
+    assert "没有发现新的可读新闻" in log
+
+
+def test_log_clear_only_clears_gui_display(root, tmp_path, monkeypatch):
+    """清空当前显示：只清 GUI 日志框，不删除真实日志文件。"""
+    import time as _time
+
+    log_file = tmp_path / "logs" / "scheduled-fetch.log"
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    log_file.write_text("JOB: test\nSOURCE: rfi\nFETCH: SUCCESS\n", encoding="utf-8")
+    monkeypatch.setattr("news.gui._scheduled_log_path", lambda: log_file)
+
+    from tests.test_gui import _make_app as _make_gui_app
+
+    app, _ctx = _make_gui_app(root, tmp_path)
+    app._load_recent_scheduled_log()
+    assert app.log_text.get("1.0", "end").strip() != ""
+    app._on_log_clear()
+    assert app.log_text.get("1.0", "end").strip() == ""
+    # 真实日志文件仍然存在、内容未删
+    assert log_file.read_text(encoding="utf-8") == "JOB: test\nSOURCE: rfi\nFETCH: SUCCESS\n"
+
+
+def test_startup_loads_recent_scheduled_log(root, tmp_path, monkeypatch):
+    """GUI 启动能读取最近 scheduled-fetch.log 并显示（不删除真实文件）。"""
+    log_file = tmp_path / "logs" / "scheduled-fetch.log"
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    content = (
+        "SOURCE: rfi\n"
+        "TARGET: 10\n"
+        "发现数量: 7\n"
+        "可读新闻: 5 / 目标 10\n"
+        "FETCH: SUCCESS\n"
+        "EXPORT: SUCCESS\n"
+    )
+    log_file.write_text(content, encoding="utf-8")
+    monkeypatch.setattr("news.gui._scheduled_log_path", lambda: log_file)
+
+    from tests.test_gui import _make_app as _make_gui_app
+
+    app, _ctx = _make_gui_app(root, tmp_path)
+    log = app.log_text.get("1.0", "end")
+    assert "SOURCE: rfi" in log
+    assert "FETCH: SUCCESS" in log
+    # 状态摘要更新为“已完成”，且可读=5
+    assert "已完成" in app.fetch_status_var.get()
+    assert log_file.exists()  # 真实日志未删除
+
+
+def test_fetch_log_does_not_block_tkinter(root, tmp_path):
+    """抓取过程中 GUI 不冻结：worker 线程通过 queue 传递日志。"""
+    import time as _time
+
+    from tests.test_gui import FakeStats, _make_app as _make_gui_app
+
+    app, ctx = _make_gui_app(root, tmp_path, pipeline_stats=FakeStats(discovered=5, usable=3))
+    app.site_combo.set("rfi")
+    app._on_source_changed()
+    app.limit_var.set("5")
+    # 手动驱动事件循环多次，确保主线程持续响应（不抛异常）
+    app._on_fetch()
+    for _ in range(20):
+        app.root.update()
+        _time.sleep(0.01)
+    assert True

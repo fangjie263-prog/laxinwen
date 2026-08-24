@@ -50,6 +50,8 @@ from .task_scheduler import (
     install_task as _default_task_install,
     query_task as _default_task_query,
     run_now as _default_task_run_now,
+    enable_task as _default_task_enable,
+    disable_task as _default_task_disable,
 )
 
 
@@ -107,6 +109,7 @@ _DONE_SENTINELS = {
     "__SCHED_INSTALL_DONE__": "安装/更新定时任务",
     "__SCHED_DELETE_DONE__": "删除定时任务",
     "__SCHED_RUNNOW_DONE__": "立即运行一次",
+    "__SCHED_TOGGLE_DONE__": "启用/停用",
 }
 
 # 导出方式选项：(内部 id, 显示名)
@@ -154,6 +157,8 @@ class _NewsReaderApp:
         scheduler_delete=None,
         scheduler_run_now=None,
         scheduler_query=None,
+        scheduler_enable=None,
+        scheduler_disable=None,
         scheduler_config_path=None,
     ):
         self.root = root
@@ -195,6 +200,8 @@ class _NewsReaderApp:
         self._scheduler_delete = scheduler_delete or _default_task_delete
         self._scheduler_run_now = scheduler_run_now or _default_task_run_now
         self._scheduler_query = scheduler_query or _default_task_query
+        self._scheduler_enable = scheduler_enable or _default_task_enable
+        self._scheduler_disable = scheduler_disable or _default_task_disable
         self._scheduler_config_path = (
             Path(scheduler_config_path) if scheduler_config_path else None
         )
@@ -461,9 +468,30 @@ class _NewsReaderApp:
             lbl.grid(row=i // 2, column=(i % 2) * 2, sticky="w", padx=(0, 24), pady=1)
             self.status_labels[key] = lbl
 
-        # ---- 日志区 ----
-        log_card = ttk.LabelFrame(outer, text="日志", padding=8)
+        # ---- 抓取进度 / 状态摘要 ----
+        fetch_card = ttk.LabelFrame(outer, text="当前抓取状态", padding=8)
+        fetch_card.pack(fill="x", pady=(10, 0))
+        self.fetch_status_var = tk.StringVar(value="状态：空闲")
+        ttk.Label(
+            fetch_card, textvariable=self.fetch_status_var, font=("", 10, "bold")
+        ).pack(anchor="w")
+
+        # ---- 日志区 ----------------
+        log_card = ttk.LabelFrame(outer, text="运行日志", padding=8)
         log_card.pack(fill="both", expand=True, pady=(10, 0))
+
+        # 日志区标题栏（含“清空当前显示”，只清 GUI 显示，不删真实日志文件）
+        log_head = ttk.Frame(log_card)
+        log_head.pack(fill="x")
+        ttk.Label(
+            log_head,
+            text="抓取/定时任务实时进度（最近 200 行）。",
+            foreground="#666",
+        ).pack(side="left")
+        self.log_clear_btn = ttk.Button(
+            log_head, text="清空当前显示", width=14, command=self._on_log_clear
+        )
+        self.log_clear_btn.pack(side="right")
 
         self.log_text = tk.Text(
             log_card,
@@ -475,10 +503,22 @@ class _NewsReaderApp:
             foreground="#d4d4d4",
             insertbackground="#d4d4d4",
         )
-        self.log_text.pack(side="left", fill="both", expand=True)
+        self.log_text.pack(side="left", fill="both", expand=True, pady=(4, 0))
         scroll = ttk.Scrollbar(log_card, command=self.log_text.yview)
         scroll.pack(side="right", fill="y")
         self.log_text.configure(yscrollcommand=scroll.set)
+
+        # 最近一次抓取统计（状态摘要用）
+        self._last_fetch_summary: dict = {
+            "source": self._source_display(self.site),
+            "limit": 0,
+            "discovered": 0,
+            "duplicated": 0,
+            "usable": 0,
+            "failed": 0,
+            "export": "—",
+            "status": "空闲",
+        }
 
         self._sep = "─" * 58
         self.log(
@@ -486,6 +526,8 @@ class _NewsReaderApp:
             f"新闻来源：{self._source_display(self.site)}。"
             "发现→去重→下载→提取→入库 使用现有 pipeline，不会绕过去重逻辑。"
         )
+        # 启动时读取最近一次后台 scheduled-fetch.log（若存在）
+        self._load_recent_scheduled_log()
 
     # ------------------------------------------------------------------ 工具
 
@@ -523,11 +565,140 @@ class _NewsReaderApp:
         stamp = datetime.now().strftime("%H:%M:%S")
         self._append_bg_log(f"[{stamp}] {msg}")
 
+    # 日志区最多保留的行数（超出自动裁剪最旧的行，只影响 GUI 显示）
+    _LOG_MAX_LINES = 200
+
+    def _on_log_clear(self) -> None:
+        """清空当前 GUI 日志显示（不删除真实日志文件）。"""
+        self.log_text.configure(state="normal")
+        self.log_text.delete("1.0", "end")
+        self.log_text.configure(state="disabled")
+
     def _append_bg_log(self, msg: str) -> None:
         self.log_text.configure(state="normal")
         self.log_text.insert("end", msg + "\n")
+        # 裁剪到最近 _LOG_MAX_LINES 行，避免日志区无限增长
+        line_count = int(self.log_text.index("end-1c").split(".")[0])
+        if line_count > self._LOG_MAX_LINES:
+            remove = line_count - self._LOG_MAX_LINES
+            self.log_text.delete(f"1.0", f"{remove + 1}.0")
         self.log_text.see("end")
         self.log_text.configure(state="disabled")
+
+    def _load_recent_scheduled_log(self, max_lines: int = 200) -> None:
+        """GUI 启动时读取最近一次后台 scheduled-fetch.log 记录并显示。
+
+        只读取日志文件、只读显示，不删除真实日志。文件不存在 / 为空时静默跳过。
+        """
+        try:
+            p = _scheduled_log_path()
+            if not p.is_file():
+                return
+            lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
+        except Exception as exc:
+            self.log(f"读取后台日志失败：{exc}")
+            return
+        if not lines:
+            return
+        self._sep = "─" * 58
+        self.log(self._sep)
+        self.log("最近一次后台定时任务运行记录（data/logs/scheduled-fetch.log）：")
+        tail = lines[-max_lines:]
+        for line in tail:
+            self.log(line)
+        self._update_fetch_summary_from_log(tail)
+        self.log(self._sep)
+
+    def _update_fetch_summary_from_log(self, lines: list[str]) -> None:
+        """从后台日志行提取最近一次抓取的关键统计，更新状态摘要栏。"""
+        summary = dict(self._last_fetch_summary)
+        summary["status"] = "已完成"
+        fetch_ok = False
+        export = None
+        target = None
+        discovered = None
+        usable = None
+        duplicated = None
+        failed = None
+        source = None
+        for line in lines:
+            l = line
+            if "SOURCE:" in l and source is None:
+                parts = l.split("SOURCE:", 1)
+                if len(parts) > 1:
+                    source = parts[1].strip()
+            if "TARGET:" in l and target is None:
+                parts = l.split("TARGET:", 1)
+                if len(parts) > 1:
+                    target = self._extract_int(parts[1])
+            if "发现数量:" in l and discovered is None:
+                discovered = self._extract_int(l.split("发现数量:", 1)[-1])
+            if "重复数量:" in l and duplicated is None:
+                duplicated = self._extract_int(l.split("重复数量:", 1)[-1])
+            if "可读新闻:" in l and usable is None:
+                usable = self._extract_int(l.split("可读新闻:", 1)[-1])
+            if "抓取/提取失败:" in l and failed is None:
+                failed = self._extract_int(l.split("抓取/提取失败:", 1)[-1])
+            if "FETCH: SUCCESS" in l:
+                fetch_ok = True
+            if "FETCH: FAILED" in l:
+                fetch_ok = False
+            if "EXPORT: SUCCESS" in l:
+                export = "成功"
+            elif "EXPORT: FAILED" in l:
+                export = "失败"
+            elif "EXPORT: SKIPPED" in l:
+                export = "跳过"
+        if fetch_ok is False and "FETCH:" not in "".join(lines):
+            fetch_ok = True
+        summary["source"] = source or summary["source"]
+        if target is not None:
+            summary["limit"] = target
+        if discovered is not None:
+            summary["discovered"] = discovered
+        if duplicated is not None:
+            summary["duplicated"] = duplicated
+        if usable is not None:
+            summary["usable"] = usable
+        if failed is not None:
+            summary["failed"] = failed
+        if export is not None:
+            summary["export"] = export
+        self._last_fetch_summary = summary
+        self._render_fetch_status()
+
+    @staticmethod
+    def _extract_int(text: str):
+        import re
+
+        m = re.search(r"-?\d+", text)
+        return int(m.group()) if m else None
+
+    def _update_fetch_summary(self, *, source, limit, discovered, duplicated, usable,
+                              failed, export, status) -> None:
+        """手动抓取后更新状态摘要栏。"""
+        self._last_fetch_summary = {
+            "source": source,
+            "limit": limit,
+            "discovered": discovered,
+            "duplicated": duplicated,
+            "usable": usable,
+            "failed": failed,
+            "export": export,
+            "status": status,
+        }
+        self._render_fetch_status()
+
+    def _render_fetch_status(self) -> None:
+        """渲染抓取状态摘要文本（GUI 主线程调用）。"""
+        s = self._last_fetch_summary
+        status = s["status"]
+        parts = [f"状态：{status}"]
+        detail = (
+            f"{s['source']} · 目标 {s['limit']} · 发现 {s['discovered']} · "
+            f"重复 {s['duplicated']} · 可读 {s['usable']} · 失败 {s['failed']} · 导出 {s['export']}"
+        )
+        self.fetch_status_var.set("    ".join(parts) + "    " + detail)
 
     def _poll_queue(self) -> None:
         """主线程轮询后台日志队列，避免跨线程操作 Tk 控件。"""
@@ -543,6 +714,12 @@ class _NewsReaderApp:
                         except Exception:
                             pass
                         self._refresh_scheduler_table()
+                    elif msg == "__FETCH_DONE__":
+                        # 手动抓取完成后刷新顶部抓取状态摘要（worker 已更新 dict）
+                        try:
+                            self._render_fetch_status()
+                        except Exception:
+                            pass
                     self._refresh_status()
                 else:
                     self.log(msg)
@@ -575,6 +752,12 @@ class _NewsReaderApp:
         if busy:
             self._active_source = self.site_var.get()
             self.log(f"⏳ {run} 进行中，请稍候……")
+            if run == "抓取":
+                self._last_fetch_summary["status"] = "抓取中……"
+                try:
+                    self._render_fetch_status()
+                except Exception:
+                    pass
         else:
             self.last_action = run
             self.log(f"✅ {run} 结束，按钮已恢复。")
@@ -695,6 +878,13 @@ class _NewsReaderApp:
         if limit is None:
             return
         self._set_busy(True, run="抓取")
+        # 更新顶部状态摘要的“目标”数量，使抓取中状态更完整
+        self._last_fetch_summary["limit"] = limit
+        self._last_fetch_summary["source"] = self._source_display(self._active_source)
+        try:
+            self._render_fetch_status()
+        except Exception:
+            pass
 
         def worker() -> None:
             try:
@@ -886,12 +1076,14 @@ class _NewsReaderApp:
         内部状态（job.enabled + Windows 任务是否存在/启用/运行）对外只合并为一个
         用户能理解的状态：
 
-            运行中   = 已启用 + Windows 任务存在 + Windows 任务启用
+            已启用   = 已启用 + Windows 任务存在 + Windows 任务启用
             未安装   = 已启用 + Windows 任务不存在
             已停用   = 用户主动停用（enabled=False）或 Windows 任务被禁用
             安装失败 = 最近一次「安装/更新」失败
             执行中   = Windows 任务正在运行
             状态未知 = 无法查询 Windows 任务
+
+        不再向用户同时展示两套状态（已启用 + 已安装），只给一个最终状态。
         """
         # 安装失败优先显示（用户刚点了安装但没成功）
         if job.job_id in self._sched_install_failed:
@@ -908,7 +1100,7 @@ class _NewsReaderApp:
             return "已停用"
         if state.get("running"):
             return "执行中"
-        return "运行中"
+        return "已启用"
 
     def _refresh_scheduler_table(self) -> None:
         """刷新任务列表 Treeview。"""
@@ -974,8 +1166,8 @@ class _NewsReaderApp:
         for job in self._scheduler_jobs:
             st = self._get_scheduler_display_status(job)
             counts[st] = counts.get(st, 0) + 1
-        running = counts.get("运行中", 0)
-        parts = [f"自动抓取：{running} 个任务运行中"]
+        running = counts.get("已启用", 0)
+        parts = [f"自动抓取：{running} 个任务已启用"]
         for st in ("未安装", "已停用", "安装失败", "执行中", "状态未知"):
             n = counts.get(st, 0)
             if n:
@@ -1035,28 +1227,106 @@ class _NewsReaderApp:
         self._refresh_scheduler_table()
 
     def _on_sched_toggle(self) -> None:
-        """【启用/停用】—— 切换选中任务启用状态并保存。"""
+        """【启用/停用】—— 真正同步 Laxinwen 配置与 Windows Task Scheduler。
+
+        - 启用：enabled=true → 若 Windows 任务不存在则自动安装；若存在但被禁用则
+          自动启用。只有 Laxinwen 与 Windows 两边都就绪才显示「已启用」。
+        - 停用：enabled=false → 同步 Disabled Windows 任务。
+
+        全程在后台线程执行，避免阻塞 GUI 主线程。
+        """
         if self._busy:
             self.log("已有任务运行中，请等待完成。")
             return
         job = self._selected_job_or_warn()
         if job is None:
             return
-        job.enabled = not job.enabled
-        if not self._save_jobs():
+        ok, reason = job.is_valid()
+        if not ok:
+            self.log(f"定时任务参数无效：{reason}")
             return
-        state = "启用" if job.enabled else "停用"
-        self.log(f"定时任务「{job.job_id}」已{state}。")
-        if job.enabled:
-            # 启用后重新查询 Windows 任务，若任务不存在则提示安装
-            self._refresh_windows_task_state()
-            st = self._get_scheduler_display_status(job)
-            if st == "未安装":
-                self.log(
-                    f"任务「{job.job_id}」已启用但尚未安装到 Windows，"
-                    "请点击「安装/更新」才能真正自动运行。"
-                )
-        self._refresh_scheduler_table()
+        target_enabled = not job.enabled
+        job.enabled = target_enabled
+        if not self._save_jobs():
+            job.enabled = not target_enabled  # 回滚
+            return
+        self._set_busy(True, run="启用" if target_enabled else "停用")
+        self.log(
+            f"正在{('启用' if target_enabled else '停用')}任务「{job.job_id}」并同步 Windows 计划任务……"
+        )
+        job_ref = job
+
+        def worker() -> None:
+            try:
+                if target_enabled:
+                    self._enable_job_sync(job_ref)
+                else:
+                    self._disable_job_sync(job_ref)
+            except Exception as exc:
+                self._bg_log(f"同步 Windows 计划任务失败：{exc}")
+            finally:
+                self._queue.put("__SCHED_TOGGLE_DONE__")
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _enable_job_sync(self, job: SchedulerConfig) -> None:
+        """启用 job：确保 Windows 任务存在且启用（不存在→安装；禁用→启用）。"""
+        self._bg_log(f"任务「{job.job_id}」已启用（scheduler.json）")
+        # 1. 查询 Windows 任务当前状态
+        state = self._query_windows_task(job)
+        if not state.get("exists"):
+            # 2a. 任务不存在 → 自动安装
+            self._bg_log(f"Windows 计划任务不存在，自动安装……")
+            result = self._scheduler_install(job)
+            if not result.get("ok"):
+                self._sched_install_failed.add(job.job_id)
+                self._bg_log(f"安装失败：{job.job_id}")
+                self._bg_log(f"原因：{result.get('message', '未知错误')}")
+                return
+            self._sched_install_failed.discard(job.job_id)
+            self._bg_log(f"Windows 计划任务已安装：{result.get('task_name', job.task_name())}")
+        elif not state.get("enabled"):
+            # 2b. 任务存在但被禁用 → 自动启用
+            self._bg_log(f"Windows 计划任务存在但被禁用，自动启用……")
+            result = self._scheduler_enable(job)
+            if not result.get("ok"):
+                self._sched_install_failed.add(job.job_id)
+                self._bg_log(f"启用失败：{job.job_id}")
+                self._bg_log(f"原因：{result.get('message', '未知错误')}")
+                return
+            self._sched_install_failed.discard(job.job_id)
+            self._bg_log(f"Windows 计划任务已启用：{result.get('task_name', job.task_name())}")
+        # 3. 重新查询最终状态
+        self._refresh_windows_task_state()
+        final = self._get_scheduler_display_status(job)
+        if final == "已启用":
+            self._bg_log(f"任务「{job.job_id}」状态：已启用（Laxinwen + Windows 均已就绪）")
+        elif final == "执行中":
+            self._bg_log(f"任务「{job.job_id}」状态：已启用且正在执行")
+        else:
+            self._bg_log(f"任务「{job.job_id}」最终状态：{final}")
+
+    def _disable_job_sync(self, job: SchedulerConfig) -> None:
+        """停用 job：同步 Disabled Windows 任务（若存在）。"""
+        self._bg_log(f"任务「{job.job_id}」已停用（scheduler.json）")
+        state = self._query_windows_task(job)
+        if state.get("exists"):
+            if state.get("enabled"):
+                self._bg_log(f"同步停用 Windows 计划任务……")
+                result = self._scheduler_disable(job)
+                if not result.get("ok"):
+                    self._bg_log(f"停用 Windows 计划任务失败：{job.job_id}")
+                    self._bg_log(f"原因：{result.get('message', '未知错误')}")
+                else:
+                    self._bg_log(f"Windows 计划任务已停用：{result.get('task_name', job.task_name())}")
+            else:
+                self._bg_log(f"Windows 计划任务已处于停用状态")
+        else:
+            self._bg_log(f"Windows 计划任务不存在（无需停用）")
+        # 重新查询最终状态
+        self._refresh_windows_task_state()
+        final = self._get_scheduler_display_status(job)
+        self._bg_log(f"任务「{job.job_id}」状态：{final}")
 
     # ---- 安装 / 更新（写入 Windows Task Scheduler） ----
 
@@ -1185,6 +1455,7 @@ class _NewsReaderApp:
         """【立即运行一次】—— 调用 schtasks /Run 触发对应 Windows 任务。
 
         GUI 不得冻结：这里在后台线程执行 schtasks /Run，主线程保持响应。
+        如果任务已停用，则不调用 schtasks /Run，直接提示用户先启用；
         如果任务尚未安装，则提示用户先安装。
         """
         if self._busy:
@@ -1198,6 +1469,10 @@ class _NewsReaderApp:
             self.log(f"定时任务参数无效：{reason}")
             return
         if not self._save_jobs():
+            return
+        # 停用任务不能立即运行：不调用 schtasks /Run，直接提示
+        if not job.enabled:
+            self.log(f"任务已停用，请先启用任务「{job.job_id}」。")
             return
         self._set_busy(True, run="立即运行一次")
         self.log(f"立即运行：{job.job_id}")
@@ -1218,7 +1493,7 @@ class _NewsReaderApp:
                     # schtasks /Run 成功仅表示 Windows 已接受执行请求，
                     # 真正抓取结果见 data/logs/scheduled-fetch.log
                     self._bg_log(
-                        f"已请求 Windows Task Scheduler 执行：{job.job_id}\n"
+                        f"已请求 Windows Task Scheduler 执行任务：{job.job_id}\n"
                         "后台抓取正在运行，结果请查看 scheduled-fetch.log"
                     )
                 else:
@@ -1292,15 +1567,27 @@ class _NewsReaderApp:
     # ------------------------------------------------------------------ 业务
 
     def _run_fetch(self, limit: int) -> None:
-        site_ids = self._selected_site_ids()
-        self._bg_log(f"开始抓取 {self._source_display(self.site_var.get())} 最新 {limit} 篇")
+        """后台执行手动抓取：复用现有 pipeline，实时输出进度到 GUI 日志。
+
+        抓取完成后固定自动导出便携阅读包（与定时任务一致），日志明确区分
+        FETCH 与 EXPORT 结果，并更新顶部抓取状态摘要。
+        """
+        site_ids = self._site_ids_for(self._active_source)
+        source_display = self._source_display(self._active_source)
+        self._bg_log(f"开始抓取 {source_display} 最新 {limit} 篇")
         # 打开新连接（线程内使用）；多个站点共用一个 Storage 连接
+        totals = {
+            "discovered": 0, "duplicated": 0, "fetched_ok": 0,
+            "extracted_ok": 0, "low_quality": 0, "failed": 0, "usable": 0,
+        }
         with self._storage_factory(self.db_path) as storage:
             pipeline = self._pipeline_factory(storage, limit)
             try:
                 for sid in site_ids:
                     stats = pipeline.run_site(sid)
                     s = stats
+                    for k in totals:
+                        totals[k] += getattr(s, k, 0)
                     self._bg_log(
                         f"{self._sep}\n"
                         f"[{self._source_display(sid)}] 发现：{s.discovered}\n"
@@ -1309,12 +1596,16 @@ class _NewsReaderApp:
                         f"正文提取成功：{s.extracted_ok}\n"
                         f"质量不合格：{s.low_quality}\n"
                         f"抓取/提取失败：{s.failed}\n"
-                        f"可读新闻：{s.usable}"
+                        f"可读新闻：{s.usable} / 目标 {limit}"
                     )
                     if s.usable < limit and s.discovered > 0:
                         # 候选耗尽但 usable < limit：明确报告“候选不足”，不伪装成抓取失败
                         self._bg_log(
                             f"[{self._source_display(sid)}] 候选已耗尽，可读新闻 {s.usable} / 目标 {limit}"
+                        )
+                    if s.usable == 0 and s.discovered == 0:
+                        self._bg_log(
+                            f"[{self._source_display(sid)}] 没有发现新的可读新闻（发现 0 条）"
                         )
                     if s.errors:
                         self._bg_log(f"[{self._source_display(sid)}] 失败明细（前 5 条）：")
@@ -1325,7 +1616,65 @@ class _NewsReaderApp:
                     pipeline.close()
                 except Exception:
                     pass
-        self._bg_log(f"抓取完成（{self._source_display(self.site_var.get())}，limit={limit}）")
+
+            # 抓取阶段结果（候选耗尽 / 没有新文章都不算失败，只有异常才算）
+            self._bg_log(
+                f"{self._sep}\n"
+                f"合计发现 {totals['discovered']} 篇 · 重复 {totals['duplicated']} · "
+                f"可读 {totals['usable']} / 目标 {limit} · 失败 {totals['failed']}"
+            )
+            if totals["usable"] == 0 and totals["discovered"] == 0:
+                self._bg_log("没有发现新的可读新闻")
+            self._bg_log("FETCH: SUCCESS")
+
+            # 固定自动导出（与定时任务一致：便携阅读包）
+            export_status = self._auto_export_after_fetch(
+                storage, source_display, limit, totals
+            )
+
+        self._bg_log(f"抓取完成（{source_display}，limit={limit}）")
+        # 更新顶部抓取状态摘要（worker 线程只更新 dict，主线程渲染）
+        self._last_fetch_summary = {
+            "source": source_display,
+            "limit": limit,
+            "discovered": totals["discovered"],
+            "duplicated": totals["duplicated"],
+            "usable": totals["usable"],
+            "failed": totals["failed"],
+            "export": export_status,
+            "status": "已完成",
+        }
+
+    def _auto_export_after_fetch(self, storage, source_display: str, limit: int,
+                                 totals: dict) -> str:
+        """抓取完成后固定自动导出便携阅读包（与定时任务一致）。
+
+        返回导出状态字符串：成功 / 失败 / 跳过。导出失败不影响抓取结果。
+        """
+        try:
+            self._bg_log("自动导出开始（便携阅读包）……")
+            out_dir = (
+                self.portable_dir
+                / f"Laxinwen-{source_display}-{datetime.now().strftime('%Y-%m-%d')}"
+            )
+            self._bg_log(f"正在导出便携阅读包（最近 {limit} 篇）→ {out_dir}")
+            result = self._portable_reader_export(
+                storage,
+                out_dir,
+                source_id=self._active_source if self._active_source in ("rfi", "eco", "hkej") else "rfi",
+                limit=limit,
+                research_root=self.research_dir,
+            )
+            bat = out_dir / "Open-Reader.bat"
+            if not (out_dir / "index.html").exists() or not bat.exists():
+                raise FileNotFoundError(f"便携阅读包未生成：{out_dir}")
+            self._bg_log(f"便携阅读包导出完成：{result.exported} 篇 → {out_dir}")
+            self._bg_log("EXPORT: SUCCESS")
+            return "成功"
+        except Exception as exc:
+            self._bg_log(f"自动导出失败：{exc}")
+            self._bg_log("EXPORT: FAILED")
+            return "失败"
 
     def _run_ai_analyze(self, limit: int) -> None:
         site_ids = self._selected_site_ids()

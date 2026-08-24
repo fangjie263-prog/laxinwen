@@ -72,7 +72,10 @@ class FakeStats:
         self.discovered = kw.get("discovered", 0)
         self.skipped_dup = kw.get("skipped_dup", 0)
         self.fetched_ok = kw.get("fetched_ok", 0)
+        self.extracted_ok = kw.get("extracted_ok", 0)
+        self.low_quality = kw.get("low_quality", 0)
         self.failed = kw.get("failed", 0)
+        self.usable = kw.get("usable", 0)
         self.errors = kw.get("errors", [])
 
 
@@ -405,7 +408,7 @@ class TestPipelineCall:
     def test_gui_calls_correct_pipeline(self, root, tmp_path):
         app, ctx = _make_app(
             root, tmp_path, pipeline_stats=FakeStats(
-                discovered=100, skipped_dup=90, fetched_ok=10, failed=0
+                discovered=100, skipped_dup=90, fetched_ok=10, usable=10, failed=0
             )
         )
         app.limit_var.set("100")
@@ -423,7 +426,7 @@ class TestPipelineCall:
         assert "开始抓取" in log
         assert "发现：100" in log
         assert "重复：90" in log
-        assert "新增：10" in log
+        assert "可读新闻：10" in log
         assert "失败：0" in log
         assert "抓取完成" in log
 
@@ -444,7 +447,7 @@ class TestPipelineCall:
         log = _log_text(app)
         assert log.count("发现：100") >= 2
         assert "重复：100" in log
-        assert "新增：0" in log
+        assert "可读新闻：0" in log
 
     def test_pipeline_error_does_not_crash(self, root, tmp_path):
         app, ctx = _make_app(root, tmp_path, pipeline_exc=RuntimeError("HTTP 500"))

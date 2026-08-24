@@ -30,6 +30,8 @@ from news.task_scheduler import (
     build_arguments,
     build_schtasks_create,
     build_schtasks_delete,
+    build_schtasks_disable,
+    build_schtasks_enable,
     build_schtasks_query,
     build_schtasks_run,
     find_python_executable,
@@ -163,6 +165,31 @@ def test_build_schtasks_delete_and_run_and_query():
     assert build_schtasks_run(cfg) == ["schtasks", "/Run", "/TN", "Laxinwen-ECO-eco-morning"]
     q = build_schtasks_query(cfg)
     assert "/Query" in q and "Laxinwen-ECO-eco-morning" in q
+
+
+def test_build_schtasks_enable_and_disable():
+    cfg = SchedulerConfig(source="eco", id="eco-morning")
+    assert build_schtasks_enable(cfg) == [
+        "schtasks", "/Change", "/TN", "Laxinwen-ECO-eco-morning", "/ENABLE"
+    ]
+    assert build_schtasks_disable(cfg) == [
+        "schtasks", "/Change", "/TN", "Laxinwen-ECO-eco-morning", "/DISABLE"
+    ]
+
+
+def test_enable_task_non_windows_generates_command():
+    """非 Windows：enable_task 只生成命令，不真正执行。"""
+    from news.task_scheduler import enable_task, disable_task
+
+    cfg = SchedulerConfig(source="rfi", id="rfi-hourly")
+    r = enable_task(cfg)
+    assert r["ok"] is True
+    assert r["executed"] is False
+    assert "/ENABLE" in r["cmd"]
+    r2 = disable_task(cfg)
+    assert r2["ok"] is True
+    assert r2["executed"] is False
+    assert "/DISABLE" in r2["cmd"]
 
 
 # ---------------------------------------------------------------------------
