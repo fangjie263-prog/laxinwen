@@ -669,6 +669,7 @@ def export_portable_reader_package(
     source_id: Optional[str] = None,
     limit: int = 100,
     research_root: Optional[str | Path] = None,
+    job_id: str = "",
 ) -> PortableResult:
     """导出「便携阅读包」：面向分享给其他电脑用户的阅读包。
 
@@ -681,12 +682,17 @@ def export_portable_reader_package(
         │   ├── 002.html
         │   └── ...
         ├── server.py           # 内嵌的迷你 HTTP 阅读服务器（纯标准库）
-        └── Open-Reader.bat     # Windows 双击启动器
+        ├── Open-Reader.bat     # Windows 双击启动器
+        └── Laxinwen-<SITE>-<date>.docx   # Word 研究阅读包（与 HTML 同批）
 
     与「HTML 新闻包」的区别：多出 ``server.py`` + ``Open-Reader.bat``，
-    目标是**分享给其他电脑用户**：他们无需安装 laxinwen，双击一次
-    ``Open-Reader.bat`` 即可通过 ``http://127.0.0.1:<port>/index.html``
-    （而非 ``file://``）在浏览器中阅读，从而沉浸式翻译等浏览器扩展可正常工作。
+    目标是**分享给其他电脑用户**。
+
+    **Portable 阅读包 = HTML + Word（DOCX）一次生成**：
+    本函数在生成 HTML 阅读包的同时，还会用**同一批新闻**（``rows``，
+    同一 source / 同一 limit / 同一排序）额外生成一个 ``.docx`` 文件放入
+    同一目录，从而让用户只需生成一次 Portable Package 即可同时得到
+    HTML 阅读包与 Word 研究阅读包，无需再单独选择 Word。
 
     服务器只监听 127.0.0.1（不暴露到局域网）、自动选择空闲端口、
     不需要 SQLite / 互联网 / API Key；目标电脑只需有 Python 3（标准库）。
@@ -780,6 +786,33 @@ def export_portable_reader_package(
     bat = out_dir / "Open-Reader.bat"
     bat.write_text(_OPEN_READER_BAT, encoding="utf-8")
     result.files.append(bat)
+
+    # ---- Word（DOCX）研究阅读包：与 HTML 同一批新闻、同一目录一次生成 ----
+    # 复用 word_export 的渲染，使用与 index.html 完全相同的 ``rows``
+    #（同一 source / 同一 limit / 同一排序），保证 HTML 与 Word 同批。
+    docx_path = out_dir / f"{out_dir.name}.docx"
+    try:
+        from .word_export import export_word_package
+
+        wres = export_word_package(
+            storage,
+            docx_path,
+            source_id=source_id,
+            limit=limit,
+            job_id=job_id,
+        )
+        result.files.append(docx_path)
+        # Word 与 HTML 导出篇数应当一致（同一批 rows）；若不一致以 Word 实际为准
+        logger.info(
+            "便携阅读包已同时生成 Word（DOCX）: %d 篇 → %s",
+            wres.exported,
+            docx_path,
+        )
+    except Exception as exc:  # noqa: BLE001
+        # 不因 Word 失败而丢弃已成功的 HTML：调用方（scheduled-fetch / GUI）
+        # 通过检查文件是否存在来判断 Word 是否成功。
+        result.failed += 1
+        logger.error("便携阅读包生成 Word（DOCX）失败: %s", exc)
 
     logger.info(
         "便携阅读包导出完成: %d 篇 → %s（已分析 %d / 失败 %d / 未分析 %d）",

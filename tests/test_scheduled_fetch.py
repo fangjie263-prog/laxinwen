@@ -277,7 +277,7 @@ def test_scheduled_fetch_calls_pipeline_and_auto_export(tmp_path):
 
         return P()
 
-    def fake_export(storage, out_dir, *, source_id, limit, research_root=None):
+    def fake_export(storage, out_dir, *, source_id, limit, research_root=None, job_id=""):
         calls["export"].append((source_id, limit))
 
         class R:
@@ -643,7 +643,7 @@ def test_auto_export_output_dir_has_source_date_and_time(tmp_path):
     from news.scheduled_fetch import _run_auto_export
     seen = []
 
-    def fake_export(storage, out_dir, *, source_id, limit, research_root=None):
+    def fake_export(storage, out_dir, *, source_id, limit, research_root=None, job_id=""):
         # 真实 portable export 会创建目录；这里模拟，触发 _unique_dir 防覆盖
         Path(out_dir).mkdir(parents=True, exist_ok=True)
         seen.append(str(out_dir))
@@ -698,8 +698,12 @@ def test_zero_new_articles_is_fetch_success(tmp_path):
                 pass
         return P()
 
-    def fake_export(storage, out_dir, *, source_id, limit, research_root=None):
+    def fake_export(storage, out_dir, *, source_id, limit, research_root=None, job_id=""):
         export_calls.append((source_id, limit))
+        out_dir = Path(out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "index.html").write_text("<html></html>", encoding="utf-8")
+        (out_dir / f"{out_dir.name}.docx").write_bytes(b"PK")
         class R:
             exported = 0
         return R()
@@ -730,7 +734,7 @@ def test_scheduled_fetch_logs_job_id(tmp_path):
                 pass
         return P()
 
-    def fake_export(storage, out_dir, *, source_id, limit, research_root=None):
+    def fake_export(storage, out_dir, *, source_id, limit, research_root=None, job_id=""):
         class R:
             exported = 3
         return R()
@@ -823,7 +827,7 @@ def test_auto_export_dir_includes_job_id(tmp_path):
     from news.scheduled_fetch import _run_auto_export
     seen = []
 
-    def fake_export(storage, out_dir, *, source_id, limit, research_root=None):
+    def fake_export(storage, out_dir, *, source_id, limit, research_root=None, job_id=""):
         Path(out_dir).mkdir(parents=True, exist_ok=True)
         seen.append(str(out_dir))
         class R:
@@ -870,3 +874,125 @@ def test_lock_is_job_specific_not_source_specific(tmp_path):
     # 释放后再次可获取
     assert lock_a2.acquire() is True
     lock_a2.release()
+
+
+# ---------------------------------------------------------------------------
+# 22. 自动导出统一 HTML + Word：任一分项失败 → EXPORT: FAILED（不误判 FETCH FAILED）
+# ---------------------------------------------------------------------------
+
+class _DualExport:
+    """可配置 HTML / Word 是否生成成功的假便携导出（同一目录 index.html + .docx）。"""
+
+    def __init__(self, *, html_ok=True, word_ok=True):
+        self.html_ok = html_ok
+        self.word_ok = word_ok
+        self.dir = None
+
+    def __call__(self, storage, out_dir, *, source_id, limit, research_root=None, job_id=""):
+        out_dir = Path(out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        if self.html_ok:
+            (out_dir / "index.html").write_text("<html></html>", encoding="utf-8")
+        if self.word_ok:
+            (out_dir / f"{out_dir.name}.docx").write_bytes(b"PK")
+        self.dir = out_dir
+        class R:
+            exported = 1
+        return R()
+
+
+def _run_with_dual(cfg, tmp_path, exporter):
+    from news.scheduled_fetch import run_scheduled_fetch
+
+    class _S:
+        discovered = 1
+        skipped_dup = 0
+        fetched_ok = 1
+        extracted_ok = 1
+        low_quality = 0
+        failed = 0
+        usable = 1
+        errors = []
+
+    class _P:
+        def run_site(self, sid):
+            return _S()
+        def close(self):
+            pass
+
+    logf = tmp_path / "sched.log"
+    rc = run_scheduled_fetch(
+        cfg,
+        db_path=tmp_path / "db.db",
+        log_file=logf,
+        portable_dir=tmp_path / "portable",
+        research_dir=tmp_path / "html",
+        pipeline_factory=lambda storage, limit: _P(),
+        portable_export=exporter,
+    )
+    return rc, logf.read_text(encoding="utf-8")
+
+
+def test_both_html_and_word_success_is_export_success(tmp_path):
+    """HTML 成功 + Word 成功 → EXPORT: SUCCESS，且不误判 FETCH FAILED。"""
+    from news.scheduler_config import SchedulerConfig
+    from news.scheduled_fetch import run_scheduled_fetch
+
+    exporter = _DualExport(html_ok=True, word_ok=True)
+    cfg = SchedulerConfig(id="rfi-dual-ok", source="rfi", limit=10, auto_export=True)
+    rc, content = _run_with_dual(cfg, tmp_path, exporter)
+    assert rc == 0  # 不是 FETCH FAILED
+    assert "FETCH: SUCCESS" in content
+    assert "EXPORT: SUCCESS" in content
+    assert "HTML: SUCCESS / WORD: SUCCESS" in content
+
+
+def test_word_failure_marks_export_failed_not_fetch_failed(tmp_path):
+    """HTML 成功 + Word 失败 → EXPORT: FAILED（HTML: SUCCESS / WORD: FAILED），
+    但绝不误判成 FETCH FAILED。"""
+    from news.scheduler_config import SchedulerConfig
+
+    exporter = _DualExport(html_ok=True, word_ok=False)
+    cfg = SchedulerConfig(id="rfi-word-fail", source="rfi", limit=10, auto_export=True)
+    rc, content = _run_with_dual(cfg, tmp_path, exporter)
+    assert rc == 0  # 抓取本身成功，退出码 0
+    assert "FETCH: SUCCESS" in content
+    assert "EXPORT: FAILED" in content
+    assert "HTML: SUCCESS / WORD: FAILED" in content
+    assert "FETCH: FAILED" not in content  # 不要误判成 FETCH FAILED
+
+
+def test_html_failure_marks_export_failed(tmp_path):
+    """HTML 失败 + Word 成功 → EXPORT: FAILED（HTML: FAILED / WORD: SUCCESS）。"""
+    from news.scheduler_config import SchedulerConfig
+
+    exporter = _DualExport(html_ok=False, word_ok=True)
+    cfg = SchedulerConfig(id="rfi-html-fail", source="rfi", limit=10, auto_export=True)
+    rc, content = _run_with_dual(cfg, tmp_path, exporter)
+    assert rc == 0
+    assert "EXPORT: FAILED" in content
+    assert "HTML: FAILED / WORD: SUCCESS" in content
+    assert "FETCH: FAILED" not in content
+
+
+def test_auto_export_generates_word_inside_portable_dir(tmp_path):
+    """便携阅读包 = HTML + Word：docx 与 index.html 在同一目录。"""
+    from news.portable import export_portable_reader_package
+    from news.storage import Storage
+    from news.model import Article
+    from datetime import datetime, timezone, timedelta
+
+    s = Storage(tmp_path / "p.db")
+    base = datetime(2026, 8, 24, 6, 0, 0, tzinfo=timezone.utc)
+    for i in range(2):
+        s.insert_article(Article(
+            source_id="rfi", source_name="RFI",
+            canonical_url=f"https://rfi/art-{i}/", title=f"新闻{i}",
+            authors=["RFI"], published_at=base + timedelta(hours=-i),
+            body_text=f"正文{i}", language="zh", status="fetched",
+        ))
+    out_dir = tmp_path / "portable" / "Laxinwen-RFI-2026-08-24-120000"
+    res = export_portable_reader_package(s, out_dir, source_id="rfi", limit=10)
+    assert (out_dir / "index.html").exists()
+    assert (out_dir / f"{out_dir.name}.docx").exists()
+    assert res.exported == 2

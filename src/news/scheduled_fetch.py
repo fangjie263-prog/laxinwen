@@ -25,15 +25,13 @@ import os
 import sys
 import time
 import traceback
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 from .config import list_available_sites
 from .scheduler_config import (
-    EXPORT_BOTH,
-    EXPORT_PORTABLE,
-    EXPORT_WORD,
     SchedulerConfig,
     load_config,
 )
@@ -174,12 +172,16 @@ def _default_pipeline_factory(storage, limit: int):
     return Pipeline(storage, fetcher=fetcher, max_items=limit)
 
 
-def _default_portable_export(storage, out_dir, *, source_id, limit, research_root=None):
-    """便携阅读包导出（与 GUI 的默认导出方式一致）。"""
+def _default_portable_export(storage, out_dir, *, source_id, limit, research_root=None, job_id=""):
+    """便携阅读包导出（与 GUI 的默认导出方式一致）。
+
+    Portable 阅读包 = HTML + Word（DOCX）一次生成（见 portable.py）。
+    """
     from .portable import export_portable_reader_package
 
     return export_portable_reader_package(
-        storage, out_dir, source_id=source_id, limit=limit, research_root=research_root
+        storage, out_dir, source_id=source_id, limit=limit, research_root=research_root,
+        job_id=job_id,
     )
 
 
@@ -190,6 +192,28 @@ def _default_word_export(storage, out_path, *, source_id, limit, job_id=""):
     return export_word_package(
         storage, out_path, source_id=source_id, limit=limit, job_id=job_id
     )
+
+
+@dataclass
+class AutoExportResult:
+    """自动导出结果：HTML 与 Word 是否分别成功。
+
+    Portable 阅读包 = HTML + Word（DOCX）一次生成。因此每次自动导出
+    都会同时尝试 HTML 与 Word，二者独立标记成功/失败，调用方据此判定
+    整体 ``EXPORT: SUCCESS`` / ``EXPORT: FAILED``。
+    """
+
+    html_ok: bool = False
+    word_ok: bool = False
+    message: str = ""
+
+    @property
+    def ok(self) -> bool:
+        """整体是否成功：HTML 与 Word 都必须成功。"""
+        return self.html_ok and self.word_ok
+
+    def summary(self) -> str:
+        return f"HTML: {'SUCCESS' if self.html_ok else 'FAILED'} / WORD: {'SUCCESS' if self.word_ok else 'FAILED'}"
 
 
 def _source_label(source_id: str) -> str:
@@ -280,11 +304,10 @@ def run_scheduled_fetch(
             # 明确标记抓取阶段结果（候选耗尽不视为失败）
             logger.info("FETCH: SUCCESS（usable=%d / 目标 %d）", s.usable, limit)
 
-            # 自动导出
-            export_ok = False
+            # 自动导出（Portable 阅读包 = HTML + Word（DOCX）一次生成）
             if auto_export:
                 try:
-                    logger.info("开始自动导出（%s）……", export_type)
+                    logger.info("开始自动导出（HTML + Word）……")
                     export_result = _run_auto_export(
                         storage,
                         source_id,
@@ -297,8 +320,13 @@ def run_scheduled_fetch(
                         portable_export=portable_export,
                         word_export=word_export,
                     )
-                    logger.info("EXPORT: SUCCESS → %s", export_result)
-                    export_ok = True
+                    # 整体成功要求 HTML 与 Word 都成功；任一失败即 EXPORT: FAILED。
+                    if export_result.ok:
+                        logger.info("EXPORT: SUCCESS → %s (%s)",
+                                    export_result.summary(), export_result.message)
+                    else:
+                        logger.error("EXPORT: FAILED → %s", export_result.summary())
+                        logger.error("%s", export_result.message)
                 except Exception:
                     # 导出失败不影响抓取结果（已在上方标记 FETCH: SUCCESS）
                     logger.error("EXPORT: FAILED")
@@ -335,7 +363,10 @@ def _run_portable_export(
     research_dir: str | Path,
     portable_export=None,
 ):
-    """便携阅读包导出。返回描述字符串。"""
+    """便携阅读包导出。返回 ``(out_dir, PortableResult)``。
+
+    Portable 阅读包 = HTML + Word（DOCX）一次生成（见 portable.py）。
+    """
     from datetime import datetime as _dt
 
     portable_dir = Path(portable_dir)
@@ -354,8 +385,9 @@ def _run_portable_export(
         source_id=source_id,
         limit=limit,
         research_root=research_dir,
+        job_id=job_id,
     )
-    return f"便携阅读包已导出 {result.exported} 篇 → {out_dir}"
+    return out_dir, result
 
 
 def _run_word_export(
@@ -400,58 +432,57 @@ def _run_auto_export(
     research_dir: str | Path,
     portable_export=None,
     word_export=None,
-):
-    """执行自动导出，按 ``export_type`` 生成对应交付物。
+) -> AutoExportResult:
+    """执行自动导出，**统一生成 Portable HTML + Word（DOCX）**。
 
-    - ``portable``：只生成 Portable HTML（便携阅读包）；
-    - ``word``：只生成 Word（DOCX 研究阅读包）；
-    - ``both``：同时生成 HTML + Word；
-    - 其它值（含旧配置里的未知值）：安全降级为 ``portable``，保证老配置不崩溃。
+    Portable 阅读包 = HTML + Word（DOCX）一次生成。因此无论旧配置里的
+    ``export_type`` 是什么（portable / word / both，或未知值），本次运行都
+    统一解释为 ``auto_export=true → HTML + DOCX``，与用户期望一致，同时
+    保证老配置不崩溃（字段内部继续保留，但不影响本次输出）。
 
-    返回导出结果描述字符串（多个交付物用 ``; `` 连接）。
+    返回 ``AutoExportResult``，其中 HTML 与 Word 的成败**独立标记**：
+    整体成功要求两者都成功；任一失败则整体为失败，调用方据此输出
+    ``EXPORT: SUCCESS`` / ``EXPORT: FAILED`` 及 ``HTML: X / WORD: Y``。
     """
-    if export_type == EXPORT_WORD:
-        return _run_word_export(
+    result = AutoExportResult()
+
+    # ---- 便携阅读包：HTML + Word（DOCX）一次生成 ----
+    # 复用 _default_portable_export（portable_reader_package），它会在同一目录
+    # 同时写出 index.html 与 Laxinwen-<SITE>-<date>.docx。
+    html_msg = ""
+    word_msg = ""
+    try:
+        out_dir, presult = _run_portable_export(
             storage,
             source_id,
             limit,
             job_id=job_id,
-            word_dir=word_dir,
-            word_export=word_export,
+            portable_dir=portable_dir,
+            research_dir=research_dir,
+            portable_export=portable_export,
         )
+        # HTML 成功标志：index.html 已生成
+        html_ok = bool(out_dir and (out_dir / "index.html").exists())
+        # Word 成功标志：同目录下的 .docx 已生成
+        docx_path = out_dir / f"{out_dir.name}.docx"
+        word_ok = docx_path.exists()
+        result.html_ok = html_ok
+        result.word_ok = word_ok
+        html_msg = f"HTML 阅读包已导出 {presult.exported} 篇 → {out_dir}"
+        word_msg = f"Word 阅读包已导出 {presult.exported} 篇 → {docx_path}"
+        if not html_ok:
+            logger.error("HTML 导出失败：未找到 index.html → %s", out_dir)
+        if not word_ok:
+            logger.error("Word 导出失败：未找到 .docx → %s", docx_path)
+    except Exception as exc:  # noqa: BLE001
+        # 便携导出整体抛异常 → HTML 与 Word 均视为失败
+        result.html_ok = False
+        result.word_ok = False
+        logger.error("便携阅读包（HTML + Word）导出异常: %s", exc)
+        result.message = f"便携阅读包导出异常: {exc}"
 
-    if export_type == EXPORT_BOTH:
-        parts = [
-            _run_portable_export(
-                storage,
-                source_id,
-                limit,
-                job_id=job_id,
-                portable_dir=portable_dir,
-                research_dir=research_dir,
-                portable_export=portable_export,
-            ),
-            _run_word_export(
-                storage,
-                source_id,
-                limit,
-                job_id=job_id,
-                word_dir=word_dir,
-                word_export=word_export,
-            ),
-        ]
-        return "; ".join(parts)
-
-    # 默认 / 旧配置 portable（含未知值降级为 portable，保证向后兼容）
-    return _run_portable_export(
-        storage,
-        source_id,
-        limit,
-        job_id=job_id,
-        portable_dir=portable_dir,
-        research_dir=research_dir,
-        portable_export=portable_export,
-    )
+    result.message = f"{html_msg}; {word_msg}".strip("; ")
+    return result
 
 
 def _unique_dir(base: Path) -> Path:

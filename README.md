@@ -120,30 +120,34 @@ uv run news export --format package --site eco --limit 100
 #   └── articles/001.html ...
 
 # 便携阅读包：给他人使用，双击 Open-Reader.bat，经 http://127.0.0.1 打开（兼容浏览器扩展）
+# 便携阅读包 = Portable HTML + Word（DOCX）一次生成（同一目录）。
 uv run news export --format reader --site eco --limit 100
 #   默认输出到 data/export/portable/Laxinwen-<SITE>-<date>/
 #   ├── index.html
 #   ├── articles/001.html ...
 #   ├── server.py          # 内嵌的迷你本地 HTTP 服务器（纯 Python 标准库，只监听 127.0.0.1）
-#   └── Open-Reader.bat    # Windows 双击启动器（无需安装 laxinwen，自动开浏览器）
+#   ├── Open-Reader.bat    # Windows 双击启动器（无需安装 laxinwen，自动开浏览器）
+#   └── Laxinwen-<SITE>-<date>.docx   # Word 研究阅读包（与 HTML 同一批新闻）
 
 # ---------- Word（DOCX）研究阅读包 ----------
-# 把同一批新闻导出为适合研究阅读的 Word 简报：
+# 便携阅读包默认已包含 Word（DOCX）。如需单独导出 Word，也可用：
 #   - 首页有目录，目录条目可点击直接跳转到对应新闻正文（内部超链接，无需手动“更新域”）；
+#   - 双向导航：每篇正文均有「↑ 返回目录」，点击回到顶部目录 bookmark（laxinwen-toc）；
 #   - 每篇完整保留标题 / 来源 / 发布时间（北京时间）/ 正文；
 #   - 原文 URL 为真正可点击的外部超链接，在 Word 里点击即在浏览器打开原网页；
 #   - 纯 Python（python-docx）生成标准 .docx，不需要 LibreOffice / Word COM / Windows Office。
 # 与 Portable HTML 使用同一批新闻数据、同一排序（发布时间倒序）。
 uv run news export --format word --site rfi --limit 100
 #   默认输出到 data/export/word/Laxinwen-<SITE>-<日期>-<时间>[-<job>].docx
-# 也支持按“自动导出类型”批量导出：
-uv run news export --type portable   # 只生成 Portable HTML
-uv run news export --type word       # 只生成 Word
-uv run news export --type both       # 同时生成 HTML + Word
-#   示例：
-#   data/export/word/
-#   └── Laxinwen-ECO-2026-08-24-142002-test.docx
-#   └── Laxinwen-RFI-2026-08-24-080001-rfi-morning.docx
+# 也支持按“自动导出类型”批量导出（运行时统一为 HTML + Word）：
+uv run news export --type portable   # 统一生成 HTML + Word
+uv run news export --type word       # 统一生成 HTML + Word
+uv run news export --type both       # 统一生成 HTML + Word
+#   示例（便携阅读包目录，HTML 与 DOCX 同批同目录）：
+#   data/export/portable/
+#   └── Laxinwen-ECO-2026-08-24-142002-test/
+#       ├── index.html
+#       └── Laxinwen-ECO-2026-08-24-142002-test.docx
 
 # 所有导出的 HTML 展示时间统一为北京时间（Asia/Shanghai），24 小时制。
 
@@ -198,9 +202,8 @@ uv run news gui --site all          # 初始来源全部
 | 🤖 AI 分析 | 输入分析数量（默认 3），按当前来源复用现有 `news process --site <id>` 的 AI processing 逻辑。**若未配置 AI，自动提示进入“⚙ AI 设置”** |
 | ⚙ AI 设置 | 打开独立设置窗口，配置 Provider / API Base URL / API Key / Model，提供「测试连接」「保存」；保存后立即生效，无需重启 |
 | 📊 打开 AI 研究结果 | 按当前来源导出 `news export --format html --site <id>`，通过**本地 HTTP 阅读模式**打开 `http://127.0.0.1:<port>/html/<id>/index.html` |
-| 导出数量 | 数字输入框（默认 100），用于下方“导出”按钮 |
-| 导出方式 | 下拉框：**📦 便携阅读包 / 📄 独立 HTML / 📚 HTML 新闻包 / 📝 Word 研究阅读包**（**默认 = 便携阅读包**） |
-| 导出 | **单一导出按钮**：根据「导出方式」下拉调用对应的现有导出器（便携阅读包 / 独立 HTML / HTML 新闻包 / Word 研究阅读包），能力全部保留，只是 GUI 层统一为下拉选择 + 一个按钮 |
+| 导出数量 | 数字输入框（默认 100），用于下方“导出便携阅读包”按钮 |
+| 导出 | **单一按钮「导出便携阅读包（HTML + Word）」**：一次生成 Portable HTML + Word（DOCX），不再让用户选择导出格式（不再暴露 portable / word / both 内部枚举） |
 | 日志区 | 实时显示抓取/AI/导出过程与结果（发现/重复/新增/失败），全部来源时分别显示 `[ECO]` 与 `[HKEJ]`；并明确显示 `新闻库已启动：http://127.0.0.1:<port>/...` |
 | 状态区 | 数据库路径、ECO 新闻数、HKEJ 新闻数、AI 已分析/失败、当前来源、最后操作、最后抓取时间（从现有 storage/status 读取，不硬编码） |
 
@@ -212,10 +215,8 @@ uv run news gui --site all          # 初始来源全部
 | 📖 打开新闻库 | `uv run news export --format news-html --site eco|hkej --limit N` → 浏览器打开 `http://127.0.0.1:<port>/news-html/<id>/index.html` |
 | 🤖 AI 分析 | `uv run news process --site eco|hkej --limit N`（复用现有 AI provider） |
 | 📊 打开 AI 研究结果 | `uv run news export --format html --site eco|hkej` → 浏览器打开 `http://127.0.0.1:<port>/html/<id>/index.html` |
-| 导出（📦 便携阅读包） | `uv run news export --format reader --site eco|hkej --limit N`（index.html + articles + server.py + Open-Reader.bat） |
-| 导出（📄 独立 HTML） | `uv run news export --format portable --site eco|hkej --limit N`（单个自包含 HTML，双击可读） |
-| 导出（📚 HTML 新闻包） | `uv run news export --format package --site eco|hkej --limit N`（index.html + articles/NNN.html） |
-| 导出（📝 Word 研究阅读包） | `uv run news export --format word --site eco|hkej --limit N`（单个 .docx，目录可点击跳转，原文 URL 超链接） |
+| 导出（📦 便携阅读包） | `uv run news export --format reader --site eco|hkej --limit N`（index.html + articles + server.py + Open-Reader.bat + **Laxinwen-<site>-<date>.docx**，HTML 与 Word 一次生成） |
+| 导出（Word 研究阅读包） | `uv run news export --format word --site eco|hkej --limit N`（单个 .docx，目录↔正文双向导航：目录可点击跳转正文，正文可「返回目录」；原文 URL 超链接） |
 
 > **本地 HTTP 阅读模式**：GUI 启动一个轻量级 localhost HTTP 静态服务器
 > （Python 标准库 `http.server`，**只监听 127.0.0.1**，端口被占用自动选择可用端口），
@@ -283,7 +284,7 @@ ECO 每日        ECO    每日 09:00       50    已启用
 | 每日执行时间 | 每日模式下的时间（`HH:MM`） |
 | 每小时执行间隔 | 每小时模式下的间隔（`1 / 2 / 3 / 6` 小时） |
 | 自动导出 | **固定启用**，普通用户无需（也无法）关闭 |
-| 导出格式 | **Portable HTML / Word / HTML + Word**（对应 `export_type` = `portable` / `word` / `both`） |
+| 导出内容 | **固定为便携阅读包（HTML + Word）**：每个任务完成后自动生成 HTML 阅读包 + Word 研究阅读包一次导出，GUI 不再让用户选择导出格式（内部 `export_type` 仅为兼容旧配置保留，运行时统一解释为 HTML + DOCX） |
 
 列表下方提供操作按钮：
 
@@ -427,32 +428,33 @@ TARGET: 10
 FETCH: SUCCESS
 USABLE: 8 / 10
 
-EXPORT: SUCCESS
+EXPORT: SUCCESS → HTML: SUCCESS / WORD: SUCCESS
 OUTPUT: data/export/portable/Laxinwen-RFI-2026-08-24-100000-rfi-hourly/
 ```
 
-日志把 **FETCH 和 EXPORT 分开记录**：
+日志把 **FETCH 和 EXPORT 分开记录**，且 EXPORT 会分别标注 **HTML** 与 **WORD** 是否成功：
 
 ```
 FETCH: SUCCESS
 FETCH: FAILED
 
-EXPORT: SUCCESS
-EXPORT: FAILED
+EXPORT: SUCCESS → HTML: SUCCESS / WORD: SUCCESS
+EXPORT: FAILED → HTML: SUCCESS / WORD: FAILED   # 只有 Word 失败
+EXPORT: FAILED → HTML: FAILED / WORD: SUCCESS   # 只有 HTML 失败
 ```
 
-并明确：**EXPORT 失败不会被错误地伪装成 FETCH 失败**（导出失败不影响抓取结果）。
+- **EXPORT 成功 = HTML + Word 都成功**；任一失败则整体 ``EXPORT: FAILED``，并在日志明确 ``HTML: X / WORD: Y``。
+- **EXPORT 失败不会被错误地伪装成 FETCH 失败**（导出失败不影响抓取结果）。
 
-### 9. 自动导出（固定执行）
+### 9. 自动导出（固定执行，统一 HTML + Word）
 
-每个定时任务完成后按 ``export_type`` 自动生成对应交付物，**不复制 pipeline / fetch 逻辑**：
+每个定时任务完成后**自动生成便携阅读包（HTML + Word 一次生成）**，不复制 pipeline / fetch 逻辑：
 
-- ``export_type: "portable"`` —— 只生成 Portable HTML（便携阅读包，复用 `export_portable_reader_package()`）；
-- ``export_type: "word"`` —— 只生成 Word（DOCX 研究阅读包，复用 `export_word_package()`）；
-- ``export_type: "both"`` —— 同时生成 HTML + Word；
-- 其它值（含旧配置里的未知值）安全降级为 ``portable``，保证老配置不崩溃。
+- **无论旧配置 ``export_type`` 是什么（portable / word / both / 未知），本次运行都统一解释为 HTML + DOCX**；
+- GUI 不再让用户选择导出格式；内部 ``export_type`` 字段仅为兼容旧配置保留。
 
-**向后兼容**：旧的 ``"export_type": "portable"`` 配置仍按原语义只生成 HTML，不会生成 Word。
+**向后兼容**：旧的 ``"export_type": "portable"``（或 ``word`` / ``both``）配置仍能正常运行，不会崩溃；
+只是运行时统一生成 HTML + Word。
 
 自动导出是定时任务的**固定行为**，普通用户不再需要在“抓取后再决定是否导出”。
 即使本次 `discovery=0 / usable=0`（没有新文章），仍会 `FETCH: SUCCESS`，并继续自动导出最近 N 篇
@@ -460,22 +462,22 @@ EXPORT: FAILED
 
 #### 每个任务生成独立阅读包
 
-输出目录/文件名包含 **source + 日期 + 执行时间（秒级）+ job id**，不同任务 / 同任务多次执行都不互相覆盖，且能从目录名看出是哪个 job：
+输出目录/文件名包含 **source + 日期 + 执行时间（秒级）+ job id**，不同任务 / 同任务多次执行都不互相覆盖，且能从目录名看出是哪个 job。便携阅读包目录内同时包含 HTML 与 DOCX（同批新闻）：
 
 ```
 data/export/portable/
   Laxinwen-RFI-2026-08-24-080000-rfi-hourly/
+    ├── index.html
+    └── Laxinwen-RFI-2026-08-24-080000-rfi-hourly.docx
   Laxinwen-RFI-2026-08-24-090000-rfi-morning/
-  Laxinwen-RFI-2026-08-24-100000-rfi-hourly/
+    ├── index.html
+    └── Laxinwen-RFI-2026-08-24-090000-rfi-morning.docx
   Laxinwen-ECO-2026-08-24-090000-eco-morning/
-
-data/export/word/
-  Laxinwen-ECO-2026-08-24-142002-test.docx
-  Laxinwen-RFI-2026-08-24-080001-rfi-morning.docx
+    ├── index.html
+    └── Laxinwen-ECO-2026-08-24-090000-eco-morning.docx
 ```
 
-> Windows 自动定时任务同样可以自动生成 Word：只要在 GUI 的定时任务设置里选择「导出格式 = Word 或 HTML + Word」，
-> 或直接编辑 `scheduler.json` 把该 job 的 `export_type` 设为 `word` / `both`。
+> Windows 自动定时任务同样会自动生成 Word（DOCX）——它包含在便携阅读包内，无需额外选择导出格式。
 
 ### 10. RFI 抓取逻辑保持不变
 

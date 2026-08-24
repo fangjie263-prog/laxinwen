@@ -6,6 +6,8 @@
 
 - **目录**：首页给出「标题 → 正文」的**内部超链接**（bookmark + hyperlink），
   打开 Word 后**点击目录条目即可直接跳到对应文章**，无需手动“更新域”。
+- **双向导航**：每篇新闻正文均含「↑ 返回目录」内部超链接，指向目录的
+  ``laxinwen-toc`` bookmark，实现「目录 → 正文 → 返回目录 → 下一篇」的完整闭环。
 - **每篇新闻**：完整保留标题、来源、发布时间（北京时间）、正文，以及
   **可点击的原文 URL**（真正写入 Word 的 HYPERLINK relationship）。
 - **纯 Python 生成标准 .docx**：仅依赖 ``python-docx``，不需要
@@ -212,6 +214,11 @@ def _normalize_rows(rows) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+# 目录锚点 bookmark 名：每篇新闻的「返回目录」内部超链接都指向这里。
+# 所有 Word 文档统一使用该名称，确保「正文 → 目录」导航稳定可解析。
+_TOC_BOOKMARK = "laxinwen-toc"
+
+
 def _bookmark_name(index: int, article_id: int) -> str:
     """为每篇新闻生成稳定、唯一的 bookmark 名。"""
     return f"art-{index}-{article_id}"
@@ -230,7 +237,11 @@ def render_word_docx(
     """渲染一份完整的研究阅读包 ``.docx``（返回 ``docx.Document``）。
 
     ``rows`` 与 portable 完全同一批（已 ``is_usable`` 过滤、已按发布时间倒序）。
-    目录用内部超链接（bookmark → hyperlink），点击即跳转到正文。
+
+    双向导航：
+    - 顶部目录含 ``laxinwen-toc`` bookmark，目录条目用内部超链接跳转到正文；
+    - 每篇新闻正文均含「↑ 返回目录」内部超链接，指向 ``laxinwen-toc``，
+      从而实现「目录 → 正文 → 返回目录」的完整双向导航。
     """
     if Document is None:  # pragma: no cover
         raise RuntimeError("python-docx 未安装，无法生成 Word 导出。请先安装依赖。")
@@ -260,6 +271,8 @@ def render_word_docx(
     trun.font.size = Pt(18)
     trun.bold = True
     trun.font.color.rgb = _ACCENT
+    # 目录锚点：每篇正文的「返回目录」内部超链接跳转到此处。
+    _add_bookmark(toc_title, _TOC_BOOKMARK)
 
     for i, row in enumerate(rows, start=1):
         title = row.get("title") or f"（无标题）#{row.get('id')}"
@@ -299,6 +312,12 @@ def render_word_docx(
             label.font.size = Pt(10)
             label.font.color.rgb = _SOFT
             _add_external_hyperlink(up, url, url)
+
+        # 「返回目录」：真正的 Word 内部超链接，跳转到顶部目录 bookmark。
+        # 每篇新闻各自独立拥有，便于从任意一篇直接回到目录。
+        back = doc.add_paragraph()
+        back.paragraph_format.left_indent = Pt(0)
+        _add_internal_hyperlink(back, _TOC_BOOKMARK, "↑ 返回目录")
 
         # 正文
         body = (row.get("body_text") or "").strip()

@@ -133,8 +133,8 @@ class TestMonitorParser:
         assert len(app._monitor_entries) == 2
         assert "开始抓取，目标 50 条" in app._monitor_entries[0]
         assert "RFI" in app._monitor_entries[1]
-        assert "完成：新增 50 条（目标 50 条），导出成功" in app._monitor_entries[1]
-        assert app._monitor_cur == "RFI · 已完成 · 新增 50 条，导出成功"
+        assert "完成：新增 50 条（目标 50 条），HTML + Word 导出成功" in app._monitor_entries[1]
+        assert app._monitor_cur == "RFI · 已完成 · 新增 50 条，HTML + Word 导出成功"
 
     def test_fetch_success_export_failed(self):
         app = self._bare()
@@ -149,6 +149,47 @@ class TestMonitorParser:
             app._monitor_feed_line(ln)
         # 最后一条是完成摘要
         assert "完成：新增 100 条（目标 100 条），导出失败" in app._monitor_entries[-1]
+
+    def test_parse_export_detail_success(self):
+        """EXPORT: SUCCESS 带分项 → 解析为「HTML + Word 导出成功」。"""
+        assert _NewsReaderApp._parse_export_detail(
+            "EXPORT: SUCCESS → HTML: SUCCESS / WORD: SUCCESS (...)"
+        ) == "HTML + Word 导出成功"
+        assert _NewsReaderApp._parse_export_detail("EXPORT: SUCCESS") == "HTML + Word 导出成功"
+
+    def test_parse_export_detail_word_failed(self):
+        """HTML 成功 + Word 失败 → 解析为「Word 导出失败」。"""
+        assert _NewsReaderApp._parse_export_detail(
+            "EXPORT: FAILED → HTML: SUCCESS / WORD: FAILED"
+        ) == "Word 导出失败（HTML 成功）"
+
+    def test_parse_export_detail_html_failed(self):
+        """HTML 失败 + Word 成功 → 解析为「HTML 导出失败」。"""
+        assert _NewsReaderApp._parse_export_detail(
+            "EXPORT: FAILED → HTML: FAILED / WORD: SUCCESS"
+        ) == "HTML 导出失败（Word 成功）"
+
+    def test_parse_export_detail_both_failed(self):
+        assert _NewsReaderApp._parse_export_detail(
+            "EXPORT: FAILED → HTML: FAILED / WORD: FAILED"
+        ) == "HTML + Word 导出失败"
+
+    def test_export_word_failure_shown_in_monitor(self):
+        """监控文案：HTML 成功 + Word 失败 → 显示「Word 导出失败」，不误判 FETCH FAILED。"""
+        app = self._bare()
+        for ln in [
+            "开始抓取 RFI 最新 50 篇",
+            "发现：50",
+            "可读新闻：50 / 目标 50",
+            "FETCH: SUCCESS",
+            "EXPORT: FAILED → HTML: SUCCESS / WORD: FAILED",
+            "抓取完成（RFI，limit=50）",
+        ]:
+            app._monitor_feed_line(ln)
+        # 完成摘要明确 Word 失败，而非 FETCH FAILED
+        assert "Word 导出失败" in app._monitor_entries[-1]
+        assert "FETCH FAILED" not in app._monitor_entries[-1]
+        assert "抓取失败" not in app._monitor_entries[-1]
 
     def test_no_new_news(self):
         app = self._bare()
@@ -286,7 +327,7 @@ class TestMonitorJobSourceParsing:
         assert "完成：新增 200 条" in entry
         assert "导出成功" in entry
         assert "?" not in entry
-        assert app._monitor_cur == "test · ECO · 已完成 · 新增 200 条，导出成功"
+        assert app._monitor_cur == "test · ECO · 已完成 · 新增 200 条，HTML + Word 导出成功"
 
     def test_same_source_different_job_distinguished(self):
         """rfi-morning 与 rfi-hourly 同 source 但必须区分成两个任务。"""
@@ -445,7 +486,7 @@ class TestMonitorIntegration:
         # 用一个会指向 tmp_path 的 app：需要改写 _scheduled_log_path 读取的默认路径。
         # 这里直接用解析器验证清空行为。
         app = _make_monitor_app(root, tmp_path)
-        app._monitor_entries = ["08:00  RFI  完成：新增 50 条，导出成功"]
+        app._monitor_entries = ["08:00  RFI  完成：新增 50 条，HTML + Word 导出成功"]
         app._monitor_render()
         assert "新增 50" in _monitor_text(app)
         # 清空只清 GUI

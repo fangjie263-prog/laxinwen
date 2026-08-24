@@ -99,14 +99,85 @@ def test_internal_hyperlink_jump(tmp_path, storage):
     out = tmp_path / "out.docx"
     export_word_package(storage, out, source_id="rfi")
     doc, _ = _docx_xml(out)
-    # 每篇有一个 bookmarkStart（正文锚点）
-    assert doc.count("bookmarkStart") == 3
+    # 每篇有一个 bookmarkStart（正文锚点） + 1 个目录锚点 laxinwen-toc
+    assert doc.count("bookmarkStart") == 4
+    # 目录锚点存在
+    assert 'w:name="laxinwen-toc"' in doc
     # 每个目录条目是一个带 w:anchor 的内部超链接（跳转到 bookmark）
     assert doc.count('w:anchor="art-') == 3
     # 每个正文 bookmark 的 name 都能被目录 anchor 命中
     for i in range(3):
         assert f'w:name="art-{i + 1}-' in doc
         assert f'w:anchor="art-{i + 1}-' in doc
+
+
+# ---------- 5b：每篇正文都有「返回目录」，指向目录 bookmark ----------
+
+def test_each_article_has_return_to_toc(tmp_path, storage):
+    out = tmp_path / "out.docx"
+    export_word_package(storage, out, source_id="rfi")
+    doc, _ = _docx_xml(out)
+    # 每篇正文都有「返回目录」内部超链接，anchor 指向 laxinwen-toc
+    assert doc.count('w:anchor="laxinwen-toc"') == 3
+    # 正文里确实出现了「返回目录」文字
+    assert "返回目录" in doc
+
+
+def test_return_to_toc_uses_internal_hyperlink_not_text(tmp_path, storage):
+    out = tmp_path / "out.docx"
+    export_word_package(storage, out, source_id="rfi")
+    doc, _ = _docx_xml(out)
+    # 「返回目录」必须是真正的 w:hyperlink（w:anchor），而不是普通文本假装。
+    # 三个返回链接分别包裹在三个 w:hyperlink w:anchor="laxinwen-toc" 中。
+    assert doc.count('<w:hyperlink w:anchor="laxinwen-toc">') == 3
+    # 目录锚点与每个文章的返回链接 anchor 形成闭环
+    assert 'w:name="laxinwen-toc"' in doc
+
+
+def test_bookmarks_unique_and_no_broken_links(tmp_path, storage):
+    import re
+    out = tmp_path / "out.docx"
+    export_word_package(storage, out, source_id="rfi")
+    doc, _ = _docx_xml(out)
+    names = re.findall(r'w:name="([^"]+)"', doc)
+    anchors = re.findall(r'w:anchor="([^"]+)"', doc)
+    # bookmark 名唯一（目录 + 3 篇，共 4 个，互不重复）
+    assert len(names) == len(set(names)) == 4
+    # 每个内部超链接 anchor 都能找到对应 bookmark（不存在断开的 internal hyperlink）
+    for a in anchors:
+        assert a in names
+
+
+def test_two_hundred_articles_bi_directional(tmp_path):
+    """200 篇文章时仍能建立正确的一一对应关系，且每篇都可独立返回目录。"""
+    import re
+    from news.word_export import export_word_package
+    base = datetime(2026, 8, 24, 6, 0, 0, tzinfo=timezone.utc)
+    s = Storage(tmp_path / "big.db")
+    for i in range(200):
+        s.insert_article(Article(
+            source_id="rfi", source_name="RFI",
+            canonical_url=f"https://www.rfi.fr/cn/art-{i}/",
+            title=f"新闻第 {i} 篇", authors=["RFI"],
+            published_at=base + timedelta(hours=-i),
+            body_text=f"正文 {i}", language="zh", status="fetched",
+        ))
+    out = tmp_path / "big.docx"
+    res = export_word_package(s, out, source_id="rfi", limit=200)
+    assert res.exported == 200
+    doc, _ = _docx_xml(out)
+    names = re.findall(r'w:name="([^"]+)"', doc)
+    anchors = re.findall(r'w:anchor="([^"]+)"', doc)
+    # 目录 + 200 篇文章，bookmark 唯一
+    assert len(names) == len(set(names)) == 201
+    # 200 个「返回目录」链接
+    assert doc.count('w:anchor="laxinwen-toc"') == 200
+    # 每个 anchor 都有对应 bookmark（无断链）
+    for a in set(anchors):
+        assert a in names
+    # 200 篇各有一对（目录→文章、文章→目录）
+    art_names = [n for n in names if n.startswith("art-")]
+    assert len(art_names) == 200
 
 
 # ---------- 6：每篇新闻正文存在 ----------
@@ -139,8 +210,8 @@ def test_multiple_articles_distinct(tmp_path, storage):
     out = tmp_path / "out.docx"
     export_word_package(storage, out, source_id="rfi")
     doc, _ = _docx_xml(out)
-    # 3 篇各有独立 bookmark / 正文 / URL
-    assert doc.count("bookmarkStart") == 3
+    # 3 篇各有独立 bookmark / 正文 / URL（另有 1 个目录锚点）
+    assert doc.count("bookmarkStart") == 4
     for i in range(3):
         assert f'w:anchor="art-{i + 1}-' in doc
         assert f"这是第 {i} 篇的完整正文" in doc
@@ -208,99 +279,118 @@ def test_word_and_portable_same_batch(tmp_path, storage):
     assert wres.exported == len(usable)
 
 
-# ---------- 14~16：export_type 语义 ----------
+# ---------- 14~16：auto_export 统一生成 HTML + Word（DOCX） ----------
+# 无论旧配置 export_type 是 portable / word / both，运行时都统一解释为
+# HTML + DOCX（便携阅读包 = HTML + Word 一次生成）。
 
-def test_export_type_portable_no_word(tmp_path, storage):
-    """export_type=portable 只生成 HTML，不生成 Word。"""
-    from news.scheduled_fetch import _run_auto_export
 
+def _make_dual_export(tmp_path, *, html_fail=False, word_fail=False):
+    """构造一个既生成 index.html 又生成 .docx 的假 portable 导出。"""
     seen = {}
 
-    def fake_portable(storage, out_dir, *, source_id, limit, research_root=None):
-        Path(out_dir).mkdir(parents=True, exist_ok=True)
-        seen["html"] = True
+    def fake_portable(storage, out_dir, *, source_id, limit, research_root=None, job_id=""):
+        out_dir = Path(out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        if not html_fail:
+            (out_dir / "index.html").write_text("<html></html>", encoding="utf-8")
+        if not word_fail:
+            (out_dir / f"{out_dir.name}.docx").write_bytes(b"PK\x03\x04fake")
+        seen["html"] = not html_fail
+        seen["word"] = not word_fail
+        seen["dir"] = out_dir
         class R:
             exported = 0
         return R()
 
-    def fake_word(storage, out_path, *, source_id, limit, job_id=""):
-        seen["word"] = True
-        class R:
-            exported = 0
-        return R()
+    return fake_portable, seen
 
-    _run_auto_export(
+
+def test_auto_export_portable_type_still_generates_html_and_word(tmp_path, storage):
+    """旧 export_type=portable 在运行时统一生成 HTML + Word。"""
+    from news.scheduled_fetch import _run_auto_export
+
+    fake_portable, seen = _make_dual_export(tmp_path)
+    res = _run_auto_export(
         storage, "rfi", 10, "portable",
         portable_dir=tmp_path / "portable",
         research_dir=tmp_path / "html",
         portable_export=fake_portable,
-        word_export=fake_word,
     )
-    assert seen.get("html") is True
-    assert "word" not in seen  # portable 不生成 Word
+    assert seen["html"] is True
+    assert seen["word"] is True
+    assert res.html_ok is True
+    assert res.word_ok is True
+    assert res.ok is True
 
 
-def test_export_type_word_generates_word(tmp_path, storage):
+def test_auto_export_word_type_still_generates_html_and_word(tmp_path, storage):
+    """旧 export_type=word 也统一生成 HTML + Word（不再只生成 Word）。"""
     from news.scheduled_fetch import _run_auto_export
 
-    seen = {}
-
-    def fake_portable(storage, out_dir, *, source_id, limit, research_root=None):
-        seen["html"] = True
-        class R:
-            exported = 0
-        return R()
-
-    def fake_word(storage, out_path, *, source_id, limit, job_id=""):
-        seen["word"] = True
-        Path(out_path).parent.mkdir(parents=True, exist_ok=True)
-        Path(out_path).write_bytes(b"x")
-        class R:
-            exported = 0
-        return R()
-
-    _run_auto_export(
+    fake_portable, seen = _make_dual_export(tmp_path)
+    res = _run_auto_export(
         storage, "rfi", 10, "word",
         portable_dir=tmp_path / "portable",
-        word_dir=tmp_path / "word",
         research_dir=tmp_path / "html",
         portable_export=fake_portable,
-        word_export=fake_word,
     )
-    assert seen.get("word") is True
-    assert "html" not in seen  # word 只生成 Word
+    assert seen["html"] is True
+    assert seen["word"] is True
+    assert res.ok is True
 
 
-def test_export_type_both_generates_html_and_word(tmp_path, storage):
+def test_auto_export_both_type_generates_html_and_word(tmp_path, storage):
+    """export_type=both 统一生成 HTML + Word。"""
     from news.scheduled_fetch import _run_auto_export
 
-    seen = {}
-
-    def fake_portable(storage, out_dir, *, source_id, limit, research_root=None):
-        Path(out_dir).mkdir(parents=True, exist_ok=True)
-        seen["html"] = True
-        class R:
-            exported = 0
-        return R()
-
-    def fake_word(storage, out_path, *, source_id, limit, job_id=""):
-        seen["word"] = True
-        Path(out_path).parent.mkdir(parents=True, exist_ok=True)
-        Path(out_path).write_bytes(b"x")
-        class R:
-            exported = 0
-        return R()
-
-    _run_auto_export(
+    fake_portable, seen = _make_dual_export(tmp_path)
+    res = _run_auto_export(
         storage, "rfi", 10, "both",
         portable_dir=tmp_path / "portable",
-        word_dir=tmp_path / "word",
         research_dir=tmp_path / "html",
         portable_export=fake_portable,
-        word_export=fake_word,
     )
-    assert seen.get("html") is True
-    assert seen.get("word") is True
+    assert seen["html"] is True
+    assert seen["word"] is True
+    assert res.ok is True
+
+
+def test_auto_export_word_failure_marks_export_failed(tmp_path, storage):
+    """HTML 成功 + Word 失败 → 整体 EXPORT: FAILED（HTML: SUCCESS / WORD: FAILED）。"""
+    from news.scheduled_fetch import _run_auto_export
+
+    fake_portable, seen = _make_dual_export(tmp_path, word_fail=True)
+    res = _run_auto_export(
+        storage, "rfi", 10, "both",
+        portable_dir=tmp_path / "portable",
+        research_dir=tmp_path / "html",
+        portable_export=fake_portable,
+    )
+    assert seen["html"] is True
+    assert seen["word"] is False
+    assert res.html_ok is True
+    assert res.word_ok is False
+    assert res.ok is False  # 任一失败则整体失败
+    assert "HTML: SUCCESS / WORD: FAILED" in res.summary()
+
+
+def test_auto_export_html_failure_marks_export_failed(tmp_path, storage):
+    """HTML 失败 + Word 成功 → 整体 EXPORT: FAILED（HTML: FAILED / WORD: SUCCESS）。"""
+    from news.scheduled_fetch import _run_auto_export
+
+    fake_portable, seen = _make_dual_export(tmp_path, html_fail=True)
+    res = _run_auto_export(
+        storage, "rfi", 10, "portable",
+        portable_dir=tmp_path / "portable",
+        research_dir=tmp_path / "html",
+        portable_export=fake_portable,
+    )
+    assert seen["html"] is False
+    assert seen["word"] is True
+    assert res.html_ok is False
+    assert res.word_ok is True
+    assert res.ok is False
+    assert "HTML: FAILED / WORD: SUCCESS" in res.summary()
 
 
 # ---------- 17：旧 scheduler.json export_type=portable 仍正常 ----------
@@ -319,8 +409,63 @@ def test_legacy_scheduler_portable_still_works(tmp_path):
     assert len(jobs) == 1
     assert jobs[0].export_type == "portable"
     assert jobs[0].auto_export is True
-    # 旧配置不会崩溃；按 portable 语义自动导出（不生成 Word）
-    assert jobs[0].export_type not in ("word", "both")
+    # 旧配置不崩溃；export_type 字段保留为 portable（运行时统一解释为 HTML + DOCX，
+    # 由 _run_auto_export 保证，见 scheduled_fetch.py）
+    assert jobs[0].export_type == "portable"
+
+
+def test_legacy_portable_config_runtime_generates_html_and_word(tmp_path):
+    """旧 export_type=portable 配置在运行时统一生成 HTML + Word。"""
+    from news.scheduled_fetch import run_scheduled_fetch
+    from news.scheduler_config import SchedulerConfig
+
+    class _Stats:
+        discovered = 1
+        skipped_dup = 0
+        fetched_ok = 1
+        extracted_ok = 1
+        low_quality = 0
+        failed = 0
+        usable = 1
+        errors = []
+
+    class _P:
+        def run_site(self, sid):
+            return _Stats()
+        def close(self):
+            pass
+
+    seen = {}
+
+    def fake_pipeline(storage, limit):
+        return _P()
+
+    def fake_portable(storage, out_dir, *, source_id, limit, research_root=None, job_id=""):
+        out_dir = Path(out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "index.html").write_text("<html></html>", encoding="utf-8")
+        (out_dir / f"{out_dir.name}.docx").write_bytes(b"PK")
+        seen["dir"] = out_dir
+        class R:
+            exported = 1
+        return R()
+
+    cfg = SchedulerConfig(id="rfi-legacy", source="rfi", limit=10, auto_export=True,
+                          export_type="portable")
+    logf = tmp_path / "sched.log"
+    rc = run_scheduled_fetch(
+        cfg,
+        db_path=tmp_path / "empty.db",
+        log_file=logf,
+        portable_dir=tmp_path / "portable",
+        research_dir=tmp_path / "html",
+        pipeline_factory=fake_pipeline,
+        portable_export=fake_portable,
+    )
+    assert rc == 0
+    content = logf.read_text(encoding="utf-8")
+    assert "EXPORT: SUCCESS" in content  # HTML + Word 都成功
+    assert "HTML: SUCCESS / WORD: SUCCESS" in content
 
 
 # ---------- 18：无新文章不被标记成 FETCH FAILED ----------
@@ -351,8 +496,11 @@ def test_zero_usable_not_fetch_failed(tmp_path):
     def fake_pipeline(storage, limit):
         return _EmptyPipeline()
 
-    def fake_portable(storage, out_dir, *, source_id, limit, research_root=None):
-        Path(out_dir).mkdir(parents=True, exist_ok=True)
+    def fake_portable(storage, out_dir, *, source_id, limit, research_root=None, job_id=""):
+        out_dir = Path(out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "index.html").write_text("<html></html>", encoding="utf-8")
+        (out_dir / f"{out_dir.name}.docx").write_bytes(b"PK")
         seen["export"] = True
         class R:
             exported = 0
@@ -370,3 +518,39 @@ def test_zero_usable_not_fetch_failed(tmp_path):
     )
     assert rc == 0  # 不是 FETCH FAILED
     assert seen.get("export") is True  # 仍执行自动导出
+
+
+# ---------- 19：Portable 阅读包自动同时生成 HTML + Word（DOCX），且同批 ----------
+
+def test_portable_package_auto_generates_html_and_word(tmp_path, storage):
+    """便携阅读包一次生成 HTML + DOCX（同一目录），且两者为同一批新闻。"""
+    import re, zipfile
+    from news.portable import export_portable_reader_package
+
+    out_dir = tmp_path / "portable" / "Laxinwen-RFI-2026-08-24-100000-test"
+    res = export_portable_reader_package(storage, out_dir, source_id="rfi", limit=10,
+                                         job_id="test")
+    assert res.exported == 3
+    docx = out_dir / f"{out_dir.name}.docx"
+    assert (out_dir / "index.html").exists()
+    assert docx.exists()
+
+    # HTML 与 Word 使用同一批文章（3 篇）
+    with zipfile.ZipFile(docx) as z:
+        doc = z.read("word/document.xml").decode("utf-8")
+    # Word 目录含 3 篇文章标题
+    assert doc.count('w:anchor="art-') == 3
+    for i in range(3):
+        assert f"测试新闻第 {i} 篇" in doc
+
+
+def test_job_id_in_portable_docx_name(tmp_path, storage):
+    """便携阅读包内 docx 名称含 job id（不同 job 不覆盖）。"""
+    from news.portable import export_portable_reader_package
+
+    out_dir = tmp_path / "portable" / "Laxinwen-RFI-2026-08-24-100000-rfi-morning"
+    export_portable_reader_package(storage, out_dir, source_id="rfi", limit=10,
+                                   job_id="rfi-morning")
+    docx = out_dir / f"{out_dir.name}.docx"
+    assert docx.name.endswith("rfi-morning.docx")
+    assert docx.exists()

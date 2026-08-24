@@ -115,17 +115,17 @@ _DONE_SENTINELS = {
     "__SCHED_TOGGLE_DONE__": "启用/停用",
 }
 
-# 导出方式选项：(内部 id, 显示名)
+# 导出方式：仅提供「便携阅读包」单一入口（= Portable HTML + Word DOCX 一次生成）。
+# 用户无需选择内部 export_type（portable / word / both），GUI 不再暴露这些枚举。
 _EXPORT_OPTIONS = (
-    ("reader", "📦 便携阅读包"),
-    ("html", "📄 独立 HTML"),
-    ("package", "📚 HTML 新闻包"),
-    ("word", "📝 Word 研究阅读包"),
+    ("reader", "📦 便携阅读包（HTML + Word）"),
 )
 # 默认导出方式 = 便携阅读包
 _DEFAULT_EXPORT_MODE = "reader"
 
 # 定时任务自动导出格式选项：(内部 id, 显示名)
+# 为向后兼容旧 scheduler.json 的 export_type 字段而保留（不暴露给 GUI 下拉）；
+# 运行时统一解释为 HTML + DOCX（见 scheduled_fetch._run_auto_export）。
 _EXPORT_TYPE_OPTIONS = (
     (EXPORT_PORTABLE, "Portable HTML"),
     (EXPORT_WORD, "Word"),
@@ -397,28 +397,21 @@ class _NewsReaderApp:
         )
         self.ai_settings_btn.pack(side="left", padx=(10, 0))
 
-        # ---- 导出卡片（导出方式下拉 + 单一导出按钮） ----
+        # ---- 导出卡片（单一「导出便携阅读包」按钮 = HTML + Word 一次生成） ----
         # 导出数量统一使用顶部 limit_var（顶部“最近 N 篇”是唯一权威 limit）。
         row3 = ttk.Frame(card)
         row3.pack(fill="x", pady=(10, 0))
 
-        ttk.Label(row3, text="导出方式：").pack(side="left")
-        # 默认 = 便携阅读包
-        default_label = dict(_EXPORT_OPTIONS)[_DEFAULT_EXPORT_MODE]
-        self.export_mode_var = tk.StringVar(value=default_label)
-        self.export_mode_combo = ttk.Combobox(
-            row3,
-            textvariable=self.export_mode_var,
-            state="readonly",
-            width=16,
-        )
-        self.export_mode_combo["values"] = [label for _, label in _EXPORT_OPTIONS]
-        self.export_mode_combo.pack(side="left", padx=(4, 10))
-
         self.export_btn = ttk.Button(
-            row3, text="导出", style="Accent.TButton", command=self._on_export
+            row3, text="导出便携阅读包（HTML + Word）", style="Accent.TButton",
+            command=self._on_export,
         )
         self.export_btn.pack(side="left")
+        ttk.Label(
+            row3,
+            text="一次生成 HTML 阅读包 + Word 研究阅读包",
+            foreground="#666",
+        ).pack(side="left", padx=(8, 0))
 
         # ---- 自动抓取 / 定时任务卡片（多任务列表） ----
         sched_card = ttk.LabelFrame(outer, text="自动抓取 / 定时任务", padding=10)
@@ -713,6 +706,29 @@ class _NewsReaderApp:
             return label
         return "任务"
 
+    @staticmethod
+    def _parse_export_detail(line: str) -> str:
+        """从 EXPORT 日志行提取 HTML / Word 分项结果。
+
+        新日志格式：``EXPORT: FAILED → HTML: SUCCESS / WORD: FAILED``。
+        从中提取 ``HTML: X`` 与 ``WORD: Y`` 用于监控文案；解析不到时回退
+        为统一的「HTML + Word」描述。
+        """
+        m = re.search(r"HTML:\s*(SUCCESS|FAILED)\s*/\s*WORD:\s*(SUCCESS|FAILED)", line)
+        if m:
+            html = m.group(1)
+            word = m.group(2)
+            if html == "SUCCESS" and word == "SUCCESS":
+                return "HTML + Word 导出成功"
+            if html == "SUCCESS" and word == "FAILED":
+                return "Word 导出失败（HTML 成功）"
+            if html == "FAILED" and word == "SUCCESS":
+                return "HTML 导出失败（Word 成功）"
+            return "HTML + Word 导出失败"
+        if "EXPORT: SUCCESS" in line:
+            return "HTML + Word 导出成功"
+        return "导出失败"
+
     def _monitor_finalize(self, *, failed: bool = False) -> None:
         """根据累积的 _monitor_task 生成一条完成摘要并显示。"""
         task = self._monitor_task
@@ -736,8 +752,14 @@ class _NewsReaderApp:
         else:
             new_n = usable if usable is not None else discovered
             new_txt = f"新增 {new_n} 条" if new_n is not None else "已完成"
-        export_txt = {None: "", "成功": "，导出成功", "失败": "，导出失败",
-                      "跳过": "，未导出"}.get(export, "")
+        # 优先使用分项文案（HTML + Word 导出成功 / Word 导出失败…），
+        # 回退到统一文案。
+        export_detail = task.get("export_detail")
+        if export_detail:
+            export_txt = f"，{export_detail}"
+        else:
+            export_txt = {None: "", "成功": "，HTML + Word 导出成功",
+                          "失败": "，导出失败", "跳过": "，未导出"}.get(export, "")
         # 导出失败也算完成，但结果提示失败（FETCH 与 EXPORT 保持独立）
         self._monitor_set_cur(f"{ident} · 已完成 · {new_txt}{export_txt}")
         if limit is not None:
@@ -833,12 +855,15 @@ class _NewsReaderApp:
             return
         if "EXPORT: SUCCESS" in line:
             task["export"] = "成功"
+            task["export_detail"] = self._parse_export_detail(line)
             return
         if "EXPORT: FAILED" in line:
             task["export"] = "失败"
+            task["export_detail"] = self._parse_export_detail(line)
             return
         if "EXPORT: SKIPPED" in line:
             task["export"] = "跳过"
+            task["export_detail"] = "未导出"
             return
         if "自动定时抓取异常（ERROR）" in line or (
             "抓取失败" in line and task.get("fetch_ok") is not True
@@ -934,6 +959,7 @@ class _NewsReaderApp:
         summary["status"] = "已完成"
         fetch_ok = False
         export = None
+        export_detail = None
         target = None
         discovered = None
         usable = None
@@ -964,10 +990,13 @@ class _NewsReaderApp:
                 fetch_ok = False
             if "EXPORT: SUCCESS" in l:
                 export = "成功"
+                export_detail = self._parse_export_detail(l)
             elif "EXPORT: FAILED" in l:
                 export = "失败"
+                export_detail = self._parse_export_detail(l)
             elif "EXPORT: SKIPPED" in l:
                 export = "跳过"
+                export_detail = "未导出"
         if fetch_ok is False and "FETCH:" not in "".join(lines):
             fetch_ok = True
         summary["source"] = source or summary["source"]
@@ -983,6 +1012,8 @@ class _NewsReaderApp:
             summary["failed"] = failed
         if export is not None:
             summary["export"] = export
+        if export_detail is not None:
+            summary["export_detail"] = export_detail
         self._last_fetch_summary = summary
         self._render_fetch_status()
 
@@ -1013,9 +1044,10 @@ class _NewsReaderApp:
         s = self._last_fetch_summary
         status = s["status"]
         parts = [f"状态：{status}"]
+        export_txt = s.get("export_detail") or s.get("export") or ""
         detail = (
             f"{s['source']} · 目标 {s['limit']} · 发现 {s['discovered']} · "
-            f"重复 {s['duplicated']} · 可读 {s['usable']} · 失败 {s['failed']} · 导出 {s['export']}"
+            f"重复 {s['duplicated']} · 可读 {s['usable']} · 失败 {s['failed']} · 导出 {export_txt}"
         )
         self.fetch_status_var.set("    ".join(parts) + "    " + detail)
 
@@ -1076,7 +1108,6 @@ class _NewsReaderApp:
         self.research_btn.configure(state=state)
         self.ai_settings_btn.configure(state=state)
         self.site_combo.configure(state="disabled" if busy else "readonly")
-        self.export_mode_combo.configure(state="disabled" if busy else "readonly")
         for e in (self.limit_entry, self.ai_limit_entry):
             e.configure(state=state)
         # 定时任务按钮随忙碌状态禁用
@@ -1247,11 +1278,13 @@ class _NewsReaderApp:
         if not self._is_ai_configured():
             self._prompt_configure_ai()
             return
+        # 主线程读取来源列表（worker 不触碰 tkinter 变量）
+        site_ids = self._selected_site_ids()
         self._set_busy(True, run="AI 分析")
 
         def worker() -> None:
             try:
-                self._run_ai_analyze(limit)
+                self._run_ai_analyze(limit, site_ids=site_ids)
             except Exception as exc:
                 self._bg_log(f"AI 分析失败：\n{exc}")
             finally:
@@ -1266,11 +1299,12 @@ class _NewsReaderApp:
         limit = self._parse_limit(self.limit_var.get(), what="抓取")
         if limit is None:
             return
+        site_ids = self._selected_site_ids()
         self._set_busy(True, run="打开新闻库")
 
         def worker() -> None:
             try:
-                self._run_news_archive(limit)
+                self._run_news_archive(limit, site_ids=site_ids)
             except Exception as exc:
                 self._bg_log(f"新闻库导出/打开失败：\n{exc}")
             finally:
@@ -1282,11 +1316,12 @@ class _NewsReaderApp:
         if self._busy:
             self.log("已有任务运行中，请等待完成。")
             return
+        site_ids = self._selected_site_ids()
         self._set_busy(True, run="打开 AI 研究结果")
 
         def worker() -> None:
             try:
-                self._run_research()
+                self._run_research(site_ids=site_ids)
             except Exception as exc:
                 self._bg_log(f"AI 研究结果导出/打开失败：\n{exc}")
             finally:
@@ -1295,24 +1330,20 @@ class _NewsReaderApp:
         threading.Thread(target=worker, daemon=True).start()
 
     def _selected_export_mode(self) -> str:
-        """返回当前导出方式内部 id（reader / html / package）。"""
-        label = self.export_mode_var.get()
-        for mid, mlabel in _EXPORT_OPTIONS:
-            if mlabel == label:
-                return mid
+        """返回当前导出方式内部 id（始终为 reader = 便携阅读包）。"""
         return _DEFAULT_EXPORT_MODE
 
     def _export_mode_label(self) -> str:
-        for mid, label in _EXPORT_OPTIONS:
-            if mid == self._selected_export_mode():
-                return label
         return dict(_EXPORT_OPTIONS)[_DEFAULT_EXPORT_MODE]
 
     def _on_export(self) -> None:
-        """【导出】统一入口 —— 根据「导出方式」下拉调用对应的现有导出器。
+        """【导出便携阅读包】统一入口 —— 一次生成 Portable HTML + Word（DOCX）。
 
-        底层三个导出器（portable_reader / portable_html / portable_package）
-        全部保留，这里只是 GUI 层的统一入口（默认便携阅读包）。
+        用户无需选择导出格式；内部只调用 portable_reader 导出器，它在同一目录
+        同时产出 ``index.html`` 与 ``Laxinwen-<SITE>-<date>.docx``。
+
+        在**主线程**读取来源列表（避免 worker 线程触碰 tkinter 变量），
+        再交给后台线程执行导出。
         """
         if self._busy:
             self.log("已有任务运行中，请等待完成。")
@@ -1321,20 +1352,14 @@ class _NewsReaderApp:
         limit = self._parse_limit(self.limit_var.get(), what="导出")
         if limit is None:
             return
-        mode = self._selected_export_mode()
+        # 主线程读取站点 id（worker 不触碰 tkinter 变量）
+        site_ids = self._selected_site_ids()
         mode_label = self._export_mode_label()
         self._set_busy(True, run="导出")
 
         def worker() -> None:
             try:
-                if mode == "reader":
-                    self._run_export_portable_reader(limit)
-                elif mode == "html":
-                    self._run_export_independent_html(limit)
-                elif mode == "word":
-                    self._run_export_word(limit)
-                else:
-                    self._run_export_portable_package(limit)
+                self._run_export_portable_reader(limit, site_ids=site_ids)
             except Exception as exc:
                 self._bg_log(f"导出（{mode_label}）失败：\n{exc}")
             finally:
@@ -2023,8 +2048,9 @@ class _NewsReaderApp:
             self._bg_log("EXPORT: FAILED")
             return "失败"
 
-    def _run_ai_analyze(self, limit: int) -> None:
-        site_ids = self._selected_site_ids()
+    def _run_ai_analyze(self, limit: int, *, site_ids=None) -> None:
+        if site_ids is None:
+            site_ids = self._selected_site_ids()
         self._bg_log(f"开始 AI 分析（最多 {limit} 篇，复用现有 AI processing 逻辑）")
         with self._storage_factory(self.db_path) as storage:
             processor = self._processor_factory(storage)
@@ -2056,8 +2082,9 @@ class _NewsReaderApp:
         )
         self._bg_log("AI 分析完成")
 
-    def _run_news_archive(self, limit: int) -> None:
-        site_ids = self._selected_site_ids()
+    def _run_news_archive(self, limit: int, *, site_ids=None) -> None:
+        if site_ids is None:
+            site_ids = self._selected_site_ids()
         with self._storage_factory(self.db_path) as storage:
             for sid in site_ids:
                 out_dir = self.news_archive_dir / sid
@@ -2080,8 +2107,9 @@ class _NewsReaderApp:
                 self._bg_log(f"{self._source_display(sid)} 新闻库已启动：\n{url}")
                 self._open_url(url)
 
-    def _run_research(self) -> None:
-        site_ids = self._selected_site_ids()
+    def _run_research(self, *, site_ids=None) -> None:
+        if site_ids is None:
+            site_ids = self._selected_site_ids()
         with self._storage_factory(self.db_path) as storage:
             for sid in site_ids:
                 out_dir = self.research_dir / sid
@@ -2152,22 +2180,35 @@ class _NewsReaderApp:
                 self._bg_log(f"📚 HTML 新闻包目录：\n{out_dir}")
                 self._bg_log("可复制整个目录到其它电脑，双击 index.html 阅读。")
 
-    def _run_export_portable_reader(self, limit: int) -> None:
-        """导出便携阅读包（给他人使用：双击 Open-Reader.bat，经 localhost 打开）。"""
-        site_ids = self._selected_site_ids()
+    def _run_export_portable_reader(self, limit: int, *, site_ids=None) -> None:
+        """导出便携阅读包（HTML + Word 一次生成；供他人使用）。
+
+        便携阅读包 = Portable HTML + Word（DOCX）一次生成。HTML 供浏览器阅读，
+        Word 供研究阅读；二者同批、同一目录。
+
+        ``site_ids``（可选）由主线程传入，避免 worker 线程读取 tkinter 变量。
+        """
+        if site_ids is None:
+            site_ids = self._selected_site_ids()
         research_root = self.research_dir
         with self._storage_factory(self.db_path) as storage:
             for sid in site_ids:
                 out_dir = self.portable_dir / f"Laxinwen-{sid.upper()}-{datetime.now().strftime('%Y-%m-%d')}"
                 self._bg_log(
-                    f"正在导出 {self._source_display(sid)} 便携阅读包（最近 {limit} 篇）→ {out_dir}"
+                    f"正在导出 {self._source_display(sid)} 便携阅读包（HTML + Word，最近 {limit} 篇）→ {out_dir}"
                 )
                 result = self._portable_reader_export(
-                    storage, out_dir, source_id=sid, limit=limit, research_root=research_root
+                    storage, out_dir, source_id=sid, limit=limit,
+                    research_root=research_root,
                 )
                 bat = out_dir / "Open-Reader.bat"
+                docx = out_dir / f"{out_dir.name}.docx"
                 if not (out_dir / "index.html").exists() or not bat.exists():
-                    raise FileNotFoundError(f"便携阅读包未生成：{out_dir}")
+                    raise FileNotFoundError(f"便携阅读包（HTML）未生成：{out_dir}")
+                word_status = (
+                    f"Word 研究阅读包：\n{docx}" if docx.exists()
+                    else f"⚠ Word 研究阅读包未生成：{docx}"
+                )
                 self._bg_log(
                     f"{self._source_display(sid)} 便携阅读包导出完成：{result.exported} 篇\n"
                     f"数据库历史抓取失败记录（未导出）：{self._count_failed(storage, sid)}\n"
@@ -2176,10 +2217,10 @@ class _NewsReaderApp:
                     f"AI 未分析：{result.unanalyzed}"
                 )
                 self._bg_log(f"📦 便携阅读包目录：\n{out_dir}")
+                self._bg_log(word_status)
                 self._bg_log(
-                    "给他人使用：复制整个目录，双击 Open-Reader.bat，"
-                    "浏览器将通过 http://127.0.0.1 打开（而非 file://），"
-                    "沉浸式翻译等扩展可正常工作。无需安装 laxinwen。"
+                    "HTML：双击 Open-Reader.bat 在浏览器阅读（沉浸式翻译等扩展可正常工作）；"
+                    "Word：双击 .docx 研究阅读，目录条目可点击跳转，正文可点击「返回目录」回到目录。"
                 )
 
     def _run_export_word(self, limit: int) -> None:
@@ -2294,22 +2335,17 @@ class _JobsDialog:
             row=7, column=1, sticky="w", padx=(6, 0), pady=3
         )
 
-        # 自动导出：固定启用 + 导出格式选择
+        # 自动导出：固定启用（无需用户选择格式，内部统一 HTML + Word）
         ttk.Label(
             body, text="自动导出：", foreground="#666"
         ).grid(row=8, column=0, sticky="e", pady=3)
-        export_default = _export_type_label(job.export_type)
-        self.export_type_var = tk.StringVar(value=export_default)
-        export_combo = ttk.Combobox(
-            body,
-            textvariable=self.export_type_var,
-            state="readonly",
-            width=16,
-            values=[_export_type_label(t) for t in (_EXPORT_TYPE_OPTIONS)],
-        )
-        export_combo.grid(row=8, column=1, sticky="w", padx=(6, 0), pady=3)
         ttk.Label(
-            body, text="任务完成后自动生成对应格式", foreground="#888"
+            body,
+            text="☑ 自动生成便携阅读包（HTML + Word）",
+            foreground="#333",
+        ).grid(row=8, column=1, sticky="w", padx=(6, 0), pady=3)
+        ttk.Label(
+            body, text="任务完成后自动生成 HTML 阅读包 + Word 研究阅读包", foreground="#888"
         ).grid(row=9, column=1, sticky="w", padx=(6, 0))
 
         # 按钮
@@ -2353,14 +2389,11 @@ class _JobsDialog:
             cfg.limit = 50
         if cfg.limit <= 0:
             cfg.limit = 50
-        # 自动导出固定启用（产品原则：定时任务的最终交付物是阅读包）
+        # 自动导出固定启用（产品原则：定时任务的最终交付物是便携阅读包 = HTML + Word）
         cfg.auto_export = True
-        # 导出格式：从下拉选择（portable / word / both）
-        label = self.export_type_var.get()
-        cfg.export_type = next(
-            (tid for tid, lab in _EXPORT_TYPE_OPTIONS if lab == label),
-            EXPORT_PORTABLE,
-        )
+        # 内部保留 export_type 字段以兼容旧配置，但运行时统一解释为 HTML + DOCX。
+        # 用户无需选择格式，因此这里不再从 GUI 下拉读取。
+        cfg.export_type = EXPORT_PORTABLE
         return cfg
 
     def _ok(self) -> None:

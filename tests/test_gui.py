@@ -32,7 +32,6 @@ from news.gui import (  # noqa: E402
     _DEFAULT_AI_LIMIT,
     _DEFAULT_EXPORT_MODE,
     _DEFAULT_LIMIT,
-    _EXPORT_OPTIONS,
     _QUICK_LIMITS,
     _NewsReaderApp,
 )
@@ -199,6 +198,7 @@ def _make_app(
         idx = out_dir / "index.html"
         idx.write_text(f"reader {source_id} {limit}", encoding="utf-8")
         (out_dir / "Open-Reader.bat").write_text("@echo off", encoding="utf-8")
+        (out_dir / f"{out_dir.name}.docx").write_bytes(b"PK\x03\x04")
         portable_calls.append(("reader", source_id, limit))
         return SimpleNamespace(index_path=idx, exported=limit, analyzed_ok=0, analyzed_failed=0, unanalyzed=limit)
 
@@ -836,28 +836,22 @@ class TestMultiSourceResearch:
 
 
 class TestPortableExportButtons:
-    """导出方式下拉 + 单一导出按钮（便携阅读包 / 独立 HTML / HTML 新闻包）。"""
+    """单一「导出便携阅读包」按钮 = Portable HTML + Word（DOCX）一次生成。
 
-    def _set_mode(self, app, mode: str):
-        """通过下拉选择导出方式（mode: reader/html/package）。"""
-        label = dict(_EXPORT_OPTIONS)[mode]
-        app.export_mode_var.set(label)
+    GUI 不再让用户选择导出格式（无导出方式下拉）；点击「导出便携阅读包」
+    总是调用 portable reader 导出器，它在同一目录同时产出 index.html 与 .docx。
+    """
 
-    def test_export_dropdown_options_and_default(self, root, tmp_path):
+    def test_export_single_button_always_portable_reader(self, root, tmp_path):
+        """验收：GUI 只有「导出便携阅读包」单一入口，不再暴露导出方式下拉。"""
         app, _ = _make_app(root, tmp_path)
-        assert app.export_mode_combo["values"] == (
-            "📦 便携阅读包",
-            "📄 独立 HTML",
-            "📚 HTML 新闻包",
-            "📝 Word 研究阅读包",
-        )
-        # 默认导出方式 = 便携阅读包
-        assert app.export_mode_var.get() == "📦 便携阅读包"
+        assert not hasattr(app, "export_mode_combo")
+        assert not hasattr(app, "export_mode_var")
         assert _DEFAULT_EXPORT_MODE == "reader"
         assert app._selected_export_mode() == "reader"
 
     def test_default_export_calls_portable_reader(self, root, tmp_path):
-        """验收 A：默认导出方式=便携阅读包，点击「导出」调用 portable reader。"""
+        """点击「导出便携阅读包」→ 调用 portable reader（HTML + Word 一次生成）。"""
         app, ctx = _make_app(root, tmp_path)
         app.limit_var.set("100")
         app._on_export()
@@ -866,64 +860,29 @@ class TestPortableExportButtons:
         log = _log_text(app)
         assert "便携阅读包" in log
         assert "Open-Reader.bat" in log
-        assert "127.0.0.1" in log
-
-    def test_select_reader_calls_portable_reader(self, root, tmp_path):
-        app, ctx = _make_app(root, tmp_path)
-        self._set_mode(app, "reader")
-        app.limit_var.set("30")
-        app._on_export()
-        assert _pump_until(app, lambda: not app._busy)
-        assert ctx["portable_calls"] == [("reader", "eco", 30)]
-
-    def test_select_html_calls_independent_html(self, root, tmp_path):
-        """验收 B：选择「独立 HTML」→ 调用 portable html。"""
-        app, ctx = _make_app(root, tmp_path)
-        self._set_mode(app, "html")
-        app.limit_var.set("100")
-        app._on_export()
-        assert _pump_until(app, lambda: not app._busy)
-        assert ctx["portable_calls"] == [("html", "eco", 100)]
-        log = _log_text(app)
-        assert "独立 HTML" in log
-        assert "双击即可阅读" in log
-
-    def test_select_package_calls_package(self, root, tmp_path):
-        """验收 B：选择「HTML 新闻包」→ 调用 package。"""
-        app, ctx = _make_app(root, tmp_path)
-        self._set_mode(app, "package")
-        app.limit_var.set("50")
-        app._on_export()
-        assert _pump_until(app, lambda: not app._busy)
-        assert ctx["portable_calls"] == [("pkg", "eco", 50)]
-        log = _log_text(app)
-        assert "HTML 新闻包" in log
-        assert "index.html" in log
+        assert "Word" in log
 
     def test_export_all_source_all(self, root, tmp_path):
         app, ctx = _make_app(root, tmp_path)
         app.site_combo.set("all")
         app._on_source_changed()
-        self._set_mode(app, "html")
         app.limit_var.set("100")
         app._on_export()
         assert _pump_until(app, lambda: not app._busy)
         assert ctx["portable_calls"] == [
-            ("html", "eco", 100),
-            ("html", "hkej", 100),
-            ("html", "rfi", 100),
+            ("reader", "eco", 100),
+            ("reader", "hkej", 100),
+            ("reader", "rfi", 100),
         ]
 
     def test_export_rfi_source(self, root, tmp_path):
-        """RFI 来源：导出独立 HTML。"""
         app, ctx = _make_app(root, tmp_path)
         app.site_combo.set("rfi")
         app._on_source_changed()
-        self._set_mode(app, "html")
         app.limit_var.set("100")
         app._on_export()
         assert _pump_until(app, lambda: not app._busy)
-        assert ctx["portable_calls"] == [("html", "rfi", 100)]
+        assert ctx["portable_calls"] == [("reader", "rfi", 100)]
 
     def test_invalid_limit_rejected(self, root, tmp_path):
         app, ctx = _make_app(root, tmp_path)
@@ -933,18 +892,16 @@ class TestPortableExportButtons:
         assert "无效的导出数量" in _log_text(app)
 
     def test_error_does_not_crash(self, root, tmp_path):
-        # 覆盖导出抛错：GUI 不崩溃、按钮恢复
         app, _ = _make_app(root, tmp_path)
 
         def boom(*a, **k):
             raise RuntimeError("write error")
 
-        app._portable_html_export = boom
+        app._portable_reader_export = boom
         app.limit_var.set("100")
-        self._set_mode(app, "html")
         app._on_export()
         assert _pump_until(app, lambda: not app._busy)
-        assert "导出（📄 独立 HTML）失败" in _log_text(app)
+        assert "导出（📦 便携阅读包（HTML + Word））失败" in _log_text(app)
         assert str(app.export_btn.cget("state")) == "normal"
 
     def test_reader_error_does_not_crash(self, root, tmp_path):
@@ -955,59 +912,45 @@ class TestPortableExportButtons:
 
         app._portable_reader_export = boom
         app.limit_var.set("100")
-        app._on_export()  # 默认 reader
+        app._on_export()
         assert _pump_until(app, lambda: not app._busy)
-        assert "导出（📦 便携阅读包）失败" in _log_text(app)
+        assert "导出（📦 便携阅读包（HTML + Word））失败" in _log_text(app)
         assert str(app.export_btn.cget("state")) == "normal"
 
-    # ---- 统一 limit：顶部 limit_var 是唯一权威导出数量 ----
-
     def test_export_uses_limit_var_50(self, root, tmp_path):
-        """limit=50 → 所有导出函数收到 50。"""
         app, ctx = _make_app(root, tmp_path)
         app.limit_var.set("50")
-        self._set_mode(app, "html")
         app._on_export()
         assert _pump_until(app, lambda: not app._busy)
-        assert ctx["portable_calls"] == [("html", "eco", 50)]
+        assert ctx["portable_calls"] == [("reader", "eco", 50)]
 
     def test_export_uses_limit_var_100(self, root, tmp_path):
-        """limit=100 → 所有导出函数收到 100。"""
         app, ctx = _make_app(root, tmp_path)
         app.limit_var.set("100")
-        self._set_mode(app, "html")
         app._on_export()
         assert _pump_until(app, lambda: not app._busy)
-        assert ctx["portable_calls"] == [("html", "eco", 100)]
+        assert ctx["portable_calls"] == [("reader", "eco", 100)]
 
     def test_export_uses_limit_var_200(self, root, tmp_path):
-        """limit=200 → 所有导出函数收到 200。"""
         app, ctx = _make_app(root, tmp_path)
         app.limit_var.set("200")
-        self._set_mode(app, "package")
         app._on_export()
         assert _pump_until(app, lambda: not app._busy)
-        assert ctx["portable_calls"] == [("pkg", "eco", 200)]
+        assert ctx["portable_calls"] == [("reader", "eco", 200)]
 
     def test_no_export_limit_var_widget(self, root, tmp_path):
-        """不再有独立 export_limit 输入框。"""
         app, _ = _make_app(root, tmp_path)
-        # export_limit_var / export_limit_entry 不应存在
         assert not hasattr(app, "export_limit_var")
         assert not hasattr(app, "export_limit_entry")
 
     def test_rfi_export_uses_limit_var(self, root, tmp_path):
-        """RFI 来源导出：使用顶部 limit_var。"""
         app, ctx = _make_app(root, tmp_path)
         app.site_combo.set("rfi")
         app._on_source_changed()
         app.limit_var.set("50")
-        self._set_mode(app, "reader")
         app._on_export()
         assert _pump_until(app, lambda: not app._busy)
         assert ctx["portable_calls"] == [("reader", "rfi", 50)]
-
-
 class TestMultiSourceErrors:
     """Phase 2：任意来源失败，GUI 都不能崩溃、按钮必须恢复。"""
 
