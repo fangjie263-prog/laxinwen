@@ -210,6 +210,11 @@ class _NewsReaderApp:
                 legacy.auto_export = True
                 self._scheduler_jobs = [legacy]
         self._selected_job = None
+        # Windows Task Scheduler 真实状态缓存：{job_id: dict|None}
+        # dict 含 keys: exists / enabled / running；None 表示查询失败/未知。
+        self._sched_win_state: dict[str, Optional[dict]] = {}
+        # 最近一次「安装/更新」失败过的 job_id 集合（用于显示「安装失败」）。
+        self._sched_install_failed: set[str] = set()
 
         # 后台线程 → GUI 消息队列
         self._queue: "queue.Queue[str]" = queue.Queue()
@@ -531,6 +536,13 @@ class _NewsReaderApp:
                 msg = self._queue.get_nowait()
                 if msg in _DONE_SENTINELS:
                     self._set_busy(False, run=_DONE_SENTINELS[msg])
+                    if msg.startswith("__SCHED"):
+                        # 定时任务操作完成后：重新查询 Windows 状态并刷新列表/汇总
+                        try:
+                            self._refresh_windows_task_state()
+                        except Exception:
+                            pass
+                        self._refresh_scheduler_table()
                     self._refresh_status()
                 else:
                     self.log(msg)
@@ -803,8 +815,100 @@ class _NewsReaderApp:
     # ---- 任务列表刷新与选择 ----
 
     def _apply_scheduler_to_ui(self) -> None:
-        """把已保存的定时任务列表回显到 UI（任务表格）。"""
+        """把已保存的定时任务列表回显到 UI（任务表格）。
+
+        启动时只读取状态、不自动创建任何 Windows 定时任务（见需求第十四条）：
+        GUI 仅查询并显示最终状态，只有用户点击「安装/更新」才真正创建任务。
+        """
+        self._refresh_windows_task_state()
         self._refresh_scheduler_table()
+
+    # ---- Windows Task Scheduler 状态查询（只读，不自动安装） ----
+
+    def _query_windows_task(self, job: SchedulerConfig) -> dict:
+        """查询单个 job 对应 Windows 定时任务的真实状态（只读，不创建）。
+
+        复用 task_scheduler.query_task() 的 schtasks 命令；返回：
+
+            {"exists": bool, "enabled": bool, "running": bool}
+
+        查询失败（例如非 Windows / schtasks 不可用）时返回
+        {"exists": False, "enabled": False, "running": False, "unknown": True}。
+
+        不阻塞 GUI 主线程过久——schtasks /Query 为本地快速调用；
+        任何异常都会被吞掉，绝不因查询失败而崩溃或自动安装任务。
+        """
+        try:
+            result = self._scheduler_query(job)
+        except Exception:
+            # 非 Windows / 查询抛异常 → 视为状态未知
+            return {"exists": False, "enabled": False, "running": False, "unknown": True}
+        if not result or not result.get("ok"):
+            # 任务不存在（schtasks 报“找不到”）→ 未安装；其它错误也保守视为不存在
+            return {"exists": False, "enabled": False, "running": False, "unknown": False}
+        if not result.get("executed"):
+            # 未真正执行查询（如非 Windows 环境生成的预览命令）→ 状态未知
+            return {"exists": False, "enabled": False, "running": False, "unknown": True}
+        out = result.get("message", "") or ""
+        return self._parse_task_query_output(out)
+
+    @staticmethod
+    def _parse_task_query_output(out: str) -> dict:
+        """解析 schtasks /Query /V /FO LIST 输出，判断任务是否启用 / 正在运行。
+
+        兼容中英文 Windows 输出，逐行匹配已知字段名与状态值；
+        匹配不到相关状态时保守返回“未知”。
+        """
+        out_lower = out.lower()
+        enabled = False
+        running = False
+        # 任务已启用：英文 "Scheduled Task State: Enabled" / 中文 “计划任务状态: 已启用”
+        if "task state: enabled" in out_lower or "任务状态: 已启用" in out or "计划任务状态: 已启用" in out:
+            enabled = True
+        # 正在运行：英文 "Status: Running" / 中文 “状态: 正在运行”
+        if "status: running" in out_lower or "状态: 正在运行" in out or "运行中" in out:
+            running = True
+        # 若已明确读到 enabled 标志，则 exists=True
+        exists = bool(out_lower.strip())
+        return {"exists": exists, "enabled": enabled, "running": running, "unknown": False}
+
+    def _refresh_windows_task_state(self) -> None:
+        """对每个 job 重新查询 Windows 定时任务状态，更新缓存。
+
+        只读：不会创建 / 修改任何 Windows 任务。
+        """
+        for job in self._scheduler_jobs:
+            self._sched_win_state[job.job_id] = self._query_windows_task(job)
+
+    def _get_scheduler_display_status(self, job: SchedulerConfig) -> str:
+        """计算单个 job 的「最终用户可见状态」。
+
+        内部状态（job.enabled + Windows 任务是否存在/启用/运行）对外只合并为一个
+        用户能理解的状态：
+
+            运行中   = 已启用 + Windows 任务存在 + Windows 任务启用
+            未安装   = 已启用 + Windows 任务不存在
+            已停用   = 用户主动停用（enabled=False）或 Windows 任务被禁用
+            安装失败 = 最近一次「安装/更新」失败
+            执行中   = Windows 任务正在运行
+            状态未知 = 无法查询 Windows 任务
+        """
+        # 安装失败优先显示（用户刚点了安装但没成功）
+        if job.job_id in self._sched_install_failed:
+            return "安装失败"
+        if not job.enabled:
+            return "已停用"
+        state = self._sched_win_state.get(job.job_id)
+        if state is None or state.get("unknown"):
+            return "状态未知"
+        if not state.get("exists"):
+            return "未安装"
+        if not state.get("enabled"):
+            # Windows 任务存在但被禁用 → 已停用
+            return "已停用"
+        if state.get("running"):
+            return "执行中"
+        return "运行中"
 
     def _refresh_scheduler_table(self) -> None:
         """刷新任务列表 Treeview。"""
@@ -821,7 +925,7 @@ class _NewsReaderApp:
                     job.source.upper(),
                     freq,
                     str(job.limit),
-                    "已启用" if job.enabled else "已停用",
+                    self._get_scheduler_display_status(job),
                 ),
             )
         if not self._scheduler_jobs:
@@ -862,12 +966,21 @@ class _NewsReaderApp:
         return True
 
     def _refresh_sched_status(self) -> None:
-        """刷新「自动抓取」状态与任务数。"""
-        enabled = sum(1 for j in self._scheduler_jobs if j.enabled)
-        total = len(self._scheduler_jobs)
-        self.sched_status_var.set(
-            f"自动抓取：已启用任务 {enabled} / {total}   自动导出：固定启用"
-        )
+        """刷新「自动抓取」底部汇总（使用最终状态，不用内部 enabled）。"""
+        if not self._scheduler_jobs:
+            self.sched_status_var.set("自动抓取：未配置任何定时任务")
+            return
+        counts: dict[str, int] = {}
+        for job in self._scheduler_jobs:
+            st = self._get_scheduler_display_status(job)
+            counts[st] = counts.get(st, 0) + 1
+        running = counts.get("运行中", 0)
+        parts = [f"自动抓取：{running} 个任务运行中"]
+        for st in ("未安装", "已停用", "安装失败", "执行中", "状态未知"):
+            n = counts.get(st, 0)
+            if n:
+                parts.append(f"{n} 个{st}")
+        self.sched_status_var.set("    ".join(parts) + "    自动导出：自动启用")
 
     # ---- 新建 / 编辑 / 启用停用 ----
 
@@ -892,6 +1005,8 @@ class _NewsReaderApp:
         if not self._save_jobs():
             return
         self.log(f"已新建定时任务：{job.result.job_id}")
+        # 新任务未安装到 Windows → 状态为「未安装」（enabled 时）
+        self._refresh_windows_task_state()
         self._refresh_scheduler_table()
 
     def _on_sched_edit(self) -> None:
@@ -916,6 +1031,7 @@ class _NewsReaderApp:
         if not self._save_jobs():
             return
         self.log(f"已更新定时任务：{new_job.job_id}")
+        self._refresh_windows_task_state()
         self._refresh_scheduler_table()
 
     def _on_sched_toggle(self) -> None:
@@ -929,8 +1045,17 @@ class _NewsReaderApp:
         job.enabled = not job.enabled
         if not self._save_jobs():
             return
-        state = "已启用" if job.enabled else "已停用"
-        self.log(f"定时任务「{job.job_id}」→ {state}")
+        state = "启用" if job.enabled else "停用"
+        self.log(f"定时任务「{job.job_id}」已{state}。")
+        if job.enabled:
+            # 启用后重新查询 Windows 任务，若任务不存在则提示安装
+            self._refresh_windows_task_state()
+            st = self._get_scheduler_display_status(job)
+            if st == "未安装":
+                self.log(
+                    f"任务「{job.job_id}」已启用但尚未安装到 Windows，"
+                    "请点击「安装/更新」才能真正自动运行。"
+                )
         self._refresh_scheduler_table()
 
     # ---- 安装 / 更新（写入 Windows Task Scheduler） ----
@@ -973,20 +1098,26 @@ class _NewsReaderApp:
             threading.Thread(target=worker_disable, daemon=True).start()
             return
         self._set_busy(True, run="安装/更新定时任务")
+        self.log(f"正在安装/更新任务：{job.job_id}")
 
         def worker() -> None:
             try:
                 result = self._scheduler_install(job)
-                self._bg_log(
-                    f"定时任务：{result.get('task_name', '')} "
-                    f"→ {'成功' if result.get('ok') else '失败'}"
-                )
-                if result.get("message"):
-                    self._bg_log(result["message"])
-                if not result.get("ok"):
-                    self._bg_log(f"详情：{result.get('message')}")
+                if result.get("ok"):
+                    self._sched_install_failed.discard(job.job_id)
+                    self._bg_log(
+                        f"Windows 定时任务已安装：{result.get('task_name', '')}"
+                    )
+                    if result.get("message"):
+                        self._bg_log(result["message"])
+                else:
+                    self._sched_install_failed.add(job.job_id)
+                    self._bg_log(f"安装失败：{job.job_id}")
+                    self._bg_log(f"原因：{result.get('message', '未知错误')}")
             except Exception as exc:
-                self._bg_log(f"安装定时任务失败：\n{exc}")
+                self._sched_install_failed.add(job.job_id)
+                self._bg_log(f"安装失败：{job.job_id}")
+                self._bg_log(f"原因：{exc}")
             finally:
                 self._queue.put("__SCHED_INSTALL_DONE__")
 
@@ -1014,26 +1145,35 @@ class _NewsReaderApp:
             self.log("已取消删除定时任务。")
             return
         self._set_busy(True, run="删除定时任务")
+        self.log(f"删除任务：{job.job_id}")
         job_ref = job
 
         def worker() -> None:
             try:
                 result = self._scheduler_delete(job_ref)
-                self._bg_log(
-                    f"删除定时任务：{result.get('task_name', '')} "
-                    f"→ {'成功' if result.get('ok') else '操作失败'}"
-                )
-                if result.get("message"):
-                    self._bg_log(result["message"])
+                if result.get("ok"):
+                    self._bg_log(
+                        f"Windows 定时任务已删除：{result.get('task_name', '')}"
+                    )
+                    if result.get("message"):
+                        self._bg_log(result["message"])
+                else:
+                    # Windows 删除失败：不要静默，记录原因（但仍删除配置）
+                    self._bg_log(f"Windows 定时任务删除失败：{job_ref.job_id}")
+                    self._bg_log(f"原因：{result.get('message', '未知错误')}")
                 # 从任务列表移除并保存
                 self._scheduler_jobs = [
                     j for j in self._scheduler_jobs if j.job_id != job_ref.job_id
                 ]
+                self._sched_win_state.pop(job_ref.job_id, None)
+                self._sched_install_failed.discard(job_ref.job_id)
                 self._selected_job = None
                 self._save_jobs()
+                self._bg_log(f"job 已从配置中删除：{job_ref.job_id}")
                 self._refresh_scheduler_table()
             except Exception as exc:
-                self._bg_log(f"删除定时任务失败：\n{exc}")
+                self._bg_log(f"删除定时任务失败：{job_ref.job_id}")
+                self._bg_log(f"原因：{exc}")
             finally:
                 self._queue.put("__SCHED_DELETE_DONE__")
 
@@ -1060,23 +1200,33 @@ class _NewsReaderApp:
         if not self._save_jobs():
             return
         self._set_busy(True, run="立即运行一次")
+        self.log(f"立即运行：{job.job_id}")
 
         def worker() -> None:
             try:
+                # 先确认任务已安装，未安装则提示用户先安装，不发送 /Run
+                st = self._query_windows_task(job)
+                if not st.get("exists"):
+                    self._bg_log(
+                        f"无法立即运行：{job.job_id}\n"
+                        "该任务尚未安装，请先点击「安装/更新」。"
+                    )
+                    return
                 # 与 Windows 定时任务完全一致：通过 schtasks /Run 触发对应任务。
                 result = self._scheduler_run_now(job)
-                self._bg_log(
-                    f"立即运行：{result.get('task_name', '')} "
-                    f"→ {'已触发' if result.get('ok') else '失败'}"
-                )
-                if result.get("message"):
-                    self._bg_log(result["message"])
-                if not result.get("ok"):
+                if result.get("ok"):
+                    # schtasks /Run 成功仅表示 Windows 已接受执行请求，
+                    # 真正抓取结果见 data/logs/scheduled-fetch.log
                     self._bg_log(
-                        "若提示任务不存在，请先点击「安装/更新」创建对应 Windows 任务。"
+                        f"已请求 Windows Task Scheduler 执行：{job.job_id}\n"
+                        "后台抓取正在运行，结果请查看 scheduled-fetch.log"
                     )
+                else:
+                    self._bg_log(f"立即运行失败：{job.job_id}")
+                    self._bg_log(f"原因：{result.get('message', '未知错误')}")
             except Exception as exc:
-                self._bg_log(f"立即运行失败：\n{exc}")
+                self._bg_log(f"立即运行失败：{job.job_id}")
+                self._bg_log(f"原因：{exc}")
             finally:
                 self._queue.put("__SCHED_RUNNOW_DONE__")
 
