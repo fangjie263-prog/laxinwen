@@ -100,12 +100,11 @@ def _quote_win(path_or_arg: str) -> str:
 def build_arguments(cfg: SchedulerConfig) -> str:
     """构建后台入口的命令行参数（不含 python 本体）。
 
-    例：``-m news scheduled-fetch``（后台入口读取配置自行决定来源等参数）。
-    由于配置已持久化到 data/scheduler.json，后台入口只需 ``-m news scheduled-fetch``，
-    无需重复传参，减少 schtasks 命令行长度与转义风险。
+    多任务下必须携带 job id：``-m news scheduled-fetch --job-id <id>``，
+    让后台入口从 data/scheduler.json 中定位到具体任务，避免多个任务互相混淆。
     """
-    # 直接调用包内的后台入口，不依赖 PATH
-    return "-m news scheduled-fetch"
+    # 直接调用包内的后台入口，不依赖 PATH；job id 已写入配置，后台入口按 id 定位。
+    return f"-m news scheduled-fetch --job-id {cfg.job_id}"
 
 
 def build_schtasks_create(

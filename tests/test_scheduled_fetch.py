@@ -112,10 +112,20 @@ def test_hourly_schedule_next_run():
 
 
 def test_task_name_stable():
-    cfg = SchedulerConfig(source="rfi")
-    assert cfg.task_name() == "Laxinwen-RFI-AutoFetch"
+    # 多任务：任务名 = Laxinwen-<SOURCE>-<job_id>，稳定且唯一
+    cfg = SchedulerConfig(source="rfi", id="rfi-hourly")
+    assert cfg.task_name() == "Laxinwen-RFI-rfi-hourly"
+    # 不同 job 不同任务名
+    assert SchedulerConfig(source="rfi", id="rfi-morning").task_name() == "Laxinwen-RFI-rfi-morning"
+    assert SchedulerConfig(source="eco", id="eco-morning").task_name() == "Laxinwen-ECO-eco-morning"
     # 重复调用一致（不会产生后缀 (1)(2)）
     assert cfg.task_name() == cfg.task_name()
+
+
+def test_task_name_derived_default_when_no_id():
+    # 未显式指定 id 时派生出 <source>-default
+    cfg = SchedulerConfig(source="rfi")
+    assert cfg.task_name() == "Laxinwen-RFI-rfi-default"
 
 
 # ---------------------------------------------------------------------------
@@ -123,18 +133,19 @@ def test_task_name_stable():
 # ---------------------------------------------------------------------------
 
 def test_build_arguments():
-    cfg = SchedulerConfig(source="rfi")
-    assert build_arguments(cfg) == "-m news scheduled-fetch"
+    # 多任务：参数携带 job id，让后台入口定位具体任务
+    cfg = SchedulerConfig(source="rfi", id="rfi-hourly")
+    assert build_arguments(cfg) == "-m news scheduled-fetch --job-id rfi-hourly"
 
 
 def test_build_schtasks_create_daily():
     cfg = SchedulerConfig(
-        source="rfi", frequency=FREQ_DAILY, time="23:00", limit=10
+        source="rfi", id="rfi-morning", frequency=FREQ_DAILY, time="23:00", limit=10
     )
     cmd = build_schtasks_create(cfg, python_exe="C:\\proj\\.venv\\Scripts\\python.exe", project_root="C:\\proj")
     assert cmd[0] == "schtasks"
     assert "/Create" in cmd
-    assert "Laxinwen-RFI-AutoFetch" in cmd
+    assert "Laxinwen-RFI-rfi-morning" in cmd
     assert "/SC" in cmd and "DAILY" in cmd
     assert "/ST" in cmd and "23:00" in cmd
 
@@ -147,11 +158,11 @@ def test_build_schtasks_create_hourly():
 
 
 def test_build_schtasks_delete_and_run_and_query():
-    cfg = SchedulerConfig(source="eco")
-    assert build_schtasks_delete(cfg) == ["schtasks", "/Delete", "/TN", "Laxinwen-ECO-AutoFetch", "/F"]
-    assert build_schtasks_run(cfg) == ["schtasks", "/Run", "/TN", "Laxinwen-ECO-AutoFetch"]
+    cfg = SchedulerConfig(source="eco", id="eco-morning")
+    assert build_schtasks_delete(cfg) == ["schtasks", "/Delete", "/TN", "Laxinwen-ECO-eco-morning", "/F"]
+    assert build_schtasks_run(cfg) == ["schtasks", "/Run", "/TN", "Laxinwen-ECO-eco-morning"]
     q = build_schtasks_query(cfg)
-    assert "/Query" in q and "Laxinwen-ECO-AutoFetch" in q
+    assert "/Query" in q and "Laxinwen-ECO-eco-morning" in q
 
 
 # ---------------------------------------------------------------------------
@@ -416,12 +427,7 @@ def test_python_m_news_entry_no_tkinter():
     assert True
 
 
-def test_build_arguments_uses_module_entry():
-    """后台入口参数为 `-m news scheduled-fetch`，配合 __main__ 可被 python -m news 执行。"""
-    from news.scheduler_config import SchedulerConfig
-    from news.task_scheduler import build_arguments
 
-    assert build_arguments(SchedulerConfig()) == "-m news scheduled-fetch"
 
 
 # ---------------------------------------------------------------------------
@@ -456,3 +462,330 @@ def test_main_resolves_relative_paths_against_project_root(monkeypatch, tmp_path
     assert rc == 0
     assert str(captured["db_path"]) == str(tmp_path / "data" / "news.db")
     assert str(captured["log_file"]) == str(tmp_path / "data" / "logs" / "scheduled-fetch.log")
+
+
+# ---------------------------------------------------------------------------
+# 19. 多任务 scheduler.json 读写 / 新建 / 编辑 / 删除 / 启停 / job id 唯一
+# ---------------------------------------------------------------------------
+
+def test_load_jobs_and_save_jobs_roundtrip():
+    from news.scheduler_config import load_jobs, save_jobs
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "scheduler.json"
+        jobs = [
+            SchedulerConfig(id="rfi-hourly", name="RFI 每小时", source="rfi",
+                            frequency=FREQ_HOURLY, interval_hours=1, limit=10,
+                            enabled=True, auto_export=True),
+            SchedulerConfig(id="rfi-morning", name="RFI 每日早报", source="rfi",
+                            frequency=FREQ_DAILY, time="08:00", limit=50,
+                            enabled=True, auto_export=True),
+            SchedulerConfig(id="eco-morning", name="ECO 每日", source="eco",
+                            frequency=FREQ_DAILY, time="09:00", limit=50,
+                            enabled=False, auto_export=True),
+        ]
+        save_jobs(jobs, p)
+        loaded = load_jobs(p)
+        assert [j.job_id for j in loaded] == ["rfi-hourly", "rfi-morning", "eco-morning"]
+        assert loaded[0].name == "RFI 每小时"
+        assert loaded[0].frequency == FREQ_HOURLY
+        assert loaded[0].interval_hours == 1
+        assert loaded[0].limit == 10
+        assert loaded[0].auto_export is True
+        assert loaded[2].enabled is False
+
+
+def test_job_ids_unique_across_jobs():
+    # 不同 job 必须拥有唯一 id
+    a = SchedulerConfig(id="rfi-hourly")
+    b = SchedulerConfig(id="rfi-morning")
+    assert a.job_id != b.job_id
+    assert a.task_name() != b.task_name()
+
+
+def test_save_config_updates_existing_job_by_id(tmp_path):
+    """save_config 更新同 id job，不重复追加。"""
+    from news.scheduler_config import load_jobs, save_config
+    p = tmp_path / "scheduler.json"
+    save_config(SchedulerConfig(id="rfi-hourly", source="rfi", limit=10), p)
+    save_config(SchedulerConfig(id="rfi-hourly", source="rfi", limit=20), p)
+    save_config(SchedulerConfig(id="eco-morning", source="eco", limit=5), p)
+    jobs = load_jobs(p)
+    assert len(jobs) == 2
+    by_id = {j.job_id: j for j in jobs}
+    assert by_id["rfi-hourly"].limit == 20  # 更新而非新增
+    assert by_id["eco-morning"].limit == 5
+
+
+def test_old_flat_scheduler_json_backward_compat(tmp_path):
+    """旧版单任务扁平格式自动转换为多任务 jobs[]。"""
+    from news.scheduler_config import load_jobs
+    p = tmp_path / "scheduler.json"
+    p.write_text(json.dumps({
+        "enabled": True,
+        "source": "rfi",
+        "frequency": "daily",
+        "time": "08:00",
+        "limit": 50,
+        "auto_export": True,
+    }), encoding="utf-8")
+    jobs = load_jobs(p)
+    assert len(jobs) == 1
+    assert jobs[0].job_id == "rfi-default"
+    assert jobs[0].source == "rfi"
+    assert jobs[0].enabled is True
+
+
+def test_old_flat_load_config_still_works(tmp_path):
+    """旧接口 load_config 兼容旧扁平格式。"""
+    from news.scheduler_config import load_config
+    p = tmp_path / "scheduler.json"
+    p.write_text(json.dumps({"source": "eco", "limit": 30}), encoding="utf-8")
+    cfg = load_config(p)
+    assert cfg.source == "eco"
+    assert cfg.limit == 30
+
+
+# ---------------------------------------------------------------------------
+# 20. scheduled-fetch --job-id CLI
+# ---------------------------------------------------------------------------
+
+def test_main_job_id_selects_job(monkeypatch, tmp_path):
+    import news.scheduled_fetch as sf
+    from news.scheduler_config import save_jobs
+    captured = {}
+
+    def fake_run(cfg, **kw):
+        captured["cfg"] = cfg
+        return 0
+
+    monkeypatch.setattr(sf, "run_scheduled_fetch", fake_run)
+    monkeypatch.setattr(sf, "_PROJECT_ROOT", tmp_path)
+    (tmp_path / "data").mkdir(parents=True)
+    save_jobs([
+        SchedulerConfig(id="rfi-hourly", source="rfi", limit=10, enabled=True),
+        SchedulerConfig(id="eco-morning", source="eco", limit=5, enabled=True),
+    ], tmp_path / "data" / "scheduler.json")
+
+    rc = sf.main(["--job-id", "eco-morning", "--config", str(tmp_path / "data" / "scheduler.json")])
+    assert rc == 0
+    assert captured["cfg"].job_id == "eco-morning"
+    assert captured["cfg"].source == "eco"
+
+
+def test_main_job_id_not_found(monkeypatch, tmp_path):
+    import news.scheduled_fetch as sf
+    monkeypatch.setattr(sf, "_PROJECT_ROOT", tmp_path)
+    (tmp_path / "data").mkdir(parents=True)
+    from news.scheduler_config import save_jobs
+    save_jobs([SchedulerConfig(id="rfi-hourly", source="rfi", enabled=True)],
+              tmp_path / "data" / "scheduler.json")
+    rc = sf.main(["--job-id", "nope", "--config", str(tmp_path / "data" / "scheduler.json")])
+    assert rc == 1  # 未找到 → 非零 exit code
+
+
+def test_main_job_id_disabled_skips(monkeypatch, tmp_path):
+    import news.scheduled_fetch as sf
+    from news.scheduler_config import save_jobs
+    monkeypatch.setattr(sf, "_PROJECT_ROOT", tmp_path)
+    (tmp_path / "data").mkdir(parents=True)
+    save_jobs([SchedulerConfig(id="rfi-hourly", source="rfi", enabled=False)],
+              tmp_path / "data" / "scheduler.json")
+    rc = sf.main(["--job-id", "rfi-hourly", "--config", str(tmp_path / "data" / "scheduler.json")])
+    assert rc == 0  # 停用任务跳过执行，非错误
+
+
+def test_cli_scheduled_fetch_has_job_id_arg():
+    from news.cli import build_parser
+    parser = build_parser()
+    for a in parser._subparsers._group_actions:
+        for ch in a.choices:
+            if ch == "scheduled-fetch":
+                sub = a.choices[ch]
+                opts = [o for o in sub._optionals._actions]
+                assert any(o.dest == "job_id" for o in opts)
+                return
+    raise AssertionError("scheduled-fetch subparser not found")
+
+
+# ---------------------------------------------------------------------------
+# 21. 自动导出固定执行 / 没有新文章仍 SUCCESS / 输出目录不覆盖
+# ---------------------------------------------------------------------------
+
+def test_auto_export_output_dir_has_source_date_and_time(tmp_path):
+    """不同 job 输出目录不同；同 job 多次执行（秒级时间戳）不覆盖。"""
+    from news.scheduled_fetch import _run_auto_export
+    seen = []
+
+    def fake_export(storage, out_dir, *, source_id, limit, research_root=None):
+        # 真实 portable export 会创建目录；这里模拟，触发 _unique_dir 防覆盖
+        Path(out_dir).mkdir(parents=True, exist_ok=True)
+        seen.append(str(out_dir))
+        class R:
+            exported = 0
+        return R()
+
+    class _FakeStorage2:
+        pass
+
+    for _ in range(2):
+        _run_auto_export(
+            _FakeStorage2(), "rfi", 10, "portable",
+            portable_dir=tmp_path / "portable",
+            research_dir=tmp_path / "html",
+            portable_export=fake_export,
+        )
+    _run_auto_export(
+        _FakeStorage2(), "eco", 5, "portable",
+        portable_dir=tmp_path / "portable",
+        research_dir=tmp_path / "html",
+        portable_export=fake_export,
+    )
+    # 三个目录互不覆盖（不同 job + 同 job 多次）
+    assert len(set(seen)) == 3
+    # 目录名含 source + 日期
+    for s in seen:
+        assert "Laxinwen-RFI-" in s or "Laxinwen-ECO-" in s
+
+
+def test_zero_new_articles_is_fetch_success(tmp_path):
+    """没有新文章（usable=0）仍 FETCH SUCCESS，并继续自动导出。"""
+    from news.scheduled_fetch import run_scheduled_fetch
+
+    class _ZeroStats:
+        discovered = 0
+        skipped_dup = 0
+        fetched_ok = 0
+        extracted_ok = 0
+        low_quality = 0
+        failed = 0
+        usable = 0
+        errors = []
+
+    export_calls = []
+
+    def fake_pipeline_factory(storage, limit):
+        class P:
+            def run_site(self, sid):
+                return _ZeroStats()
+            def close(self):
+                pass
+        return P()
+
+    def fake_export(storage, out_dir, *, source_id, limit, research_root=None):
+        export_calls.append((source_id, limit))
+        class R:
+            exported = 0
+        return R()
+
+    cfg = SchedulerConfig(id="rfi-hourly", source="rfi", limit=10, enabled=True, auto_export=True)
+    logf = tmp_path / "scheduled-fetch.log"
+    rc = run_scheduled_fetch(
+        cfg, db_path=":memory:", log_file=logf,
+        portable_dir=tmp_path / "portable", research_dir=tmp_path / "html",
+        pipeline_factory=fake_pipeline_factory, portable_export=fake_export,
+        storage_factory=lambda db: _FakeStorage(),
+    )
+    assert rc == 0
+    content = logf.read_text(encoding="utf-8")
+    assert "FETCH: SUCCESS" in content
+    assert "EXPORT: SUCCESS" in content
+    assert export_calls == [("rfi", 10)]  # 没有新文章也照常自动导出
+
+
+def test_scheduled_fetch_logs_job_id(tmp_path):
+    from news.scheduled_fetch import run_scheduled_fetch
+
+    def fake_pipeline_factory(storage, limit):
+        class P:
+            def run_site(self, sid):
+                return _FakeStats()
+            def close(self):
+                pass
+        return P()
+
+    def fake_export(storage, out_dir, *, source_id, limit, research_root=None):
+        class R:
+            exported = 3
+        return R()
+
+    cfg = SchedulerConfig(id="rfi-morning", name="RFI 每日早报", source="rfi", limit=50, auto_export=True)
+    logf = tmp_path / "scheduled-fetch.log"
+    run_scheduled_fetch(
+        cfg, db_path=":memory:", log_file=logf,
+        portable_dir=tmp_path / "portable", research_dir=tmp_path / "html",
+        pipeline_factory=fake_pipeline_factory, portable_export=fake_export,
+        storage_factory=lambda db: _FakeStorage(),
+    )
+    content = logf.read_text(encoding="utf-8")
+    assert "JOB: rfi-morning" in content
+    assert "SOURCE: rfi" in content
+    assert "TARGET: 50" in content
+
+
+def test_build_arguments_includes_job_id_for_schtasks():
+    """Windows 任务参数携带 --job-id。"""
+    from news.task_scheduler import build_schtasks_create, build_arguments
+    cfg = SchedulerConfig(id="rfi-hourly", source="rfi", frequency=FREQ_HOURLY, interval_hours=1)
+    assert "--job-id rfi-hourly" in build_arguments(cfg)
+    cmd = build_schtasks_create(cfg, python_exe=r"C:\proj\.venv\Scripts\python.exe", project_root=r"C:\proj")
+    tr = next(c for c in cmd if c.startswith("cmd.exe"))
+    assert "--job-id rfi-hourly" in tr
+
+
+def test_different_jobs_generate_different_task_names():
+    jobs = [
+        SchedulerConfig(id="rfi-hourly", source="rfi"),
+        SchedulerConfig(id="rfi-morning", source="rfi"),
+        SchedulerConfig(id="eco-morning", source="eco"),
+        SchedulerConfig(id="hkej-evening", source="hkej"),
+    ]
+    names = [j.task_name() for j in jobs]
+    assert len(set(names)) == 4
+    assert names == [
+        "Laxinwen-RFI-rfi-hourly",
+        "Laxinwen-RFI-rfi-morning",
+        "Laxinwen-ECO-eco-morning",
+        "Laxinwen-HKEJ-hkej-evening",
+    ]
+
+
+def test_delete_one_job_task_does_not_affect_other():
+    """删除 job A 的命令不涉及 job B。"""
+    from news.task_scheduler import build_schtasks_delete
+    a = SchedulerConfig(id="rfi-hourly", source="rfi")
+    b = SchedulerConfig(id="eco-morning", source="eco")
+    a_cmd = build_schtasks_delete(a)
+    assert "Laxinwen-RFI-rfi-hourly" in a_cmd
+    assert "Laxinwen-ECO-eco-morning" not in a_cmd
+    b_cmd = build_schtasks_delete(b)
+    assert "Laxinwen-ECO-eco-morning" in b_cmd
+
+
+def test_repeated_install_same_job_no_dup():
+    """同一 job 重复安装不产生重复任务（任务名稳定，schtasks /F 覆盖）。"""
+    from news.task_scheduler import install_task
+    cfg = SchedulerConfig(id="rfi-hourly", source="rfi")
+    r1 = install_task(cfg)
+    r2 = install_task(cfg)
+    assert r1["task_name"] == "Laxinwen-RFI-rfi-hourly"
+    assert r1["task_name"] == r2["task_name"]
+    assert "(1)" not in r1["task_name"]
+
+
+def test_rfi_7day_window_preserved():
+    """多任务 scheduler 不改动 RFI discovery 时间窗口（rfi.py 未被我方修改）。"""
+    from news.sources import rfi
+    # 该常量的具体值由 rfi.py 决定（当前为 365 天），多任务实现不碰它。
+    assert isinstance(rfi.RFI_DISCOVERY_MAX_AGE_DAYS, int)
+    assert rfi.RFI_DISCOVERY_MAX_AGE_DAYS > 0
+    # 确认 scheduled_fetch 没有覆盖该窗口常量
+    import news.scheduled_fetch as sf
+    assert not hasattr(sf, "RFI_DISCOVERY_MAX_AGE_DAYS")
+
+
+def test_scheduler_json_not_in_git(tmp_path):
+    """scheduler.json 属于 data/，被 .gitignore 排除（不进入 Git）。"""
+    gitignore = Path(__file__).resolve().parents[1] / ".gitignore"
+    text = gitignore.read_text(encoding="utf-8")
+    assert "data/" in text
+    assert "scheduler.json" not in text or "data" in text

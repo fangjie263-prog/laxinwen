@@ -414,11 +414,12 @@ def cmd_scheduled_fetch(args: argparse.Namespace) -> int:
 
 
 def cmd_scheduler(args: argparse.Namespace) -> int:
-    """news scheduler <install|delete|run|status> —— Windows Task Scheduler 管理。
+    """news scheduler <install|delete|run|status> [job_id] —— Windows Task Scheduler 管理。
 
-    读取 data/scheduler.json 配置执行对应操作。供 GUI / BAT 复用同一套逻辑。
+    从 data/scheduler.json 读取指定 job（默认第一个）执行对应操作。
+    供 GUI / BAT 复用同一套逻辑。
     """
-    from .scheduler_config import load_config
+    from .scheduler_config import load_config, load_job
     from .task_scheduler import (
         delete_task,
         install_task,
@@ -426,7 +427,13 @@ def cmd_scheduler(args: argparse.Namespace) -> int:
         run_now,
     )
 
-    cfg = load_config(args.config)
+    if args.job_id:
+        cfg = load_job(args.job_id, args.config)
+        if cfg is None:
+            print(f"ERROR: 未找到定时任务 id：{args.job_id}")
+            return 1
+    else:
+        cfg = load_config(args.config)
     action = args.scheduler_action
     op = {
         "install": install_task,
@@ -455,6 +462,8 @@ def _build_scheduled_fetch_argv(args: argparse.Namespace) -> list[str]:
     argv = ["--db", str(args.db), "--log-file", str(args.log_file)]
     if args.config:
         argv += ["--config", args.config]
+    if getattr(args, "job_id", None):
+        argv += ["--job-id", args.job_id]
     if args.source:
         argv += ["--source", args.source]
     if args.limit:
@@ -532,6 +541,7 @@ def build_parser() -> argparse.ArgumentParser:
         "scheduled-fetch",
         help="headless 自动定时抓取（被 Windows Task Scheduler 调用）",
     )
+    p_sched.add_argument("--job-id", default=None, help="要执行的定时任务 id（默认取第一个 job）")
     p_sched.add_argument("--source", default=None, help="覆盖新闻来源（默认读取配置）")
     p_sched.add_argument("--limit", type=int, default=None, help="覆盖抓取数量（默认读取配置）")
     p_sched.add_argument("--config", default=None, help="scheduler 配置文件路径（默认 data/scheduler.json）")
@@ -551,6 +561,12 @@ def build_parser() -> argparse.ArgumentParser:
         "scheduler_action",
         choices=["install", "delete", "run", "status"],
         help="操作：install=安装/更新，delete=删除，run=立即运行，status=查询",
+    )
+    p_scheduler.add_argument(
+        "job_id",
+        nargs="?",
+        default=None,
+        help="定时任务 id（默认取第一个 job）",
     )
     p_scheduler.add_argument("--config", default=None, help="scheduler 配置文件路径（默认 data/scheduler.json）")
     p_scheduler.add_argument("--project-root", default=None, help="项目根目录（默认自动探测）")

@@ -233,105 +233,181 @@ pipeline 出错不崩溃且按钮恢复、status 读取数据库统计、GUI 关
 
 ---
 
-## Windows 自动定时抓取
+## Windows 自动定时抓取与多任务
 
-> 第八阶段新增：把「自动抓取」接入 **Windows 原生计划任务（Task Scheduler）**。
-> 它只是决定 **“什么时候启动一次抓取”**，真正抓取、发现、提取、质量判断、去重、入库、导出
+> 第八阶段把「自动抓取」接入 **Windows 原生计划任务（Task Scheduler）**；
+> 本阶段升级为**多个独立定时任务**。一个 Laxinwen 可以同时配置多个任务，
+> 每个任务独立 source / 频率 / 数量 / 启用状态 / Windows 任务 / 阅读包。
+> 它们只是决定 **“什么时候启动一次抓取”**，真正抓取、发现、提取、质量判断、去重、入库、导出
 > 全部复用现有 pipeline / portable export，**绝不复制** 一套抓取或导出逻辑。
 
-### 1. GUI 自动抓取 / 定时任务
+### 1. GUI：任务列表
 
-GUI 中新增「**自动抓取 / 定时任务**」设置卡片，可以配置：
+GUI 的「**自动抓取 / 定时任务**」卡片已升级为**任务列表**，例如：
+
+```
+任务名称        来源    频率          数量    状态
+RFI 每小时      RFI    每小时 / 1 小时  10    已启用
+RFI 每日早报    RFI    每日 08:00       50    已启用
+ECO 每日        ECO    每日 09:00       50    已启用
+```
+
+每个任务独立配置：
 
 | 配置项 | 说明 |
 | --- | --- |
-| 启用自动抓取 | 开关。勾选后点击「安装/更新定时任务」才会创建计划任务；未勾选时点击该按钮会**移除**已存在的任务 |
+| 任务名称 | 展示名（如 “RFI 每小时”） |
+| 任务 id | **唯一、稳定、可预测**，用于 CLI / Windows 任务 / 日志 / 导出目录（如 `rfi-hourly`） |
 | 新闻来源 | `rfi` / `eco` / `hkej` |
-| 每次抓取数量 | 每次后台抓取的 **usable limit**（见下文 [limit 的语义](#9-limit-的语义)） |
+| 每次抓取数量 | 每次后台抓取的 **usable limit**（见 [limit 的语义](#9-limit-的语义)） |
 | 频率 | `每日` / `每小时` |
-| 每日执行时间 | 每日模式下的时间（`HH:MM`，默认 `08:00`） |
+| 每日执行时间 | 每日模式下的时间（`HH:MM`） |
 | 每小时执行间隔 | 每小时模式下的间隔（`1 / 2 / 3 / 6` 小时） |
-| 自动导出 | 是否在后台抓取完成后自动导出便携阅读包 |
-| 导出类型 | 目前为 `便携阅读包` |
+| 自动导出 | **固定启用**，普通用户无需（也无法）关闭 |
 
-卡片下方提供三个操作按钮：
+列表下方提供操作按钮：
 
-- **「安装/更新定时任务」**：把当前 GUI 配置保存到 `data/scheduler.json`，并写入 Windows Task Scheduler。
-  如果同名任务已经存在，则**更新**同一个任务，而不是不断创建重复任务。
-  任务名称固定为 `Laxinwen-<SOURCE>-AutoFetch`（如 `Laxinwen-RFI-AutoFetch`）。
-  若当前未勾选「启用自动抓取」，此按钮会**删除**已存在的同名任务（保证“未启用 = 不自动抓取”）。
-- **「删除定时任务」**：删除对应的 Windows Task Scheduler 任务，并停止自动抓取。
-- **「立即运行一次」**：不改变原来的定时计划，立即按照当前配置启动一次后台抓取任务。
+- **「新建任务」**：创建新的独立定时任务。
+- **「编辑」**：修改选中任务（任务 id 保持不变）。
+- **「启用/停用」**：独立启停选中任务，不影响其它任务。
+- **「安装/更新」**：把选中任务写入 Windows Task Scheduler（重复安装 = 更新原任务）。
+- **「删除」**：删除选中任务及其 Windows 任务，**不影响其它任务**。
+- **「立即运行一次」**：调用 `schtasks /Run` 触发对应 Windows 任务（GUI 不冻结）。
 
-> 手动抓取与自动抓取配置是**相互独立**的两套配置：GUI 上方的「抓取设置」（新闻来源、抓取数量等）
-> 只影响手动操作；下方的「自动抓取 / 定时任务」只影响定时任务。例如手动抓取当前选择 `ECO`，
-> 同时自动定时任务可以配置为 `RFI`——上方手动来源不会覆盖下方定时任务来源。
+> 手动抓取与自动抓取配置是**相互独立**的两套配置：GUI 上方的「抓取设置」只影响手动操作；
+> 下方的「自动抓取 / 定时任务」只影响定时任务。
 
-### 2. 每日 / 每小时调度
+### 2. 每个任务一个 Windows Task Scheduler 任务
+
+多任务下任务名称**稳定且唯一**，规则为：
+
+```
+Laxinwen-<SOURCE>-<job_id>
+```
+
+例如：
+
+```
+Laxinwen-RFI-rfi-hourly
+Laxinwen-RFI-rfi-morning
+Laxinwen-ECO-eco-morning
+Laxinwen-HKEJ-hkej-evening
+```
+
+- 同一个 job 重复「安装/更新」= **更新原任务**（不会产生 `(1)`、`(2)` 后缀）。
+- 不同 job 互不冲突；删除 job A 不影响 job B。
+- 每个 Windows 任务都可独立 `schtasks /Run`、独立查询、独立删除。
+
+### 3. 每日 / 每小时调度
 
 - **每日**：Windows Task Scheduler 使用 `DAILY` trigger（`/SC DAILY` + `/ST <HH:MM>`）。
 - **每小时**：Windows Task Scheduler 使用 `HOURLY` trigger（`/SC HOURLY` + `/MO <间隔>`）。
 
 **Windows Task Scheduler 才是真正的调度器。** Python 并不是常驻后台等待时间。
-每到触发时间，Windows 启动一次 `python -m news scheduled-fetch`，任务执行完成后 Python 进程退出。
+每到触发时间，Windows 启动一次 `python -m news scheduled-fetch --job-id <id>`，
+任务执行完成后 Python 进程退出。
 
 > 重复运行保护：计划任务层面使用任务的“仅运行一次”语义，应用层再用 lock 文件兜底，
 > 避免同一来源有两个 pipeline 同时抓取。
 
-### 3. GUI 关闭以后仍然可以执行
-
-安装 Windows Task Scheduler 任务以后，**Laxinwen News Reader GUI 不需要保持打开**。
-Windows Task Scheduler 可以独立启动后台抓取。
+### 4. 工作流
 
 ```
-GUI 设置
+GUI 设置（任务列表）
    ↓
-data/scheduler.json
+data/scheduler.json（多任务 jobs[]）
    ↓
-Windows Task Scheduler
+Windows Task Scheduler（每 job 一个任务）
    ↓
-python -m news scheduled-fetch
+python -m news scheduled-fetch --job-id <id>
    ↓
 现有 Pipeline
    ↓
 Discovery → Fetch → Extraction → Quality → Storage
    ↓
-Portable Export
+Portable Export（固定执行）
    ↓
-data/export/portable/
+data/export/portable/<独立目录>
 ```
 
-### 4. 后台入口
+### 5. GUI 关闭以后仍然可以执行
 
-`python -m news scheduled-fetch` 是自动任务使用的 **headless 后台入口**。
+安装 Windows Task Scheduler 任务以后，**Laxinwen News Reader GUI 不需要保持打开**。
+Windows Task Scheduler 可以独立启动后台抓取。GUI 只是配置界面。
+
+### 6. 后台入口
+
+`python -m news scheduled-fetch --job-id <id>` 是自动任务使用的 **headless 后台入口**。
 
 - 它 **不依赖 tkinter GUI**，也不会弹出任何窗口；
-- 它读取 `data/scheduler.json` 中的配置执行一次抓取；
-- 它 **不复制一套新的抓取逻辑**，而是复用现有 `Pipeline.run_site()`。
+- 它从 `data/scheduler.json` 中找到指定 job，检查是否启用，使用 job 的 source / limit 执行一次抓取；
+- 它 **不复制一套新的抓取逻辑**，而是复用现有 `Pipeline.run_site()`；
+- 任务完成后**自动 portable export**，记录 job id，返回正确 exit code。
 
-> 同样地，`python -m news scheduler install|delete|run|status` 提供命令行方式管理计划任务
-> （`install`=安装/更新，`delete`=删除，`run`=立即运行，`status`=查询）。
+> `python -m news scheduler install|delete|run|status [job_id]` 提供命令行方式管理计划任务
+> （不指定 job_id 时作用于第一个任务）。
 
-### 5. 数据与配置
+### 7. 数据与配置
 
 - 数据库：`data/news.db`
-- scheduler 运行时配置：`data/scheduler.json`
-- 日志：`data/logs/scheduled-fetch.log`
+- scheduler 运行时配置：`data/scheduler.json`（多任务 `jobs[]` 结构）
+- 日志：`data/logs/scheduled-fetch.log`（每个任务记录 JOB ID）
+- 阅读包：`data/export/portable/`
 
 明确说明：`data/` 已被 `.gitignore` 排除；`scheduler.json` 是运行时本地配置，**不进入 Git**。
 配置中只包含来源、频率、时间、数量、是否自动导出，**不含任何密钥 / 敏感信息**。
 
-### 6. 日志
+#### scheduler.json 多任务结构
 
-`scheduled-fetch.log` 会记录：
+```json
+{
+  "jobs": [
+    {
+      "id": "rfi-hourly",
+      "name": "RFI 每小时",
+      "enabled": true,
+      "source": "rfi",
+      "frequency": "hourly",
+      "interval_hours": 1,
+      "time": null,
+      "limit": 10,
+      "auto_export": true,
+      "export_type": "portable"
+    },
+    {
+      "id": "rfi-morning",
+      "name": "RFI 每日早报",
+      "enabled": true,
+      "source": "rfi",
+      "frequency": "daily",
+      "interval_hours": null,
+      "time": "08:00",
+      "limit": 50,
+      "auto_export": true,
+      "export_type": "portable"
+    }
+  ]
+}
+```
 
-- 开始时间 / 结束时间；
-- 新闻来源、目标数量（usable limit）、自动导出开关；
-- discovery：`发现数量`、`重复数量`；
-- 正文下载成功、正文提取成功、`质量不合格`、`抓取/提取失败`、`可读新闻`（usable）；
-- `候选已耗尽`（usable 不足 limit 且候选 > 0）、`无可发现的新候选`（候选 = 0）；
-- `FETCH` 与 `EXPORT` 状态；
-- 异常 traceback（如果有）。
+> **向后兼容**：旧版单任务扁平格式（顶层直接是 `source/enabled/...`）在读取时会自动转换为
+> `jobs[]`（`id` 派生为 `<source>-default`），老用户升级不会崩溃。
+
+### 8. 日志（区分 job）
+
+`scheduled-fetch.log` 会记录每次运行的 **JOB ID / SOURCE / TARGET**，例如：
+
+```
+JOB: rfi-hourly
+SOURCE: rfi
+TARGET: 10
+
+FETCH: SUCCESS
+USABLE: 8 / 10
+
+EXPORT: SUCCESS
+OUTPUT: data/export/portable/Laxinwen-RFI-2026-08-24-100000/
+```
 
 日志把 **FETCH 和 EXPORT 分开记录**：
 
@@ -341,23 +417,32 @@ FETCH: FAILED
 
 EXPORT: SUCCESS
 EXPORT: FAILED
-EXPORT: SKIPPED
 ```
 
 并明确：**EXPORT 失败不会被错误地伪装成 FETCH 失败**（导出失败不影响抓取结果）。
 
-### 7. 自动导出
+### 9. 自动导出（固定执行）
 
-当 `auto_export=true` 时，后台抓取完成后调用现有 portable export（默认便携阅读包），
-**不复制一套 export 逻辑**。
+每个定时任务完成后**必须**调用现有 portable export（复用 `export_portable_reader_package()`），
+**不复制一套 export 逻辑**，不重写 HTML reader。
 
-输出目录：`data/export/portable/`，例如：
+自动导出是定时任务的**固定行为**，普通用户不再需要在“抓取后再决定是否导出”。
+即使本次 `discovery=0 / usable=0`（没有新文章），仍会 `FETCH: SUCCESS`，并继续自动导出最近 N 篇
+可用文章生成最新阅读包。**没有新文章 ≠ 抓取失败**，只有真正的程序/网络/抓取异常才 `FETCH: FAILED`。
+
+#### 每个任务生成独立阅读包
+
+输出目录包含 **source + 日期 + 执行时间（秒级）**，不同任务 / 同任务多次执行都不互相覆盖：
 
 ```
-data/export/portable/Laxinwen-RFI-2026-08-24/
+data/export/portable/
+  Laxinwen-RFI-2026-08-24-080000/
+  Laxinwen-RFI-2026-08-24-090000/
+  Laxinwen-RFI-2026-08-24-100000/
+  Laxinwen-ECO-2026-08-24-090000/
 ```
 
-### 8. RFI 抓取逻辑保持不变
+### 10. RFI 抓取逻辑保持不变
 
 Windows scheduler **不绕过现有 RFI 抓取体系**。RFI 仍然使用现有：
 
@@ -368,18 +453,17 @@ Windows scheduler **不绕过现有 RFI 抓取体系**。RFI 仍然使用现有�
 - RFI quality filtering（正文长度 / 关键词等）；
 - candidate / usable limit 逻辑。
 
-自动任务只是“**什么时候启动**”发生了变化。真正的抓取、发现、提取、质量判断、去重、入库
-仍然复用现有 Pipeline。
+多任务 scheduler **不改动** `rfi.py / pipeline.py / fetch.py / discover.py / storage.py`。
+自动任务只是“**什么时候启动**”发生了变化。
 
-### 9. limit 的语义
+### 11. limit 的语义
 
 `limit` 是 **usable limit**（目标可读新闻数）。
 
 例如 `limit=50` 并不意味着系统必须强行抓到 50 篇。如果当天只有 7 篇新的、符合质量要求的新闻，
-那么 `usable=7`，程序可以正常结束。**不会**为了凑够 50 篇而突破当前 RFI discovery 时间窗口
-（候选池会从近期候选放大，但不会向 7 天窗口之外的历史文章扩展）。
+那么 `usable=7`，程序可以正常结束。**不会**为了凑够 50 篇而突破当前 RFI discovery 时间窗口。
 
-### 10. “没有新文章”不等于“抓取失败”
+### 12. “没有新文章”不等于“抓取失败”
 
 请区分两种情况：
 
@@ -390,55 +474,76 @@ Windows scheduler **不绕过现有 RFI 抓取体系**。RFI 仍然使用现有�
 不要把 `usable=0` 自动解释成“抓取失败”。`FETCH` 状态只反映抓取阶段是否发生异常，
 候选耗尽 / 没有新文章 **不算**失败。
 
-### 11. Windows 命令示例
+### 13. 实际示例
 
-项目根目录：
+一个 Laxinwen 可同时配置以下任务：
 
-```bat
-cd /d D:\AIProjects\test
+```
+RFI 每小时     来源:RFI  频率:每小时 / 1 小时   数量:10    自动导出:固定启用
+RFI 每日早报   来源:RFI  频率:每日 / 08:00       数量:50    自动导出:固定启用
+ECO 每日       来源:ECO  频率:每日 / 09:00       数量:50    自动导出:固定启用
+HKEJ 晚间     来源:HKEJ 频率:每日 / 18:00       数量:100   自动导出:固定启用
 ```
 
-手动运行后台抓取：
+配置一次后关闭 GUI，Windows Task Scheduler 独立运行每个任务：
+抓取 → 去重 → 质量过滤 → 入库 → 自动导出。最后在 `data/export/portable/` 出现多个独立阅读包：
 
-```bat
-.venv\Scripts\python.exe -m news scheduled-fetch --source rfi --limit 10
+```
+data/export/portable/Laxinwen-RFI-2026-08-24-080000/
+data/export/portable/Laxinwen-RFI-2026-08-24-090000/
+data/export/portable/Laxinwen-ECO-2026-08-24-090000/
 ```
 
-查询任务：
+### 14. Windows 命令示例
+
+手动运行指定任务：
 
 ```bat
-schtasks /Query /TN "Laxinwen-RFI-AutoFetch" /V /FO LIST
+.venv\Scripts\python.exe -m news scheduled-fetch --job-id rfi-hourly
 ```
 
-手动触发：
+查询指定任务：
 
 ```bat
-schtasks /Run /TN "Laxinwen-RFI-AutoFetch"
+schtasks /Query /TN "Laxinwen-RFI-rfi-hourly" /V /FO LIST
 ```
 
-删除任务：
+手动触发指定任务：
 
 ```bat
-scripts\windows\delete-scheduled-fetch.bat
+schtasks /Run /TN "Laxinwen-RFI-rfi-hourly"
 ```
 
-### 12. BAT 文件
+删除指定任务：
 
-项目提供三个 Windows 批处理文件（双击即可）：
+```bat
+.venv\Scripts\python.exe -m news scheduler delete rfi-hourly
+```
+
+### 15. BAT 文件（支持 job 参数）
+
+项目提供三个 Windows 批处理文件，均支持可选 job id 参数：
 
 | 文件 | 用途 |
 | --- | --- |
-| `scripts/windows/install-scheduled-fetch.bat` | 安装 / 更新定时任务 |
-| `scripts/windows/delete-scheduled-fetch.bat` | 删除定时任务 |
-| `scripts/windows/run-scheduled-fetch-now.bat` | 立即执行一次后台抓取 |
+| `scripts/windows/install-scheduled-fetch.bat [job_id]` | 安装 / 更新指定任务 |
+| `scripts/windows/delete-scheduled-fetch.bat [job_id]` | 删除指定任务 |
+| `scripts/windows/run-scheduled-fetch-now.bat [job_id]` | 立即执行一次指定任务 |
 
-> 仅列出上述三个真实存在的 BAT，不存在其它自动抓取 BAT。
+```bat
+scripts\windows\install-scheduled-fetch.bat rfi-hourly
+scripts\windows\delete-scheduled-fetch.bat eco-morning
+scripts\windows\run-scheduled-fetch-now.bat rfi-morning
+```
 
-### 13. Windows 实机验证
+不提供 job id 时作用于第一个任务；指定不存在的 job id 会给出清晰提示（不会静默失败）。
+BAT 自动定位项目根（不硬编码绝对路径）、检查 `.venv\Scripts\python.exe`、失败时返回错误码。
 
-已在 Windows 实机验证：
+### 16. Windows 实机验证
 
-- ✓ Task Scheduler 成功创建（`Laxinwen-RFI-AutoFetch`）；
+此前已完成的**单任务** Windows 实机验证：
+
+- ✓ Task Scheduler 成功创建；
 - ✓ `schtasks /Run` 成功；
 - ✓ `scheduled-fetch` 后台入口成功执行；
 - ✓ RFI discovery 成功；
@@ -447,9 +552,12 @@ scripts\windows\delete-scheduled-fetch.bat
 - ✓ `EXPORT: SUCCESS`；
 - ✓ Task Scheduler 最终 `Last Result = 0`。
 
-> ⚠ **尚未完成**“等待计划时间由 Windows 自动触发”的自然触发验证（目前只验证了 `schtasks /Run`
-> 手动触发）。因此**不要写成**“每天 08:00 自动触发已经验证成功”。
-> 正确表述：**Windows Task Scheduler 手动触发已验证成功；实际按计划时间自动触发仍可继续观察验证。**
+> ⚠ **尚未证明**“每天 08:00 自动触发已经成功运行”，此前主要是 `schtasks /Run` 手动触发。
+> 正确表述：**Windows Task Scheduler 手动触发已验证成功；按计划时间自动触发仍可继续观察验证。**
+
+> ⚠ **多任务新功能尚未进行 Windows 实机验证**（新增任务列表、`--job-id`、多任务名、多阅读包目录）。
+> 当前通过 `pytest` 与 `python -m compileall` 验证；Windows 实机验证需在有 .venv 的 Windows 机器上进行。
+> 不要把 `pytest PASS` 写成 Windows 实机验证成功。
 
 ---
 
@@ -592,8 +700,8 @@ Model / Provider 名称 / Base URL 全部支持手工输入，不强制限定。
 | --- | --- |
 | `news gui [--site <id>] [--db PATH]` | 启动 Windows 桌面 GUI（Laxinwen News Reader，来源 ECO/HKEJ/全部） |
 | `news serve [--export-root DIR]` | 启动本地 HTTP 阅读服务器（仅 127.0.0.1，端口自动选择，Ctrl+C 停止） |
-| `news scheduled-fetch [--source <id>] [--limit N] [--config <path>] [--db PATH]` | headless 自动抓取后台入口（被 Windows Task Scheduler 调用，复用现有 pipeline） |
-| `news scheduler install\|delete\|run\|status [--config <path>] [--project-root DIR]` | 管理 Windows Task Scheduler 定时任务（install=安装/更新，delete=删除，run=立即运行，status=查询） |
+| `news scheduled-fetch [--job-id <id>] [--source <id>] [--limit N] [--config <path>] [--db PATH]` | headless 自动抓取后台入口（按 job id 执行指定任务，被 Windows Task Scheduler 调用，复用现有 pipeline，自动导出） |
+| `news scheduler install\|delete\|run\|status [job_id] [--config <path>] [--project-root DIR]` | 管理 Windows Task Scheduler 定时任务（install=安装/更新，delete=删除，run=立即运行，status=查询；job_id 可选，默认第一个） |
 | `news fetch [--site <id>] [--limit N] [--timeout S] [--retries N] [--interval S] [--retry-failed]` | 抓取新闻（`--limit` = 最近 N 篇发现窗口） |
 | `news list [--source <id>] [--limit N]` | 列出最近新闻 |
 | `news status [--source <id>]` | 显示数据库与抓取状态（含 AI 分析统计） |

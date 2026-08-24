@@ -210,9 +210,11 @@ def run_scheduled_fetch(
     export_type = cfg.export_type
 
     logger.info("========== 自动定时抓取开始 ==========")
-    logger.info("开始时间: %s", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-    logger.info("新闻来源: %s", source_id)
-    logger.info("目标数量: %d（usable limit）", limit)
+    logger.info("JOB: %s", cfg.job_id)
+    if cfg.name:
+        logger.info("NAME: %s", cfg.name)
+    logger.info("SOURCE: %s", source_id)
+    logger.info("TARGET: %d（usable limit）", limit)
     logger.info("自动导出: %s", "开启" if auto_export else "关闭")
 
     # 重复运行保护（应用层 lock）
@@ -235,6 +237,9 @@ def run_scheduled_fetch(
 
             # 记录统计
             s = stats
+            logger.info("JOB: %s", cfg.job_id)
+            logger.info("SOURCE: %s", source_id)
+            logger.info("TARGET: %d", limit)
             logger.info("发现数量: %d", s.discovered)
             logger.info("重复数量: %d", s.skipped_dup)
             logger.info("正文下载成功: %d", s.fetched_ok)
@@ -313,10 +318,13 @@ def _run_auto_export(
 
     if export_type == EXPORT_PORTABLE:
         portable_dir = Path(portable_dir)
-        out_dir = (
-            portable_dir
-            / f"Laxinwen-{_source_label(source_id)}-{_dt.now().strftime('%Y-%m-%d')}"
+        # 独立、可识别的目录：source + 日期 + 执行时间（秒级），
+        # 不同 job 互不覆盖；同一 job 若在同一秒重复执行，追加序号避免覆盖。
+        base = portable_dir / (
+            f"Laxinwen-{_source_label(source_id)}-"
+            f"{_dt.now().strftime('%Y-%m-%d-%H%M%S')}"
         )
+        out_dir = _unique_dir(base)
         export = portable_export or _default_portable_export
         result = export(
             storage,
@@ -329,10 +337,21 @@ def _run_auto_export(
     return f"不支持的导出类型：{export_type}（跳过）"
 
 
-def main(argv: Optional[list[str]] = None) -> int:
-    """CLI 入口：``news scheduled-fetch``。
+def _unique_dir(base: Path) -> Path:
+    """若目录已存在（同一秒重复执行），追加 -2 / -3 … 序号避免覆盖。"""
+    cand = base
+    n = 2
+    while cand.exists():
+        cand = Path(f"{base}-{n}")
+        n += 1
+    return cand
 
-    不 import tkinter，完全 headless。读取 data/scheduler.json 配置执行一次抓取。
+
+def main(argv: Optional[list[str]] = None) -> int:
+    """CLI 入口：``news scheduled-fetch [--job-id <id>]``。
+
+    不 import tkinter，完全 headless。读取 data/scheduler.json 中指定 job
+    （或默认第一个 job）执行一次抓取。
     """
     import argparse
 
@@ -342,6 +361,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     parser.add_argument("--db", default=str(DEFAULT_DB), help="SQLite 数据库路径")
     parser.add_argument("--log-file", default=str(DEFAULT_LOG_FILE), help="日志文件路径")
+    parser.add_argument("--job-id", default=None, help="要执行的定时任务 id（默认取第一个 job）")
     parser.add_argument("--source", default=None, help="覆盖新闻来源（默认读取配置）")
     parser.add_argument("--limit", type=int, default=None, help="覆盖抓取数量（默认读取配置）")
     parser.add_argument(
@@ -368,7 +388,19 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
 
-    cfg = load_config(config)
+    from .scheduler_config import load_job
+
+    if args.job_id:
+        cfg = load_job(args.job_id, config)
+        if cfg is None:
+            logger.error("未找到定时任务 id：%s（请检查 data/scheduler.json）", args.job_id)
+            return 1
+        if not cfg.enabled:
+            # 明确拒绝执行已停用任务，避免误触发。
+            logger.warning("定时任务「%s」当前为停用状态，跳过执行。", args.job_id)
+            return 0
+    else:
+        cfg = load_config(config)
     if args.source:
         cfg.source = args.source
     if args.limit is not None:

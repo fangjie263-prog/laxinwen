@@ -41,7 +41,9 @@ from .scheduler_config import (
     HOURLY_INTERVALS,
     SchedulerConfig,
     load_config as _default_scheduler_load,
+    load_jobs as _default_scheduler_load_jobs,
     save_config as _default_scheduler_save,
+    save_jobs as _default_scheduler_save_jobs,
 )
 from .task_scheduler import (
     delete_task as _default_task_delete,
@@ -146,6 +148,8 @@ class _NewsReaderApp:
         ai_show_settings=None,
         scheduler_load=None,
         scheduler_save=None,
+        scheduler_load_jobs=None,
+        scheduler_save_jobs=None,
         scheduler_install=None,
         scheduler_delete=None,
         scheduler_run_now=None,
@@ -185,6 +189,8 @@ class _NewsReaderApp:
         # 定时抓取：配置存取 + Task Scheduler 操作（可注入假实现便于测试）
         self._scheduler_load = scheduler_load or _default_scheduler_load
         self._scheduler_save = scheduler_save or _default_scheduler_save
+        self._scheduler_load_jobs = scheduler_load_jobs or _default_scheduler_load_jobs
+        self._scheduler_save_jobs = scheduler_save_jobs or _default_scheduler_save_jobs
         self._scheduler_install = scheduler_install or _default_task_install
         self._scheduler_delete = scheduler_delete or _default_task_delete
         self._scheduler_run_now = scheduler_run_now or _default_task_run_now
@@ -192,10 +198,18 @@ class _NewsReaderApp:
         self._scheduler_config_path = (
             Path(scheduler_config_path) if scheduler_config_path else None
         )
-        # 当前定时抓取配置（GUI 状态）
-        self._scheduler_cfg = self._scheduler_load(self._scheduler_config_path)
-        if self._scheduler_cfg.source not in ("rfi", "eco", "hkej"):
-            self._scheduler_cfg.source = "rfi"
+        # 当前定时任务列表（多任务 GUI 状态）
+        self._scheduler_jobs = self._scheduler_load_jobs(self._scheduler_config_path)
+        for job in self._scheduler_jobs:
+            if job.source not in ("rfi", "eco", "hkej"):
+                job.source = "rfi"
+        # 兼容旧单任务配置：若 jobs 为空但旧配置存在，则回退到旧配置
+        if not self._scheduler_jobs:
+            legacy = self._scheduler_load(self._scheduler_config_path)
+            if legacy and legacy.source in ("rfi", "eco", "hkej"):
+                legacy.auto_export = True
+                self._scheduler_jobs = [legacy]
+        self._selected_job = None
 
         # 后台线程 → GUI 消息队列
         self._queue: "queue.Queue[str]" = queue.Queue()
@@ -364,83 +378,68 @@ class _NewsReaderApp:
         )
         self.export_btn.pack(side="left")
 
-        # ---- 自动抓取 / 定时任务卡片 ----
+        # ---- 自动抓取 / 定时任务卡片（多任务列表） ----
         sched_card = ttk.LabelFrame(outer, text="自动抓取 / 定时任务", padding=10)
         sched_card.pack(fill="x", pady=(10, 0))
 
-        sr1 = ttk.Frame(sched_card)
-        sr1.pack(fill="x")
-        self.sched_enabled_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(
-            sr1, text="启用自动抓取", variable=self.sched_enabled_var
-        ).pack(side="left")
+        # 提示：自动导出为固定行为
+        ttk.Label(
+            sched_card,
+            text="每个定时任务完成后自动生成便携阅读包（自动导出固定启用，无需手动开关）。",
+            foreground="#666",
+        ).pack(anchor="w")
 
-        ttk.Label(sr1, text="新闻来源：").pack(side="left", padx=(16, 2))
-        self.sched_source_var = tk.StringVar(value="rfi")
-        self.sched_source_combo = ttk.Combobox(
-            sr1, textvariable=self.sched_source_var, state="readonly", width=10
+        # 任务列表
+        self.sched_tree = ttk.Treeview(
+            sched_card,
+            columns=("name", "source", "freq", "limit", "status"),
+            show="headings",
+            height=5,
         )
-        self.sched_source_combo["values"] = ["rfi", "eco", "hkej"]
-        self.sched_source_combo.pack(side="left")
+        self.sched_tree.heading("name", text="任务名称")
+        self.sched_tree.heading("source", text="来源")
+        self.sched_tree.heading("freq", text="频率")
+        self.sched_tree.heading("limit", text="数量")
+        self.sched_tree.heading("status", text="状态")
+        self.sched_tree.column("name", width=160, anchor="w")
+        self.sched_tree.column("source", width=60, anchor="center")
+        self.sched_tree.column("freq", width=110, anchor="center")
+        self.sched_tree.column("limit", width=60, anchor="center")
+        self.sched_tree.column("status", width=70, anchor="center")
+        self.sched_tree.pack(fill="x")
+        self.sched_tree.bind("<<TreeviewSelect>>", self._on_sched_select)
 
-        ttk.Label(sr1, text="每次抓取数量：").pack(side="left", padx=(16, 2))
-        self.sched_limit_var = tk.StringVar(value="50")
-        self.sched_limit_entry = ttk.Entry(sr1, textvariable=self.sched_limit_var, width=6)
-        self.sched_limit_entry.pack(side="left")
-
-        sr2 = ttk.Frame(sched_card)
-        sr2.pack(fill="x", pady=(8, 0))
-        ttk.Label(sr2, text="频率：").pack(side="left")
-        self.sched_freq_var = tk.StringVar(value=FREQ_DAILY)
-        self.sched_freq_combo = ttk.Combobox(
-            sr2, textvariable=self.sched_freq_var, state="readonly", width=8
+        sbtn = ttk.Frame(sched_card)
+        sbtn.pack(fill="x", pady=(8, 0))
+        self.sched_new_btn = ttk.Button(
+            sbtn, text="新建任务", command=self._on_sched_new
         )
-        self.sched_freq_combo["values"] = [FREQ_DAILY, FREQ_HOURLY]
-        self.sched_freq_combo.bind("<<ComboboxSelected>>", self._on_sched_freq_changed)
-        self.sched_freq_combo.pack(side="left", padx=(4, 12))
-
-        # 每日：时间选择
-        ttk.Label(sr2, text="时间：").pack(side="left")
-        self.sched_time_var = tk.StringVar(value="08:00")
-        self.sched_time_entry = ttk.Entry(sr2, textvariable=self.sched_time_var, width=6)
-        self.sched_time_entry.pack(side="left")
-
-        # 每小时：间隔选择
-        ttk.Label(sr2, text="间隔：").pack(side="left", padx=(12, 2))
-        self.sched_interval_var = tk.StringVar(value="1")
-        self.sched_interval_combo = ttk.Combobox(
-            sr2, textvariable=self.sched_interval_var, state="readonly", width=6
+        self.sched_new_btn.pack(side="left")
+        self.sched_edit_btn = ttk.Button(
+            sbtn, text="编辑", command=self._on_sched_edit
         )
-        self.sched_interval_combo["values"] = [
-            f"{h} 小时" for h in HOURLY_INTERVALS
-        ]
-        self.sched_interval_combo.pack(side="left")
-
-        ttk.Label(sr2, text="自动导出：").pack(side="left", padx=(16, 2))
-        self.sched_export_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(sr2, text="便携阅读包", variable=self.sched_export_var).pack(
-            side="left"
+        self.sched_edit_btn.pack(side="left", padx=(6, 0))
+        self.sched_toggle_btn = ttk.Button(
+            sbtn, text="启用/停用", command=self._on_sched_toggle
         )
-
-        sr3 = ttk.Frame(sched_card)
-        sr3.pack(fill="x", pady=(10, 0))
-        self.sched_install_btn = ttk.Button(
-            sr3, text="安装/更新定时任务", command=self._on_sched_install
-        )
-        self.sched_install_btn.pack(side="left")
-        self.sched_delete_btn = ttk.Button(
-            sr3, text="删除定时任务", command=self._on_sched_delete
-        )
-        self.sched_delete_btn.pack(side="left", padx=(8, 0))
+        self.sched_toggle_btn.pack(side="left", padx=(6, 0))
         self.sched_runnow_btn = ttk.Button(
-            sr3, text="立即运行一次", command=self._on_sched_run_now
+            sbtn, text="立即运行一次", command=self._on_sched_run_now
         )
-        self.sched_runnow_btn.pack(side="left", padx=(8, 0))
+        self.sched_runnow_btn.pack(side="left", padx=(6, 0))
+        self.sched_install_btn = ttk.Button(
+            sbtn, text="安装/更新", command=self._on_sched_install
+        )
+        self.sched_install_btn.pack(side="left", padx=(6, 0))
+        self.sched_delete_btn = ttk.Button(
+            sbtn, text="删除", command=self._on_sched_delete
+        )
+        self.sched_delete_btn.pack(side="left", padx=(6, 0))
 
         # 调度状态显示
         self.sched_status_var = tk.StringVar(value="自动抓取：未启用")
         ttk.Label(sched_card, textvariable=self.sched_status_var).pack(
-            side="left", padx=(24, 0)
+            anchor="w", pady=(6, 0)
         )
 
         # ---- 状态卡片 ----
@@ -552,14 +551,15 @@ class _NewsReaderApp:
         for e in (self.limit_entry, self.ai_limit_entry):
             e.configure(state=state)
         # 定时任务按钮随忙碌状态禁用
-        self.sched_install_btn.configure(state=state)
-        self.sched_delete_btn.configure(state=state)
-        self.sched_runnow_btn.configure(state=state)
-        self.sched_source_combo.configure(state="disabled" if busy else "readonly")
-        self.sched_freq_combo.configure(state="disabled" if busy else "readonly")
-        self.sched_interval_combo.configure(state="disabled" if busy else "readonly")
-        self.sched_limit_entry.configure(state=state)
-        self.sched_time_entry.configure(state=state)
+        for btn in (
+            self.sched_new_btn,
+            self.sched_edit_btn,
+            self.sched_toggle_btn,
+            self.sched_install_btn,
+            self.sched_delete_btn,
+            self.sched_runnow_btn,
+        ):
+            btn.configure(state=state)
         if busy:
             self._active_source = self.site_var.get()
             self.log(f"⏳ {run} 进行中，请稍候……")
@@ -798,90 +798,167 @@ class _NewsReaderApp:
 
         threading.Thread(target=worker, daemon=True).start()
 
-    # ------------------------------------------------------------------ 定时抓取
+    # ------------------------------------------------------------------ 定时抓取（多任务列表）
 
-    def _on_sched_freq_changed(self, _event=None) -> None:
-        """切换每日/每小时频率时刷新调度状态显示。"""
-        self._refresh_sched_status()
+    # ---- 任务列表刷新与选择 ----
 
     def _apply_scheduler_to_ui(self) -> None:
-        """把已保存的定时抓取配置回显到 UI 控件。"""
-        cfg = self._scheduler_cfg
-        self.sched_enabled_var.set(bool(cfg.enabled))
-        self.sched_source_var.set(cfg.source if cfg.source in ("rfi", "eco", "hkej") else "rfi")
-        self.sched_limit_var.set(str(cfg.limit))
-        self.sched_freq_var.set(cfg.frequency if cfg.frequency in (FREQ_DAILY, FREQ_HOURLY) else FREQ_DAILY)
-        self.sched_time_var.set(cfg.time or "08:00")
-        # 每小时间隔（下拉值为 "N 小时"）
-        interval = cfg.interval_hours if cfg.interval_hours in HOURLY_INTERVALS else 1
-        self.sched_interval_var.set(f"{interval} 小时")
-        self.sched_export_var.set(bool(cfg.auto_export))
+        """把已保存的定时任务列表回显到 UI（任务表格）。"""
+        self._refresh_scheduler_table()
+
+    def _refresh_scheduler_table(self) -> None:
+        """刷新任务列表 Treeview。"""
+        tree = self.sched_tree
+        for item in tree.get_children():
+            tree.delete(item)
+        for job in self._scheduler_jobs:
+            freq = self._job_freq_text(job)
+            tree.insert(
+                "", "end",
+                iid=job.job_id,
+                values=(
+                    job.display_name(),
+                    job.source.upper(),
+                    freq,
+                    str(job.limit),
+                    "已启用" if job.enabled else "已停用",
+                ),
+            )
+        if not self._scheduler_jobs:
+            self.sched_status_var.set("自动抓取：未配置任何定时任务")
+            return
         self._refresh_sched_status()
 
-    def _collect_scheduler_from_ui(self) -> SchedulerConfig:
-        """从 UI 控件收集当前定时抓取设置，返回 SchedulerConfig。"""
-        cfg = SchedulerConfig()
-        cfg.enabled = bool(self.sched_enabled_var.get())
-        cfg.source = self.sched_source_var.get()
-        cfg.frequency = self.sched_freq_var.get()
-        cfg.time = self.sched_time_var.get().strip() or "08:00"
-        # 解析间隔：从 "N 小时" 提取 N
-        interval_raw = self.sched_interval_var.get()
+    def _job_freq_text(self, job: SchedulerConfig) -> str:
+        """返回任务的频率展示文本。"""
+        if job.frequency == FREQ_HOURLY:
+            return f"每小时 / {job.interval_hours} 小时"
+        return f"每日 {job.time}"
+
+    def _on_sched_select(self, _event=None) -> None:
+        """任务列表选中项变化时记录当前选中 job。"""
+        sel = self.sched_tree.selection()
+        self._selected_job = None
+        if sel:
+            for job in self._scheduler_jobs:
+                if job.job_id == sel[0]:
+                    self._selected_job = job
+                    break
+
+    def _selected_job_or_warn(self) -> Optional[SchedulerConfig]:
+        """返回当前选中的 job；未选中时提示并返回 None。"""
+        if self._selected_job is None:
+            self.log("请先在任务列表中选择一个定时任务。")
+            return None
+        return self._selected_job
+
+    def _save_jobs(self) -> bool:
+        """把当前任务列表持久化。失败返回 False。"""
         try:
-            interval = int(str(interval_raw).replace("小时", "").strip())
-        except ValueError:
-            interval = 1
-        cfg.interval_hours = interval if interval in HOURLY_INTERVALS else 1
-        try:
-            cfg.limit = int(self.sched_limit_var.get().strip())
-        except ValueError:
-            cfg.limit = 50
-        if cfg.limit <= 0:
-            cfg.limit = 50
-        cfg.auto_export = bool(self.sched_export_var.get())
-        cfg.export_type = EXPORT_PORTABLE
-        return cfg
+            self._scheduler_save_jobs(self._scheduler_jobs, self._scheduler_config_path)
+        except Exception as exc:
+            self.log(f"保存定时任务配置失败：\n{exc}")
+            return False
+        return True
 
     def _refresh_sched_status(self) -> None:
-        """刷新「自动抓取」状态与「下次运行」时间显示。"""
-        cfg = self._scheduler_cfg
-        enabled = cfg.enabled
-        task_name = cfg.task_name()
-        status = "已启用" if enabled else "未启用"
-        next_run = cfg.next_run()
-        if next_run is None:
-            next_run_txt = "—"
-        else:
-            next_run_txt = next_run.strftime("%Y-%m-%d %H:%M")
+        """刷新「自动抓取」状态与任务数。"""
+        enabled = sum(1 for j in self._scheduler_jobs if j.enabled)
+        total = len(self._scheduler_jobs)
         self.sched_status_var.set(
-            f"自动抓取：{status}   下次运行：{next_run_txt}   任务名称：{task_name}"
+            f"自动抓取：已启用任务 {enabled} / {total}   自动导出：固定启用"
         )
 
-    def _on_sched_install(self) -> None:
-        """【安装/更新定时任务】—— 保存配置并创建/更新 Windows Task Scheduler 任务。"""
+    # ---- 新建 / 编辑 / 启用停用 ----
+
+    def _on_sched_new(self) -> None:
+        """【新建任务】—— 打开任务编辑对话框。"""
         if self._busy:
             self.log("已有任务运行中，请等待完成。")
             return
-        cfg = self._collect_scheduler_from_ui()
-        ok, reason = cfg.is_valid()
+        job = _JobsDialog(self.root, title="新建定时任务", job=None)
+        if job.result is None:
+            return
+        # job id 必须唯一
+        for existing in self._scheduler_jobs:
+            if existing.job_id == job.result.job_id:
+                messagebox.showerror(
+                    "任务 id 已存在",
+                    f"任务 id「{job.result.job_id}」已存在，请使用其它名称。",
+                    parent=self.root,
+                )
+                return
+        self._scheduler_jobs.append(job.result)
+        if not self._save_jobs():
+            return
+        self.log(f"已新建定时任务：{job.result.job_id}")
+        self._refresh_scheduler_table()
+
+    def _on_sched_edit(self) -> None:
+        """【编辑】—— 修改选中任务。"""
+        if self._busy:
+            self.log("已有任务运行中，请等待完成。")
+            return
+        job = self._selected_job_or_warn()
+        if job is None:
+            return
+        dlg = _JobsDialog(self.root, title="编辑定时任务", job=job)
+        if dlg.result is None:
+            return
+        # 保留原 id（id 唯一稳定），仅更新其它字段
+        old_id = job.job_id
+        new_job = dlg.result
+        new_job.id = old_id
+        for i, existing in enumerate(self._scheduler_jobs):
+            if existing.job_id == old_id:
+                self._scheduler_jobs[i] = new_job
+                break
+        if not self._save_jobs():
+            return
+        self.log(f"已更新定时任务：{new_job.job_id}")
+        self._refresh_scheduler_table()
+
+    def _on_sched_toggle(self) -> None:
+        """【启用/停用】—— 切换选中任务启用状态并保存。"""
+        if self._busy:
+            self.log("已有任务运行中，请等待完成。")
+            return
+        job = self._selected_job_or_warn()
+        if job is None:
+            return
+        job.enabled = not job.enabled
+        if not self._save_jobs():
+            return
+        state = "已启用" if job.enabled else "已停用"
+        self.log(f"定时任务「{job.job_id}」→ {state}")
+        self._refresh_scheduler_table()
+
+    # ---- 安装 / 更新（写入 Windows Task Scheduler） ----
+
+    def _on_sched_install(self) -> None:
+        """【安装/更新】—— 为选中任务创建/更新 Windows Task Scheduler 任务。
+
+        停用的任务不安装（并尝试移除已存在的同名任务）。
+        """
+        if self._busy:
+            self.log("已有任务运行中，请等待完成。")
+            return
+        job = self._selected_job_or_warn()
+        if job is None:
+            return
+        ok, reason = job.is_valid()
         if not ok:
             self.log(f"定时任务参数无效：{reason}")
             return
-        self._scheduler_cfg = cfg
-        try:
-            self._scheduler_save(cfg, self._scheduler_config_path)
-        except Exception as exc:
-            self.log(f"保存定时抓取配置失败：\n{exc}")
+        if not self._save_jobs():
             return
-        self.log("已保存定时抓取配置。")
-        if not cfg.enabled:
-            # 未启用：不创建定时任务；若已存在同名任务则删除，保证「未启用=不自动抓取」
-            self.log("未勾选「启用自动抓取」，将移除已存在的定时任务（如有）。")
+        if not job.enabled:
+            self.log(f"任务「{job.job_id}」为停用状态，将移除已存在的同名任务（如有）。")
             self._set_busy(True, run="停用自动抓取")
 
             def worker_disable() -> None:
                 try:
-                    result = self._scheduler_delete(cfg)
+                    result = self._scheduler_delete(job)
                     self._bg_log(
                         f"停用自动抓取：{result.get('task_name', '')} "
                         f"→ {'已移除' if result.get('ok') else '操作失败'}"
@@ -894,13 +971,12 @@ class _NewsReaderApp:
                     self._queue.put("__SCHED_DELETE_DONE__")
 
             threading.Thread(target=worker_disable, daemon=True).start()
-            self._refresh_sched_status()
             return
         self._set_busy(True, run="安装/更新定时任务")
 
         def worker() -> None:
             try:
-                result = self._scheduler_install(cfg)
+                result = self._scheduler_install(job)
                 self._bg_log(
                     f"定时任务：{result.get('task_name', '')} "
                     f"→ {'成功' if result.get('ok') else '失败'}"
@@ -916,39 +992,46 @@ class _NewsReaderApp:
 
         threading.Thread(target=worker, daemon=True).start()
 
+    # ---- 删除 ----
+
     def _on_sched_delete(self) -> None:
-        """【删除定时任务】—— 删除 Windows Task Scheduler 任务并禁用自动抓取。"""
+        """【删除】—— 删除选中任务及其 Windows Task Scheduler 任务。
+
+        删除一个任务不影响其它任务。
+        """
         if self._busy:
             self.log("已有任务运行中，请等待完成。")
             return
-        cfg = self._collect_scheduler_from_ui()
+        job = self._selected_job_or_warn()
+        if job is None:
+            return
         if not messagebox.askyesno(
             "删除定时任务",
-            f"确定要删除定时任务「{cfg.task_name()}」吗？\n\n"
-            "删除后将不再自动抓取。",
+            f"确定要删除定时任务「{job.job_id}」（{job.task_name()}）吗？\n\n"
+            "删除后该任务不再自动抓取，其它任务不受影响。",
             parent=self.root,
         ):
             self.log("已取消删除定时任务。")
             return
-        self._scheduler_cfg = cfg
         self._set_busy(True, run="删除定时任务")
+        job_ref = job
 
         def worker() -> None:
             try:
-                result = self._scheduler_delete(cfg)
+                result = self._scheduler_delete(job_ref)
                 self._bg_log(
                     f"删除定时任务：{result.get('task_name', '')} "
-                    f"→ {'成功' if result.get('ok') else '失败'}"
+                    f"→ {'成功' if result.get('ok') else '操作失败'}"
                 )
                 if result.get("message"):
                     self._bg_log(result["message"])
-                # 删除后标记为未启用并保存
-                cfg.enabled = False
-                self._scheduler_cfg = cfg
-                try:
-                    self._scheduler_save(cfg, self._scheduler_config_path)
-                except Exception:
-                    pass
+                # 从任务列表移除并保存
+                self._scheduler_jobs = [
+                    j for j in self._scheduler_jobs if j.job_id != job_ref.job_id
+                ]
+                self._selected_job = None
+                self._save_jobs()
+                self._refresh_scheduler_table()
             except Exception as exc:
                 self._bg_log(f"删除定时任务失败：\n{exc}")
             finally:
@@ -956,41 +1039,42 @@ class _NewsReaderApp:
 
         threading.Thread(target=worker, daemon=True).start()
 
+    # ---- 立即运行一次（schtasks /Run，不阻塞 GUI 主线程） ----
+
     def _on_sched_run_now(self) -> None:
-        """【立即运行一次】—— 触发与定时任务相同的后台入口（headless）。"""
+        """【立即运行一次】—— 调用 schtasks /Run 触发对应 Windows 任务。
+
+        GUI 不得冻结：这里在后台线程执行 schtasks /Run，主线程保持响应。
+        如果任务尚未安装，则提示用户先安装。
+        """
         if self._busy:
             self.log("已有任务运行中，请等待完成。")
             return
-        cfg = self._collect_scheduler_from_ui()
-        ok, reason = cfg.is_valid()
+        job = self._selected_job_or_warn()
+        if job is None:
+            return
+        ok, reason = job.is_valid()
         if not ok:
             self.log(f"定时任务参数无效：{reason}")
             return
-        # 立即运行前先保存当前配置，保证后台入口读取到最新设置
-        try:
-            self._scheduler_save(cfg, self._scheduler_config_path)
-        except Exception as exc:
-            self.log(f"保存配置失败：\n{exc}")
+        if not self._save_jobs():
             return
         self._set_busy(True, run="立即运行一次")
 
         def worker() -> None:
             try:
-                # 与 Windows 定时任务完全相同的 headless 后台入口。
-                # 直接复用 scheduled_fetch.run_scheduled_fetch（不弹 GUI、不依赖任务是否已安装）。
-                from .scheduled_fetch import run_scheduled_fetch
-
+                # 与 Windows 定时任务完全一致：通过 schtasks /Run 触发对应任务。
+                result = self._scheduler_run_now(job)
                 self._bg_log(
-                    f"立即运行：source={cfg.source} limit={cfg.limit} "
-                    f"auto_export={'on' if cfg.auto_export else 'off'}"
+                    f"立即运行：{result.get('task_name', '')} "
+                    f"→ {'已触发' if result.get('ok') else '失败'}"
                 )
-                self._bg_log("后台抓取任务开始（headless），请查看 data/logs/scheduled-fetch.log。")
-                rc = run_scheduled_fetch(
-                    cfg,
-                    db_path=self.db_path,
-                    log_file=_scheduled_log_path(),
-                )
-                self._bg_log(f"后台抓取任务结束（exit={rc}），详见 data/logs/scheduled-fetch.log。")
+                if result.get("message"):
+                    self._bg_log(result["message"])
+                if not result.get("ok"):
+                    self._bg_log(
+                        "若提示任务不存在，请先点击「安装/更新」创建对应 Windows 任务。"
+                    )
             except Exception as exc:
                 self._bg_log(f"立即运行失败：\n{exc}")
             finally:
@@ -1251,6 +1335,161 @@ class _NewsReaderApp:
                     "浏览器将通过 http://127.0.0.1 打开（而非 file://），"
                     "沉浸式翻译等扩展可正常工作。无需安装 laxinwen。"
                 )
+
+
+# ---------- 定时任务新建/编辑对话框 ----------
+
+
+class _JobsDialog:
+    """新建 / 编辑单个定时任务的对话框（Toplevel）。
+
+    返回：``dialog.result`` 为一个 ``SchedulerConfig``（自动导出固定启用，
+    不再让普通用户选择）。取消时 ``result`` 为 None。
+    """
+
+    def __init__(self, parent, *, title: str, job: Optional[SchedulerConfig] = None):
+        self.result: Optional[SchedulerConfig] = None
+        self._parent = parent
+        job = job or SchedulerConfig()
+        self._job = job
+
+        self.top = tk.Toplevel(parent)
+        self.top.title(title)
+        self.top.transient(parent)
+        self.top.grab_set()
+        self.top.resizable(False, False)
+
+        body = ttk.Frame(self.top, padding=12)
+        body.pack(fill="both", expand=True)
+
+        # 名称 / id
+        ttk.Label(body, text="任务名称：").grid(row=0, column=0, sticky="e", pady=3)
+        self.name_var = tk.StringVar(value=job.name)
+        ttk.Entry(body, textvariable=self.name_var, width=28).grid(
+            row=0, column=1, sticky="w", padx=(6, 0), pady=3
+        )
+
+        ttk.Label(body, text="任务 id（唯一）：").grid(row=1, column=0, sticky="e", pady=3)
+        self.id_var = tk.StringVar(value=job.id or "")
+        id_entry = ttk.Entry(body, textvariable=self.id_var, width=28)
+        id_entry.grid(row=1, column=1, sticky="w", padx=(6, 0), pady=3)
+        if job.id:
+            id_entry.configure(state="readonly")  # 编辑时 id 不可改
+        ttk.Label(
+            body,
+            text="如 rfi-hourly（小写字母/数字/短横线，用于 Windows 任务与日志）",
+            foreground="#888",
+        ).grid(row=2, column=1, sticky="w", padx=(6, 0))
+
+        # 来源
+        ttk.Label(body, text="新闻来源：").grid(row=3, column=0, sticky="e", pady=3)
+        self.source_var = tk.StringVar(value=job.source if job.source in ("rfi", "eco", "hkej") else "rfi")
+        ttk.Combobox(
+            body, textvariable=self.source_var, state="readonly", width=10, values=["rfi", "eco", "hkej"]
+        ).grid(row=3, column=1, sticky="w", padx=(6, 0), pady=3)
+
+        # 频率
+        ttk.Label(body, text="频率：").grid(row=4, column=0, sticky="e", pady=3)
+        self.freq_var = tk.StringVar(value=job.frequency if job.frequency in (FREQ_DAILY, FREQ_HOURLY) else FREQ_DAILY)
+        ttk.Combobox(
+            body, textvariable=self.freq_var, state="readonly", width=8, values=[FREQ_DAILY, FREQ_HOURLY]
+        ).grid(row=4, column=1, sticky="w", padx=(6, 0), pady=3)
+        self.freq_var.trace_add("write", lambda *a: self._sync_freq_fields())
+
+        # 每日时间 / 每小时间隔
+        ttk.Label(body, text="每日时间：").grid(row=5, column=0, sticky="e", pady=3)
+        self.time_var = tk.StringVar(value=job.time or "08:00")
+        self.time_entry = ttk.Entry(body, textvariable=self.time_var, width=8)
+        self.time_entry.grid(row=5, column=1, sticky="w", padx=(6, 0), pady=3)
+
+        ttk.Label(body, text="每小时间隔：").grid(row=6, column=0, sticky="e", pady=3)
+        interval = job.interval_hours if job.interval_hours in HOURLY_INTERVALS else 1
+        self.interval_var = tk.StringVar(value=f"{interval} 小时")
+        self.interval_combo = ttk.Combobox(
+            body,
+            textvariable=self.interval_var,
+            state="readonly",
+            width=8,
+            values=[f"{h} 小时" for h in HOURLY_INTERVALS],
+        )
+        self.interval_combo.grid(row=6, column=1, sticky="w", padx=(6, 0), pady=3)
+
+        # 每次抓取数量
+        ttk.Label(body, text="每次抓取数量：").grid(row=7, column=0, sticky="e", pady=3)
+        self.limit_var = tk.StringVar(value=str(job.limit))
+        ttk.Entry(body, textvariable=self.limit_var, width=8).grid(
+            row=7, column=1, sticky="w", padx=(6, 0), pady=3
+        )
+
+        # 自动导出：固定启用（不提供开关）
+        ttk.Label(
+            body, text="自动导出：", foreground="#666"
+        ).grid(row=8, column=0, sticky="e", pady=3)
+        ttk.Label(
+            body, text="已启用（任务完成后自动生成便携阅读包）", foreground="#666"
+        ).grid(row=8, column=1, sticky="w", padx=(6, 0), pady=3)
+
+        # 按钮
+        btns = ttk.Frame(body)
+        btns.grid(row=9, column=0, columnspan=2, pady=(12, 0))
+        ttk.Button(btns, text="确定", command=self._ok, style="Accent.TButton").pack(
+            side="left", padx=(0, 8)
+        )
+        ttk.Button(btns, text="取消", command=self._cancel).pack(side="left")
+
+        self._sync_freq_fields()
+        self.top.bind("<Return>", lambda e: self._ok())
+        self.top.bind("<Escape>", lambda e: self._cancel())
+        self.top.wait_window()
+
+    def _sync_freq_fields(self) -> None:
+        """根据频率显示/隐藏 每日时间 或 每小时间隔。"""
+        daily = self.freq_var.get() == FREQ_DAILY
+        if daily:
+            self.time_entry.grid()
+            self.interval_combo.grid_remove()
+        else:
+            self.time_entry.grid_remove()
+            self.interval_combo.grid()
+
+    def _collect(self) -> Optional[SchedulerConfig]:
+        cfg = SchedulerConfig()
+        cfg.name = self.name_var.get().strip()
+        cfg.id = self.id_var.get().strip()
+        cfg.source = self.source_var.get()
+        cfg.frequency = self.freq_var.get()
+        cfg.time = self.time_var.get().strip() or "08:00"
+        try:
+            interval = int(str(self.interval_var.get()).replace("小时", "").strip())
+        except ValueError:
+            interval = 1
+        cfg.interval_hours = interval if interval in HOURLY_INTERVALS else 1
+        try:
+            cfg.limit = int(self.limit_var.get().strip())
+        except ValueError:
+            cfg.limit = 50
+        if cfg.limit <= 0:
+            cfg.limit = 50
+        # 自动导出固定启用（产品原则：定时任务的最终交付物是阅读包）
+        cfg.auto_export = True
+        cfg.export_type = EXPORT_PORTABLE
+        return cfg
+
+    def _ok(self) -> None:
+        cfg = self._collect()
+        ok, reason = cfg.is_valid()
+        if not ok:
+            messagebox.showerror("参数无效", reason, parent=self.top)
+            return
+        if not cfg.id:
+            messagebox.showerror("缺少任务 id", "请填写任务 id（唯一标识，如 rfi-hourly）。", parent=self.top)
+            return
+        self.result = cfg
+        self.top.destroy()
+
+    def _cancel(self) -> None:
+        self.result = None
+        self.top.destroy()
 
 
 # ---------- 默认实现（真实逻辑；测试可注入假实现） ----------
