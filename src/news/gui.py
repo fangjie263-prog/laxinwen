@@ -21,6 +21,7 @@ from __future__ import annotations
 import logging
 import os
 import queue
+import re
 import sys
 import threading
 import webbrowser
@@ -1049,17 +1050,22 @@ class _NewsReaderApp:
         兼容中英文 Windows 输出，逐行匹配已知字段名与状态值；
         匹配不到相关状态时保守返回“未知”。
         """
-        out_lower = out.lower()
+        # schtasks /V /FO LIST 用多个空格对齐字段名与值（如
+        # “Scheduled Task State:                    Enabled”），若直接按单个空格做
+        # 子串匹配会漏判。因此先把所有连续空白折叠为单个空格再匹配，保证在真实
+        # Windows 输出下也能正确识别“已启用 / 执行中”。
+        norm = re.sub(r"\s+", " ", out).strip()
+        norm_lower = norm.lower()
         enabled = False
         running = False
         # 任务已启用：英文 "Scheduled Task State: Enabled" / 中文 “计划任务状态: 已启用”
-        if "task state: enabled" in out_lower or "任务状态: 已启用" in out or "计划任务状态: 已启用" in out:
+        if "task state: enabled" in norm_lower or "任务状态: 已启用" in norm or "计划任务状态: 已启用" in norm:
             enabled = True
         # 正在运行：英文 "Status: Running" / 中文 “状态: 正在运行”
-        if "status: running" in out_lower or "状态: 正在运行" in out or "运行中" in out:
+        if "status: running" in norm_lower or "状态: 正在运行" in norm or "运行中" in norm:
             running = True
         # 若已明确读到 enabled 标志，则 exists=True
-        exists = bool(out_lower.strip())
+        exists = bool(norm_lower)
         return {"exists": exists, "enabled": enabled, "running": running, "unknown": False}
 
     def _refresh_windows_task_state(self) -> None:

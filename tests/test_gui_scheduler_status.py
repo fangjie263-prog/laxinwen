@@ -251,9 +251,10 @@ def test_startup_only_queries_does_not_install(root, tmp_path):
 
 
 def _make_app_ops(root, tmp_path, job, *, query, install=None, enable=None, disable=None,
-                  run_now=None, save_jobs=None):
+                  run_now=None, save_jobs=None, load_jobs_list=None):
     """构造支持注入全部 scheduler 操作的 app，用于测试启用/停用/立即运行。"""
     sched_file = tmp_path / "data" / "scheduler.json"
+    job_list = load_jobs_list if load_jobs_list is not None else [job]
 
     def fake_save(job_list, path=None):
         if save_jobs:
@@ -265,7 +266,7 @@ def _make_app_ops(root, tmp_path, job, *, query, install=None, enable=None, disa
         db_path=tmp_path / "gui.db",
         site="rfi",
         site_name="RFI",
-        scheduler_load_jobs=lambda path=None: [job],
+        scheduler_load_jobs=lambda path=None: job_list,
         scheduler_save_jobs=fake_save,
         scheduler_query=query,
         scheduler_install=install or (lambda j: {"ok": True, "executed": True, "task_name": j.task_name()}),
@@ -544,3 +545,194 @@ def test_fetch_log_does_not_block_tkinter(root, tmp_path):
         app.root.update()
         _time.sleep(0.01)
     assert True
+
+
+# --------------------------------------------------------------------------
+# 真实 Windows 输出对齐空格回归测试（schtasks /V /FO LIST 用多空格对齐字段与值）
+# --------------------------------------------------------------------------
+# 根因：真实 schtasks 输出形如 "Scheduled Task State:                    Enabled"，
+# 字段名与值之间是多个对齐空格；旧解析器按单个空格做子串匹配导致漏判 enabled，
+# 从而把本应「已启用」的任务误判为「已停用」。下面用带对齐空格的输出验证修复。
+# --------------------------------------------------------------------------
+
+
+def _job_daily(job_id="rfi-default", enabled=True):
+    return SchedulerConfig(
+        id=job_id,
+        name=job_id,
+        enabled=enabled,
+        source="rfi" if job_id.startswith("rfi") else "hkej",
+        frequency="daily",
+        time="08:00",
+        limit=50,
+    )
+
+
+# 模拟真实 Windows 列对齐输出：字段名与值之间填充多空格
+REAL_ALIGNED_ENABLED_READY = (
+    "TaskName:                                \\Laxinwen-RFI-rfi-default\n"
+    "Next Run Time:                           2026/8/25 8:00:00\n"
+    "Status:                                  Ready\n"
+    "Scheduled Task State:                    Enabled\n"
+    "Task To Run:                             cmd.exe /c \"\"...\"\"\n"
+)
+REAL_ALIGNED_ENABLED_RUNNING = (
+    "TaskName:                                \\Laxinwen-RFI-rfi-default\n"
+    "Status:                                  Running\n"
+    "Scheduled Task State:                    Enabled\n"
+)
+REAL_ALIGNED_DISABLED = (
+    "TaskName:                                \\Laxinwen-RFI-rfi-default\n"
+    "Scheduled Task State:                    Disabled\n"
+)
+REAL_ALIGNED_CN_ENABLED = "计划任务状态:                    已启用\n状态:                        正在运行\n"
+
+
+def test_real_aligned_output_enabled_ready(root, tmp_path):
+    """需求1：enabled=true + Windows State=Enabled + Status=Ready → 已启用。
+
+    即“Status: Ready 代表当前未运行，不代表 Disabled”，绝不能显示“已停用”。
+    """
+    job = _job_daily(enabled=True)
+    app = _make_app(
+        root, tmp_path, [job],
+        lambda j: {"ok": True, "executed": True, "message": REAL_ALIGNED_ENABLED_READY},
+    )
+    app._refresh_windows_task_state()
+    assert app._get_scheduler_display_status(job) == "已启用"
+
+
+def test_real_aligned_output_enabled_running(root, tmp_path):
+    """需求2：enabled=true + Windows State=Enabled + Status=Running → 执行中。"""
+    job = _job_daily(enabled=True)
+    app = _make_app(
+        root, tmp_path, [job],
+        lambda j: {"ok": True, "executed": True, "message": REAL_ALIGNED_ENABLED_RUNNING},
+    )
+    app._refresh_windows_task_state()
+    assert app._get_scheduler_display_status(job) == "执行中"
+
+
+def test_real_aligned_output_disabled_task(root, tmp_path):
+    """Windows 任务 Disabled（对齐空格）→ 已停用。"""
+    job = _job_daily(enabled=True)
+    app = _make_app(
+        root, tmp_path, [job],
+        lambda j: {"ok": True, "executed": True, "message": REAL_ALIGNED_DISABLED},
+    )
+    app._refresh_windows_task_state()
+    assert app._get_scheduler_display_status(job) == "已停用"
+
+
+def test_real_aligned_output_chinese_enabled(root, tmp_path):
+    """中文 Windows 对齐输出 → 已启用 / 执行中。"""
+    job = _job_daily(enabled=True)
+    app = _make_app(
+        root, tmp_path, [job],
+        lambda j: {"ok": True, "executed": True, "message": REAL_ALIGNED_CN_ENABLED},
+    )
+    app._refresh_windows_task_state()
+    assert app._get_scheduler_display_status(job) == "执行中"
+
+
+# ------------------------------------------------------------------ 启用 / 停用端到端（真实对齐输出）
+
+
+def test_enable_flow_treeview_and_bottom_summary(root, tmp_path):
+    """需求4：点击启用后 Treeview=已启用，底部=1 个任务已启用（真实对齐输出）。"""
+    install_calls = []
+    rfi = _job_daily("rfi-default", enabled=False)
+    hkej = _job_daily("hkej-default", enabled=False)
+
+    def query(j):
+        if j.job_id == "rfi-default":
+            return {"ok": True, "executed": True, "message": REAL_ALIGNED_ENABLED_READY}
+        return {"ok": True, "executed": True, "message": REAL_ALIGNED_DISABLED}
+
+    app = _make_app_ops_selected(
+        root, tmp_path, rfi, query=query,
+        install=lambda j: install_calls.append(j.job_id) or {"ok": True, "executed": True, "task_name": j.task_name()},
+        load_jobs_list=[rfi, hkej],
+    )
+    app._sched_win_state[rfi.job_id] = {"exists": True, "enabled": True, "running": False}
+    app._on_sched_toggle()
+    _pump(app)
+    # scheduler.json enabled=true
+    assert rfi.enabled is True
+    # Treeview 显示已启用
+    values = dict((app.sched_tree.item(i)["values"][0], app.sched_tree.item(i)["values"][4])
+                  for i in app.sched_tree.get_children())
+    assert values["rfi-default"] == "已启用"
+    # 底部汇总 1 个已启用
+    assert "1 个任务已启用" in app.sched_status_var.get()
+
+
+def test_disable_flow_treeview_and_bottom_summary(root, tmp_path):
+    """需求5：点击停用后 scheduler.json=false、Windows Disabled、Treeview=已停用、底部正确。"""
+    disable_calls = []
+    rfi = _job_daily("rfi-default", enabled=True)
+    hkej = _job_daily("hkej-default", enabled=False)
+
+    def query(j):
+        if j.job_id == "rfi-default":
+            if disable_calls:
+                return {"ok": True, "executed": True, "message": REAL_ALIGNED_DISABLED}
+            return {"ok": True, "executed": True, "message": REAL_ALIGNED_ENABLED_READY}
+        return {"ok": True, "executed": True, "message": REAL_ALIGNED_DISABLED}
+
+    app = _make_app_ops_selected(
+        root, tmp_path, rfi, query=query,
+        disable=lambda j: disable_calls.append(j.job_id) or {"ok": True, "executed": True, "task_name": j.task_name()},
+        load_jobs_list=[rfi, hkej],
+    )
+    app._sched_win_state[rfi.job_id] = {"exists": True, "enabled": True, "running": False}
+    app._on_sched_toggle()
+    _pump(app)
+    assert rfi.enabled is False
+    assert disable_calls == [rfi.job_id]
+    values = dict((app.sched_tree.item(i)["values"][0], app.sched_tree.item(i)["values"][4])
+                  for i in app.sched_tree.get_children())
+    assert values["rfi-default"] == "已停用"
+    # rfi 停用、hkej 停用 → 0 个已启用
+    assert "0 个任务已启用" in app.sched_status_var.get()
+
+
+def test_enable_does_not_revert_on_refresh(root, tmp_path):
+    """需求6：启用后 refresh/reload 不得重新显示“已停用”。"""
+    rfi = _job_daily("rfi-default", enabled=False)
+    hkej = _job_daily("hkej-default", enabled=False)
+
+    def query(j):
+        return {"ok": True, "executed": True, "message": REAL_ALIGNED_ENABLED_READY}
+
+    app = _make_app_ops_selected(root, tmp_path, rfi, query=query, load_jobs_list=[rfi, hkej])
+    app._sched_win_state[rfi.job_id] = {"exists": True, "enabled": True, "running": False}
+    app._on_sched_toggle()
+    _pump(app)
+    assert rfi.enabled is True
+    # 模拟 reload / 重新查询：仅查询状态，不改变 enabled
+    app._refresh_windows_task_state()
+    app._refresh_scheduler_table()
+    assert app._get_scheduler_display_status(rfi) == "已启用"
+    values = dict((app.sched_tree.item(i)["values"][0], app.sched_tree.item(i)["values"][4])
+                  for i in app.sched_tree.get_children())
+    assert values["rfi-default"] == "已启用"
+
+
+def test_toggle_only_affects_selected_job(root, tmp_path):
+    """需求7：多任务下只改变当前 job，不影响其它 job。"""
+    rfi = _job_daily("rfi-default", enabled=False)
+    hkej = _job_daily("hkej-default", enabled=False)
+
+    def query(j):
+        if j.job_id == "rfi-default":
+            return {"ok": True, "executed": True, "message": REAL_ALIGNED_ENABLED_READY}
+        return {"ok": True, "executed": True, "message": REAL_ALIGNED_DISABLED}
+
+    app = _make_app_ops_selected(root, tmp_path, rfi, query=query, load_jobs_list=[rfi, hkej])
+    app._sched_win_state[rfi.job_id] = {"exists": True, "enabled": True, "running": False}
+    app._on_sched_toggle()
+    _pump(app)
+    # 只有被选中的 rfi 被启用
+    assert rfi.enabled is True
+    assert hkej.enabled is False
