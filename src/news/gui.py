@@ -230,6 +230,15 @@ class _NewsReaderApp:
         self._active_source = site
         self.last_action = "—"
 
+        # 抓取监控（小窗口摘要）：只保留最近若干条任务级摘要，不显示底层日志
+        self._monitor_entries: list[str] = []
+        self._monitor_cur: str = "空闲"
+        # 当前正在累积解析的一个任务（实时链路用状态机累积各阶段数字）
+        self._monitor_task: dict | None = None
+        # 已从 scheduled-fetch.log 消费到的行位置（用于 GUI 打开时增量读取后台完成结果）
+        self._monitor_sched_tail_pos: int = 0
+        self._monitor_poll_count: int = 0
+
         # 初始化时先建好数据库（含 schema），后续线程各自打开独立连接
         with self._storage_factory(self.db_path) as storage:
             init_ids = self._site_ids_for(site)
@@ -455,6 +464,38 @@ class _NewsReaderApp:
             anchor="w", pady=(6, 0)
         )
 
+        # ---- 抓取监控（小窗口摘要） ----
+        monitor_card = ttk.LabelFrame(outer, text="抓取监控", padding=8)
+        monitor_card.pack(fill="x", pady=(10, 0))
+        monitor_head = ttk.Frame(monitor_card)
+        monitor_head.pack(fill="x")
+        ttk.Label(
+            monitor_head,
+            text="当前：",
+            foreground="#666",
+        ).pack(side="left")
+        self.monitor_cur_var = tk.StringVar(value="空闲")
+        ttk.Label(
+            monitor_head, textvariable=self.monitor_cur_var, font=("", 10, "bold")
+        ).pack(side="left")
+        self.monitor_clear_btn = ttk.Button(
+            monitor_head, text="清空", width=6, command=self._on_monitor_clear
+        )
+        self.monitor_clear_btn.pack(side="right")
+        self.monitor_text = tk.Text(
+            monitor_card,
+            height=5,
+            state="disabled",
+            wrap="none",
+            font=("Consolas", 9),
+        )
+        self.monitor_text.pack(side="left", fill="x", pady=(4, 0))
+        mscroll = ttk.Scrollbar(
+            monitor_card, command=self.monitor_text.yview
+        )
+        mscroll.pack(side="right", fill="y")
+        self.monitor_text.configure(yscrollcommand=mscroll.set)
+
         # ---- 状态卡片 ----
         self.status_card = ttk.LabelFrame(outer, text="状态", padding=10)
         self.status_card.pack(fill="x", pady=(10, 0))
@@ -586,6 +627,229 @@ class _NewsReaderApp:
         self.log_text.see("end")
         self.log_text.configure(state="disabled")
 
+    # ========================================================== 抓取监控
+
+    # 抓取监控小窗口最多保留的任务级摘要条数
+    _MONITOR_MAX = 8
+
+    def _on_monitor_clear(self) -> None:
+        """清空抓取监控小窗口当前显示（只清 GUI，不删除 scheduled-fetch.log）。"""
+        self._monitor_entries = []
+        self._monitor_cur = "空闲"
+        self.monitor_cur_var.set("空闲")
+        self._monitor_render()
+
+    def _monitor_render(self) -> None:
+        """把监控摘要列表渲染到小窗口 Text（主线程调用）。"""
+        self.monitor_text.configure(state="normal")
+        self.monitor_text.delete("1.0", "end")
+        for line in self._monitor_entries[-self._MONITOR_MAX:]:
+            self.monitor_text.insert("end", line + "\n")
+        self.monitor_text.configure(state="disabled")
+        self.monitor_text.see("end")
+
+    def _monitor_add_entry(self, text: str) -> None:
+        """追加一条任务级摘要到小窗口并保留（不清空）。"""
+        stamp = datetime.now().strftime("%H:%M")
+        self._monitor_entries.append(f"{stamp}  {text}")
+        self._monitor_render()
+
+    def _monitor_set_cur(self, text: str) -> None:
+        """更新“当前：”任务摘要。"""
+        self._monitor_cur = text
+        self.monitor_cur_var.set(text)
+
+    @staticmethod
+    def _monitor_source_label(source: str) -> str:
+        """把来源 id/显示名归一化为大写短名（RFI / HKEJ / ECO / 全部）。"""
+        s = (source or "").strip().upper()
+        return s or "?"
+
+    @staticmethod
+    def _monitor_int(text: str):
+        """从一段文本里提取第一个整数，取不到返回 None。"""
+        import re
+        m = re.search(r"-?\d+", text)
+        return int(m.group()) if m else None
+
+    def _monitor_finalize(self, *, failed: bool = False) -> None:
+        """根据累积的 _monitor_task 生成一条完成摘要并显示。"""
+        task = self._monitor_task
+        self._monitor_task = None
+        if not task:
+            return
+        source = task.get("source") or "?"
+        limit = task.get("limit")
+        discovered = task.get("discovered")
+        usable = task.get("usable")
+        export = task.get("export")
+        label = self._monitor_source_label(source)
+
+        if failed:
+            self._monitor_set_cur(f"{label} · 失败")
+            self._monitor_add_entry(f"{label}  失败：抓取异常")
+            return
+
+        # 判断“无新增”
+        if discovered is not None and discovered == 0 and usable in (None, 0):
+            new_txt = "无新增新闻"
+        else:
+            new_n = usable if usable is not None else discovered
+            new_txt = f"新增 {new_n} 条" if new_n is not None else "已完成"
+        export_txt = {None: "", "成功": "，导出成功", "失败": "，导出失败",
+                      "跳过": "，未导出"}.get(export, "")
+        # 导出失败也算完成，但结果提示失败
+        self._monitor_set_cur(f"{label} · 已完成 · {new_txt}{export_txt}")
+        if limit is not None:
+            self._monitor_add_entry(
+                f"{label}  完成：{new_txt}（目标 {limit} 条）{export_txt}"
+            )
+        else:
+            self._monitor_add_entry(f"{label}  完成：{new_txt}{export_txt}")
+
+    def _monitor_feed_line(self, line: str) -> None:
+        """实时链路：喂入一行日志，更新监控状态机。主线程调用。
+
+        兼容手动抓取（queue）与后台任务（scheduled-fetch.log）两种日志格式。
+        """
+        line = (line or "").strip()
+        if not line:
+            return
+        task = self._monitor_task
+
+        # —— 开始事件 ——
+        # 手动："开始抓取 RFI 最新 50 篇"
+        if "开始抓取" in line and "最新" in line:
+            src = line.split("开始抓取", 1)[1].split("最新", 1)[0].strip()
+            limit = self._monitor_int(line.split("最新", 1)[1])
+            self._monitor_task = {"source": src, "limit": limit}
+            self._monitor_set_cur(
+                f"{self._monitor_source_label(src)} · 抓取中……"
+            )
+            label = self._monitor_source_label(src)
+            if limit is not None:
+                self._monitor_add_entry(f"{label}  开始抓取，目标 {limit} 条")
+            else:
+                self._monitor_add_entry(f"{label}  开始抓取")
+            return
+        # 后台："SOURCE: rfi"（仅当尚未记录来源时设置）
+        if line.startswith("SOURCE:") and not (task and task.get("source")):
+            src = line.split("SOURCE:", 1)[1].strip()
+            if task is None:
+                task = self._monitor_task = {}
+            task["source"] = src
+            self._monitor_set_cur(
+                f"{self._monitor_source_label(src)} · 抓取中……"
+            )
+            return
+        if not task:
+            return
+
+        # —— 阶段数字 ——
+        if "发现数量:" in line:
+            n = self._monitor_int(line.split("发现数量:", 1)[1])
+            if n is not None:
+                task["discovered"] = n
+        elif "合计发现" in line:
+            # 手动多来源抓取的合计："合计发现 N 篇"
+            n = self._monitor_int(line.split("合计发现", 1)[1])
+            if n is not None:
+                task["discovered"] = n
+        elif "发现：" in line:
+            n = self._monitor_int(line.split("发现：", 1)[1])
+            if n is not None:
+                task["discovered"] = n
+        if "可读新闻:" in line or "可读新闻：" in line:
+            seg = line.split("可读新闻", 1)[1]
+            n = self._monitor_int(seg)
+            if n is not None:
+                task["usable"] = n
+        elif "合计发现" in line:
+            # 手动多来源抓取合计行里同时含可读数："... 可读 N / 目标 L ..."
+            seg = line.split("可读", 1)[1] if "可读" in line else None
+            if seg is not None:
+                n = self._monitor_int(seg)
+                if n is not None:
+                    task["usable"] = n
+        if "TARGET:" in line and "limit" in line:
+            n = self._monitor_int(line.split("TARGET:", 1)[1])
+            if n is not None:
+                task["limit"] = n
+
+        # —— 结果 ——
+        if "FETCH: FAILED" in line:
+            task["fetch_failed"] = True
+            self._monitor_finalize(failed=True)
+            return
+        if "FETCH: SUCCESS" in line:
+            task["fetch_ok"] = True
+            return
+        if "EXPORT: SUCCESS" in line:
+            task["export"] = "成功"
+            return
+        if "EXPORT: FAILED" in line:
+            task["export"] = "失败"
+            return
+        if "EXPORT: SKIPPED" in line:
+            task["export"] = "跳过"
+            return
+        if "自动定时抓取异常（ERROR）" in line or (
+            "抓取失败" in line and task.get("fetch_ok") is not True
+        ):
+            self._monitor_finalize(failed=True)
+            return
+        # 结束标记：手动 "抓取完成" / 后台 "结束"
+        if "抓取完成" in line or ("自动定时抓取结束" in line):
+            self._monitor_finalize()
+            return
+
+    def _monitor_parse_sched_log(self, lines: list[str]) -> None:
+        """解析 scheduled-fetch.log 的最近若干段任务，生成任务级摘要。
+
+        每段以“自动定时抓取开始”到“自动定时抓取结束”为界。只把最近 N 段
+        摘要填进监控小窗口，不显示底层日志。
+        """
+        self._monitor_task = None
+        for line in lines:
+            if "自动定时抓取开始" in line:
+                # 新任务段落：先终结上一个未结束任务（防御）
+                if self._monitor_task:
+                    self._monitor_finalize()
+                self._monitor_task = {"phase": "started"}
+            self._monitor_feed_line(line)
+        # 末尾若还有未终结任务，归一化为完成
+        if self._monitor_task:
+            self._monitor_finalize()
+        if not self._monitor_entries:
+            self._monitor_set_cur("空闲")
+
+    def _monitor_poll_sched_log(self) -> None:
+        """GUI 打开期间增量读取 scheduled-fetch.log 新增行，实时反映后台任务完成。
+
+        只读取新增部分（不重放已消费行），后台任务每完成一段即把摘要推进小窗口。
+        """
+        try:
+            p = _scheduled_log_path()
+            if not p.is_file():
+                return
+            lines = p.read_text(
+                encoding="utf-8", errors="replace"
+            ).splitlines()
+        except Exception:
+            return
+        if len(lines) <= self._monitor_sched_tail_pos:
+            return
+        new_lines = lines[self._monitor_sched_tail_pos:]
+        self._monitor_sched_tail_pos = len(lines)
+        for line in new_lines:
+            if "自动定时抓取开始" in line:
+                # 新任务段落：先终结上一个未结束任务（防御）
+                if self._monitor_task:
+                    self._monitor_finalize()
+                self._monitor_task = {"phase": "started"}
+            self._monitor_feed_line(line)
+
+
     def _load_recent_scheduled_log(self, max_lines: int = 200) -> None:
         """GUI 启动时读取最近一次后台 scheduled-fetch.log 记录并显示。
 
@@ -601,6 +865,13 @@ class _NewsReaderApp:
             return
         if not lines:
             return
+        # 后台任务摘要：读取全文以恢复最近的“任务级摘要”（不依赖 tail 截断）
+        try:
+            self._monitor_parse_sched_log(lines)
+        except Exception:
+            pass
+        # 已消费全文，之后增量轮询从当前末尾继续
+        self._monitor_sched_tail_pos = len(lines)
         self._sep = "─" * 58
         self.log(self._sep)
         self.log("最近一次后台定时任务运行记录（data/logs/scheduled-fetch.log）：")
@@ -721,11 +992,32 @@ class _NewsReaderApp:
                             self._render_fetch_status()
                         except Exception:
                             pass
+                        # 防御：若手动抓取异常导致未 finalize，强制收尾
+                        if self._monitor_task:
+                            self._monitor_finalize()
                     self._refresh_status()
                 else:
                     self.log(msg)
+                    # 逐行喂给抓取监控解析器（只提取任务级摘要）
+                    for _ln in str(msg).splitlines():
+                        self._monitor_feed_line(_ln)
+                        # 「立即运行一次」：只显示“已请求执行”，不误判为抓取成功
+                        if "已请求 Windows Task Scheduler 执行任务" in _ln:
+                            job_id = _ln.split("执行任务：", 1)[1].strip()
+                            self._monitor_add_entry(
+                                f"{job_id}  已请求 Windows Task Scheduler 执行"
+                            )
+                            self._monitor_set_cur(f"{job_id} · 已请求执行，等待后台完成")
         except queue.Empty:
             pass
+        # 每约 3 秒增量读取后台 scheduled-fetch.log，反映后台任务完成结果
+        self._monitor_poll_count += 1
+        if self._monitor_poll_count >= 30:
+            self._monitor_poll_count = 0
+            try:
+                self._monitor_poll_sched_log()
+            except Exception:
+                pass
         self.root.after(100, self._poll_queue)
 
     def _set_busy(self, busy: bool, *, run: str) -> None:
