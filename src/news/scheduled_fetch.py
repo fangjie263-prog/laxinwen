@@ -35,6 +35,7 @@ from .scheduler_config import (
     SchedulerConfig,
     load_config,
 )
+from .run_identity import new_run_identity, parse_run_id
 
 logger = logging.getLogger("news.scheduled_fetch")
 
@@ -172,7 +173,7 @@ def _default_pipeline_factory(storage, limit: int):
     return Pipeline(storage, fetcher=fetcher, max_items=limit)
 
 
-def _default_portable_export(storage, out_dir, *, source_id, limit, research_root=None, job_id=""):
+def _default_portable_export(storage, out_dir, *, source_id, limit, research_root=None, job_id="", run_id=""):
     """便携阅读包导出（与 GUI 的默认导出方式一致）。
 
     Portable 阅读包 = HTML + Word（DOCX）一次生成（见 portable.py）。
@@ -185,12 +186,12 @@ def _default_portable_export(storage, out_dir, *, source_id, limit, research_roo
     )
 
 
-def _default_word_export(storage, out_path, *, source_id, limit, job_id=""):
+def _default_word_export(storage, out_path, *, source_id, limit, job_id="", run_id=""):
     """Word（DOCX）研究阅读包导出（与 CLI / GUI 一致）。"""
     from .word_export import export_word_package
 
     return export_word_package(
-        storage, out_path, source_id=source_id, limit=limit, job_id=job_id
+        storage, out_path, source_id=source_id, limit=limit, job_id=job_id, run_id=run_id
     )
 
 
@@ -269,6 +270,10 @@ def run_scheduled_fetch(
         logger.warning("检测到已有 job %s 在运行，跳过本次调度（Do not start a new instance）。", cfg.job_id)
         return 0
     try:
+        run_identity = new_run_identity(
+            job_id=cfg.job_id, output_root=portable_dir, source_id=source_id
+        )
+        logger.info("RUN_ID: %s", run_identity.run_id)
         storage_factory = storage_factory or _default_storage_factory
         with storage_factory(db_path) as storage:
             pipeline_factory = pipeline_factory or _default_pipeline_factory
@@ -314,6 +319,7 @@ def run_scheduled_fetch(
                         limit,
                         export_type,
                         job_id=cfg.job_id,
+                        run_id=run_identity.run_id,
                         portable_dir=portable_dir,
                         word_dir=word_dir,
                         research_dir=research_dir,
@@ -359,6 +365,7 @@ def _run_portable_export(
     limit: int,
     *,
     job_id: str = "",
+    run_id: str = "",
     portable_dir: str | Path,
     research_dir: str | Path,
     portable_export=None,
@@ -367,26 +374,34 @@ def _run_portable_export(
 
     Portable 阅读包 = HTML + Word（DOCX）一次生成（见 portable.py）。
     """
-    from datetime import datetime as _dt
-
     portable_dir = Path(portable_dir)
-    # 独立、可识别的目录：source + 日期 + 执行时间（秒级）+ 可选 job id，
-    # 不同 job 互不覆盖；同一 job 若在同一秒重复执行，追加序号避免覆盖。
+    if not run_id:
+        run_id = new_run_identity(
+            job_id=job_id, output_root=portable_dir, source_id=source_id
+        ).run_id
     job_suffix = f"-{job_id}" if job_id else ""
+    run_dt = parse_run_id(run_id)
+    run_date = run_dt.strftime("%Y-%m-%d") if run_dt else datetime.now().strftime("%Y-%m-%d")
     base = portable_dir / (
         f"Laxinwen-{_source_label(source_id)}-"
-        f"{_dt.now().strftime('%Y-%m-%d-%H%M%S')}{job_suffix}"
+        f"{run_date}-{run_id}{job_suffix}"
     )
     out_dir = _unique_dir(base)
     export = portable_export or _default_portable_export
-    result = export(
-        storage,
-        out_dir,
+    kwargs = dict(
         source_id=source_id,
         limit=limit,
         research_root=research_dir,
+        run_id=run_id,
         job_id=job_id,
     )
+    try:
+        result = export(storage, out_dir, **kwargs)
+    except TypeError as exc:
+        if "run_id" not in str(exc):
+            raise
+        kwargs.pop("run_id")
+        result = export(storage, out_dir, **kwargs)
     return out_dir, result
 
 
@@ -396,27 +411,34 @@ def _run_word_export(
     limit: int,
     *,
     job_id: str = "",
+    run_id: str = "",
     word_dir: str | Path = DEFAULT_WORD_DIR,
     word_export=None,
 ):
     """Word（DOCX）研究阅读包导出。返回描述字符串。"""
-    from datetime import datetime as _dt
-
     word_dir = Path(word_dir)
+    if not run_id:
+        run_id = new_run_identity(job_id=job_id).run_id
     job_suffix = f"-{job_id}" if job_id else ""
     out_path = word_dir / (
         f"Laxinwen-{_source_label(source_id)}-"
-        f"{_dt.now().strftime('%Y-%m-%d-%H%M%S')}{job_suffix}.docx"
+        f"{run_id}{job_suffix}.docx"
     )
     out_path = _unique_path(out_path)
     export = word_export or _default_word_export
-    result = export(
-        storage,
-        out_path,
+    kwargs = dict(
         source_id=source_id,
         limit=limit,
         job_id=job_id,
+        run_id=run_id,
     )
+    try:
+        result = export(storage, out_path, **kwargs)
+    except TypeError as exc:
+        if "run_id" not in str(exc):
+            raise
+        kwargs.pop("run_id")
+        result = export(storage, out_path, **kwargs)
     return f"Word 阅读包已导出 {result.exported} 篇 → {out_path}"
 
 
@@ -427,6 +449,7 @@ def _run_auto_export(
     export_type: str,
     *,
     job_id: str = "",
+    run_id: str = "",
     portable_dir: str | Path,
     word_dir: str | Path = DEFAULT_WORD_DIR,
     research_dir: str | Path,
@@ -457,6 +480,7 @@ def _run_auto_export(
             source_id,
             limit,
             job_id=job_id,
+            run_id=run_id,
             portable_dir=portable_dir,
             research_dir=research_dir,
             portable_export=portable_export,

@@ -26,6 +26,7 @@ from .news_archive import export_news_archive
 from .portable import export_independent_html, export_portable_package
 from .scheduler_config import EXPORT_BOTH, EXPORT_PORTABLE, EXPORT_WORD
 from .word_export import export_word_package, default_word_path
+from .run_identity import new_run_identity
 from .fetch import FetcherOptions, HttpxFetcher
 from .pipeline import Pipeline
 from .storage import Storage
@@ -276,10 +277,9 @@ def _export_format(args: argparse.Namespace, storage: Storage, fmt: str) -> int:
                     file=sys.stderr,
                 )
                 return 2
-        out = (
-            Path(args.output)
-            if args.output
-            else default_word_path(site, job_id=args.job_id)
+        identity = new_run_identity(job_id=args.job_id, output_root=Path("data") / "export" / "word", source_id=site)
+        out = Path(args.output) if args.output else default_word_path(
+            site, job_id=args.job_id, run_id=identity.run_id
         )
         result = export_word_package(
             storage,
@@ -287,6 +287,7 @@ def _export_format(args: argparse.Namespace, storage: Storage, fmt: str) -> int:
             source_id=site,
             limit=args.limit,
             job_id=args.job_id,
+            run_id=identity.run_id,
         )
         print(f"Word 研究阅读包导出：\n{out}")
         print(f"共 {result.exported} 篇（已分析 {result.analyzed_ok} / 失败 {result.analyzed_failed} / 未分析 {result.unanalyzed}）")
@@ -329,10 +330,10 @@ def _export_format(args: argparse.Namespace, storage: Storage, fmt: str) -> int:
             print("双击该 .html 即可在没有 laxinwen 的电脑上直接阅读。")
             return 0
 
-        out = (
-            Path(args.output)
-            if args.output
-            else default_package_path(site)
+        identity = new_run_identity(job_id=args.job_id, output_root=Path("data") / "export" / "portable", source_id=site)
+        job_suffix = f"-{args.job_id}" if args.job_id else ""
+        out = Path(args.output) if args.output else Path("data") / "export" / "portable" / (
+            f"Laxinwen-{site.upper()}-{identity.started_at.strftime('%Y-%m-%d')}-{identity.run_id}{job_suffix}"
         )
         result = export_portable_package(
             storage,
@@ -340,6 +341,7 @@ def _export_format(args: argparse.Namespace, storage: Storage, fmt: str) -> int:
             source_id=site,
             limit=args.limit,
             research_root=research_root,
+            run_id=identity.run_id,
         )
         print(f"HTML 新闻包导出目录：\n{out}/")
         print(f"共 {result.exported} 篇（已分析 {result.analyzed_ok} / 失败 {result.analyzed_failed} / 未分析 {result.unanalyzed}）")
@@ -364,10 +366,10 @@ def _export_format(args: argparse.Namespace, storage: Storage, fmt: str) -> int:
         from .portable import export_portable_reader_package, default_reader_path
 
         research_root = Path("data") / "export" / "html"
-        out = (
-            Path(args.output)
-            if args.output
-            else default_reader_path(site)
+        identity = new_run_identity(job_id=args.job_id, output_root=Path("data") / "export" / "portable", source_id=site)
+        job_suffix = f"-{args.job_id}" if args.job_id else ""
+        out = Path(args.output) if args.output else Path("data") / "export" / "portable" / (
+            f"Laxinwen-{site.upper()}-{identity.started_at.strftime('%Y-%m-%d')}-{identity.run_id}{job_suffix}"
         )
         result = export_portable_reader_package(
             storage,
@@ -375,6 +377,8 @@ def _export_format(args: argparse.Namespace, storage: Storage, fmt: str) -> int:
             source_id=site,
             limit=args.limit,
             research_root=research_root,
+            job_id=args.job_id,
+            run_id=identity.run_id,
         )
         print(f"便携阅读包导出目录：\n{out}/")
         print(f"共 {result.exported} 篇（已分析 {result.analyzed_ok} / 失败 {result.analyzed_failed} / 未分析 {result.unanalyzed}）")
@@ -523,6 +527,8 @@ def cmd_notion_sync(args: argparse.Namespace) -> int:
             state_path=args.state,
             timeout=args.timeout,
             dry_run=args.dry_run,
+            researchreader_output=args.researchreader_output,
+            researchreader_books=args.researchreader_books,
         )
     except NotionSyncError as exc:
         print(f"NOTION SYNC FAILED · {exc}", file=sys.stderr)
@@ -658,6 +664,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_notion.add_argument("--root-page-id", default=None, help="临时覆盖 NOTION_ROOT_PAGE_ID")
     p_notion.add_argument("--timeout", type=float, default=60.0, help="Notion API 请求超时（秒）")
     p_notion.add_argument("--dry-run", action="store_true", help="只扫描并显示待同步包，不调用 Notion API")
+    p_notion.add_argument("--researchreader-output", default=None, help="ResearchReader HTML 输出目录")
+    p_notion.add_argument("--researchreader-books", default=None, help="ResearchReader EPUB/PDF 目录")
     p_notion.set_defaults(func=cmd_notion_sync, verbose=False)
 
     p_export = sub.add_parser(

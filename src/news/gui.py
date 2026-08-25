@@ -34,6 +34,7 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 
 from .reader_server import ReaderServer
+from .run_identity import new_run_identity
 
 # 定时抓取相关（延迟导入默认实现，便于测试注入）
 from .scheduler_config import (
@@ -2251,14 +2252,27 @@ class _NewsReaderApp:
         research_root = self.research_dir
         with self._storage_factory(self.db_path) as storage:
             for sid in site_ids:
-                out_dir = self.portable_dir / f"Laxinwen-{sid.upper()}-{datetime.now().strftime('%Y-%m-%d')}"
+                identity = new_run_identity(
+                    output_root=self.portable_dir, source_id=sid
+                )
+                out_dir = self.portable_dir / (
+                    f"Laxinwen-{sid.upper()}-"
+                    f"{identity.started_at.strftime('%Y-%m-%d')}-{identity.run_id}"
+                )
                 self._bg_log(
                     f"正在导出 {self._source_display(sid)} 便携阅读包（HTML + Word，最近 {limit} 篇）→ {out_dir}"
                 )
-                result = self._portable_reader_export(
-                    storage, out_dir, source_id=sid, limit=limit,
-                    research_root=research_root,
+                export_kwargs = dict(
+                    source_id=sid, limit=limit, research_root=research_root,
+                    run_id=identity.run_id,
                 )
+                try:
+                    result = self._portable_reader_export(storage, out_dir, **export_kwargs)
+                except TypeError as exc:
+                    if "run_id" not in str(exc):
+                        raise
+                    export_kwargs.pop("run_id")
+                    result = self._portable_reader_export(storage, out_dir, **export_kwargs)
                 bat = out_dir / "Open-Reader.bat"
                 docx = out_dir / f"{out_dir.name}.docx"
                 if not (out_dir / "index.html").exists() or not bat.exists():
@@ -2546,11 +2560,12 @@ def _default_portable_package_export(storage, out_dir, *, source_id, limit, rese
     )
 
 
-def _default_portable_reader_export(storage, out_dir, *, source_id, limit, research_root=None):
+def _default_portable_reader_export(storage, out_dir, *, source_id, limit, research_root=None, run_id=""):
     from .portable import export_portable_reader_package
 
     return export_portable_reader_package(
-        storage, out_dir, source_id=source_id, limit=limit, research_root=research_root
+        storage, out_dir, source_id=source_id, limit=limit,
+        research_root=research_root, run_id=run_id,
     )
 
 

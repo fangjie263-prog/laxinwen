@@ -1,4 +1,5 @@
 import os
+import json
 import zipfile
 from pathlib import Path
 
@@ -8,6 +9,7 @@ from news.notion_sync import (
     ExportPackageScanner,
     NotionSync,
     NotionSyncError,
+    ResearchReaderScanner,
     _build_html_artifacts,
     _build_word_artifacts,
     notion_max_upload_bytes,
@@ -91,10 +93,79 @@ def test_sync_is_idempotent_and_groups_jobs_by_source_date(tmp_path):
 
     assert first_run == ["SYNC SUCCESS · ECO · 2026-08-24", "SYNC SUCCESS · ECO · 2026-08-24"]
     assert all("already synced" in message for message in second_run)
-    assert [title for _, title, _ in fake.created] == ["ECO", "2026-08-24 · ECO"]
+    assert [title for _, title, _ in fake.created] == [
+        "ECO", "2026-08-24", "14:20:02 · morning", "18:00:00 · evening"
+    ]
     assert len(fake.uploads) == 4
     assert len(fake.blocks) == 2
     assert first.exists() and second.exists()
+
+
+def test_same_source_date_different_run_ids_create_distinct_run_pages(tmp_path):
+    root = tmp_path / "portable"
+    first = _make_package(root, "Laxinwen-RFI-2026-08-25-20260825-080012-rfi-default")
+    second = _make_package(root, "Laxinwen-RFI-2026-08-25-20260825-141035-rfi-default")
+    packages = ExportPackageScanner(root).scan()
+    assert [item.run_id for item in packages] == ["20260825-080012", "20260825-141035"]
+    fake = FakeNotion()
+    sync = NotionSync(fake, "root", state_path=tmp_path / "state.json")
+
+    sync.sync(packages)
+
+    assert [title for _, title, _ in fake.created] == [
+        "RFI", "2026-08-25", "08:00:12 · rfi-default", "14:10:35 · rfi-default"
+    ]
+    assert first.exists() and second.exists()
+    assert len(fake.blocks) == 2
+    state = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
+    identities = [
+        identity for record in state["packages"].values()
+        for identity in record.get("artifacts", {})
+    ]
+    assert any(identity.startswith("laxinwen|rfi|2026-08-25|20260825-080012|") for identity in identities)
+
+
+def test_researchreader_scanner_only_selects_daily_html_images_and_books(tmp_path):
+    output = tmp_path / "output"
+    package = output / "barrons_24-08-2026_Kobo"
+    (package / "images").mkdir(parents=True)
+    (package / "daily.html").write_text("<html/>", encoding="utf-8")
+    (package / "images" / "cover.jpg").write_bytes(b"image")
+    (package / "candidate_articles.json").write_text("debug", encoding="utf-8")
+    books = tmp_path / "books"
+    books.mkdir()
+    book = books / "barrons 24-08-2026 (Kobo).epub"
+    book.write_bytes(b"epub")
+
+    found = ResearchReaderScanner(output, books).scan()
+
+    assert len(found) == 1
+    item = found[0]
+    assert item.origin == "researchreader"
+    assert item.source == "Barron's"
+    assert item.date == "2026-08-24"
+    assert item.run_id == ""
+    assert {path.name for path in item.html_files} == {"daily.html", "cover.jpg"}
+    assert item.extra_files == (book,)
+
+
+def test_legacy_synced_state_is_skipped_without_reupload(tmp_path):
+    root = tmp_path / "portable"
+    _make_package(root, "Laxinwen-RFI-2026-08-24")
+    package = ExportPackageScanner(root).scan()[0]
+    state_path = tmp_path / "state.json"
+    state_path.write_text(json.dumps({
+        "packages": {package.package_key: {"synced": True, "html_upload_id": "old-html", "word_upload_id": "old-word"}},
+        "date_pages": {"rfi:2026-08-24": "old-date"},
+        "source_pages": {"rfi": "old-source"},
+    }), encoding="utf-8")
+    fake = FakeNotion()
+
+    messages = NotionSync(fake, "root", state_path=state_path).sync([package])
+
+    assert "already synced" in messages[0]
+    assert fake.uploads == []
+    assert fake.created == []
 
 
 def test_html_artifacts_exclude_docx_and_preserve_local_package(tmp_path):

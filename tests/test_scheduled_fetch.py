@@ -851,6 +851,35 @@ def test_auto_export_dir_includes_job_id(tmp_path):
     assert any(ch.isdigit() for ch in seen[0])
 
 
+def test_auto_export_same_job_different_run_ids_keep_separate_directories(tmp_path):
+    from news.scheduled_fetch import _run_portable_export
+
+    seen = []
+
+    def fake_export(storage, out_dir, *, source_id, limit, research_root=None, job_id=""):
+        out_dir = Path(out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        seen.append(out_dir)
+        class R:
+            exported = 1
+        return R()
+
+    class FakeStorage:
+        pass
+
+    common = dict(
+        storage=FakeStorage(), source_id="rfi", limit=10,
+        job_id="rfi-default", portable_dir=tmp_path / "portable",
+        research_dir=tmp_path / "html", portable_export=fake_export,
+    )
+    _run_portable_export(run_id="20260825-080012", **common)
+    _run_portable_export(run_id="20260825-141035", **common)
+
+    assert len(seen) == 2
+    assert seen[0] != seen[1]
+    assert all("20260825-" in path.name for path in seen)
+
+
 def test_lock_is_job_specific_not_source_specific(tmp_path):
     """lock 按 job id 区分：同 source 不同 job 不互斥，同一 job 用同一锁文件。"""
     from news.scheduled_fetch import _Lock

@@ -376,7 +376,7 @@ laxinwen/
 │   ├── portable.py, word_export.py, reader_server.py
 │   ├── gui.py, ai_settings_dialog.py, beijing.py
 │   ├── scheduled_fetch.py, scheduler_config.py, task_scheduler.py
-│   ├── notion_sync.py
+│   ├── run_identity.py, notion_sync.py
 │   ├── sources/{base.py,hkej.py,rfi.py}
 │   └── ai/{config_store.py,provider.py,openai_compatible.py,
 │           processor.py,prompts.py,schema.py}
@@ -400,19 +400,24 @@ xvfb-run -a uv run python -m pytest tests/test_gui.py tests/test_gui_monitor.py 
 
 ## Notion 自动归档
 
-`news notion-sync` 是独立的归档层，只扫描已经生成的 Portable Reader 包，不重新抓取新闻、不重新运行 AI，也不修改 HTML 或 Word 内容。默认扫描 `data/export/portable/`，并将内容归档为：
+`news notion-sync` 是独立的归档层，只扫描已经生成的 Portable Reader 包和可选的 ResearchReader 输出，不重新抓取新闻、不重新运行 AI，也不修改 HTML 或 Word 内容。默认扫描 `data/export/portable/`，Notion 页面结构为 Source → Date → Run → Artifact：
 
 ```text
 NOTION_ROOT_PAGE_ID
 ├── ECO
-│   └── 2026-08-24 · ECO
+│   └── 2026-08-24
+│       └── 10:00:00 · eco-default
 ├── RFI
-│   └── 2026-08-24 · RFI
+│   └── 2026-08-24
+│       └── 08:00:00 · rfi-default
 └── HKEJ
-    └── 2026-08-24 · HKEJ
+    └── 2026-08-24
+        └── 09:00:00 · hkej-default
 ```
 
-日期页面只保存归档索引：文章数量、任务标识、HTML 阅读包 ZIP 和 Word 阅读包；不会把每篇新闻拆成 Notion 页面或大量 block。HTML 阅读包作为完整目录 ZIP 上传，Word 作为独立 DOCX 上传。文件使用 Notion 官方 File Upload API；大文件按 API 要求分片上传。
+新的运行会在日期页下创建独立运行页，例如 `08:00:12 · rfi-default`；`origin` 只保存在同步状态中，不创建 `ResearchReader` 顶层页面。ResearchReader 通过 `RESEARCHREADER_OUTPUT_ROOT` 和 `RESEARCHREADER_BOOKS_ROOT` 配置，HTML 只归档 `daily.html` 与 `images/`，EPUB/PDF 单独归档。
+
+Run 页面保存归档索引：文章数量、任务标识、HTML 阅读包 ZIP 和 Word 阅读包；不会把每篇新闻拆成 Notion 页面或大量 block。HTML 阅读包作为完整目录 ZIP 上传，Word 作为独立 DOCX 上传。文件使用 Notion 官方 File Upload API；大文件按 API 要求分片上传。
 
 ### 配置
 
@@ -435,7 +440,7 @@ uv run news notion-sync
 uv run news notion-sync --dry-run
 ```
 
-同步状态保存在 `data/notion-sync.json`。状态身份结合来源、日期、包路径和包内文件元数据；每个 HTML/Word artifact 记录 fingerprint、part、文件大小和 Notion upload ID，因此失败重试只补传缺失 part。全部 artifact 和归档 block 成功后才标记包完成；同一个包成功同步后重复扫描会跳过，不会重复创建日期页面、上传文件或添加归档 block。多个 job 在同一 source/date 下共用日期页面，各自作为该页面中的独立阅读包条目。
+同步状态保存在 `data/notion-sync.json`。新状态 identity 使用 origin、source、date、run_id、artifact_type、artifact_variant 和 part；每个 artifact 记录 fingerprint、文件大小和 Notion upload ID，因此失败重试只补传缺失 part。旧 package/artifact key 和旧 Date Page ID 继续兼容，已同步的历史包不会重新上传。全部 artifact 和归档 block 成功后才标记包完成；同一个 run 重复扫描会跳过，不会重复创建 Run Page、上传文件或添加归档 block。
 
 同步输出区分 `SYNC SUCCESS`、`SYNC SKIP` 和 `SYNC FAILED`。文件上传或 Notion API 在中途失败时，已完成的页面和文件 ID 会保存在状态文件，下一次运行可以继续。
 

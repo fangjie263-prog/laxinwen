@@ -346,14 +346,15 @@ def render_word_docx(
 # 导出入口
 # --------------------------------------------------------------------------
 
-def default_word_path(source_id: str, job_id: str = "") -> Path:
+def default_word_path(source_id: str, job_id: str = "", run_id: str = "") -> Path:
     """默认 Word 输出路径：``data/export/word/Laxinwen-<SOURCE>-<日期>-<时间>-<job>.docx``。"""
+    timestamp = run_id or datetime.now().strftime("%Y-%m-%d-%H%M%S")
     job_suffix = f"-{job_id}" if job_id else ""
     return (
         DEFAULT_WORD_DIR
         / (
             f"Laxinwen-{source_id.upper()}-"
-            f"{datetime.now().strftime('%Y-%m-%d-%H%M%S')}{job_suffix}.docx"
+            f"{timestamp}{job_suffix}.docx"
         )
     )
 
@@ -390,6 +391,8 @@ def export_word_package(
     source_id: Optional[str] = None,
     limit: int = 100,
     job_id: str = "",
+    run_id: str = "",
+    rows=None,
 ) -> WordExportResult:
     """导出 Word 研究阅读包：``out_path``（单个 ``.docx`` 文件）。
 
@@ -400,10 +403,11 @@ def export_word_package(
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    rows = storage.list_articles_with_analysis(
-        source_id=source_id, limit=limit if limit else 10**9
-    )
-    rows = [r for r in rows if storage.is_usable(r)]
+    if rows is None:
+        rows = storage.list_articles_with_analysis(
+            source_id=source_id, limit=limit if limit else 10**9
+        )
+        rows = [r for r in rows if storage.is_usable(r)]
     result = WordExportResult()
     result.exported = len(rows)
     result.analyzed_ok, result.analyzed_failed, result.unanalyzed = _collect_stats(rows)

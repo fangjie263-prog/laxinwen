@@ -15,7 +15,7 @@ import os
 import re
 import tempfile
 import zipfile
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional
@@ -23,6 +23,7 @@ from typing import Any, Iterable, Optional
 import httpx
 
 from .ai.provider import load_dotenv
+from .run_identity import parse_run_id
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,7 @@ DEFAULT_STATE_PATH = Path("data") / "notion-sync.json"
 _PACKAGE_RE = re.compile(
     r"^Laxinwen-(?P<source>[A-Za-z0-9_]+)-"
     r"(?P<date>\d{4}-\d{2}-\d{2})"
+    r"(?:-(?P<run_date>\d{8})-(?P<run_time>\d{6})(?:-(?P<run_suffix>\d{2}))?)?"
     r"(?:-(?P<time>\d{6}))?"
     r"(?:-(?P<job>.+))?$",
     re.IGNORECASE,
@@ -56,6 +58,12 @@ class ExportPackage:
     docx_path: Path
     article_count: Optional[int]
     package_key: str
+    origin: str = "laxinwen"
+    run_id: str = ""
+    run_timestamp: str = ""
+    artifact_variant: str = "original"
+    html_files: tuple[Path, ...] = ()
+    extra_files: tuple[Path, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -140,7 +148,18 @@ class ExportPackageScanner:
                 logger.debug("忽略不完整 Portable 包：%s", path)
                 continue
             data = match.groupdict()
+            run_id = ""
+            if data.get("run_date") and data.get("run_time"):
+                run_id = f"{data['run_date']}-{data['run_time']}"
+                if data.get("run_suffix"):
+                    run_id += f"-{data['run_suffix']}"
+            elif data.get("time"):
+                run_id = f"{data['date'].replace('-', '')}-{data['time']}"
             files = [index_path, docx_candidates[0]]
+            html_files = tuple(
+                item for item in path.rglob("*")
+                if item.is_file() and item.suffix.lower() != ".docx"
+            )
             packages.append(
                 ExportPackage(
                     source=data["source"].lower(),
@@ -151,14 +170,91 @@ class ExportPackageScanner:
                     docx_path=docx_candidates[0],
                     article_count=_count_articles(index_path),
                     package_key=_package_key(self.export_root, path, files),
+                    run_id=run_id,
+                    run_timestamp=run_id,
+                    html_files=html_files,
                 )
             )
         return sorted(packages, key=lambda item: (item.date, item.source, item.package_path.name))
 
 
+class ResearchReaderScanner:
+    """扫描 ResearchReader 输出，仅归档 daily.html、images 和原始书籍文件。"""
+
+    _DIR_RE = re.compile(r"^(?P<source>[a-z0-9][a-z0-9-]*)_(?P<date>\d{2}-\d{2}-\d{4})_Kobo$", re.IGNORECASE)
+    _SOURCE_NAMES = {
+        "barrons": "Barron's",
+        "the-wall-street-journal": "WSJ",
+        "the-economist-asia-pacific": "Economist",
+    }
+
+    def __init__(self, output_root: str | Path, books_root: str | Path):
+        self.output_root = Path(output_root)
+        self.books_root = Path(books_root)
+
+    def _source_name(self, value: str) -> str:
+        return self._SOURCE_NAMES.get(value.lower(), value.replace("-", " ").title())
+
+    def scan(self) -> list[ExportPackage]:
+        packages: list[ExportPackage] = []
+        if self.output_root.exists():
+            for path in sorted(self.output_root.iterdir()):
+                if not path.is_dir():
+                    continue
+                match = self._DIR_RE.match(path.name)
+                daily = path / "daily.html"
+                images = path / "images"
+                if not match or not daily.is_file():
+                    continue
+                date = datetime.strptime(match.group("date"), "%d-%m-%Y").strftime("%Y-%m-%d")
+                html_files = [daily]
+                if images.is_dir():
+                    html_files.extend(item for item in images.rglob("*") if item.is_file())
+                files = list(html_files)
+                key_parts = [
+                    "researchreader", self._source_name(match.group("source")), date,
+                    path.name,
+                ]
+                key_parts.extend(
+                    f"{item.relative_to(path)}:{item.stat().st_size}:{item.stat().st_mtime_ns}"
+                    for item in files
+                )
+                key = _sha256_text("|".join(key_parts))
+                packages.append(ExportPackage(
+                    source=self._source_name(match.group("source")), date=date, job_id="",
+                    package_path=path, index_path=daily, docx_path=None,
+                    article_count=None, package_key=key, origin="researchreader",
+                    html_files=tuple(html_files),
+                ))
+        unmatched_books: list[ExportPackage] = []
+        for path in sorted(self.books_root.glob("*")) if self.books_root.exists() else []:
+            if not path.is_file() or path.suffix.lower() not in {".epub", ".pdf"}:
+                continue
+            match = re.search(r"(?P<source>[a-z][a-z0-9-]*)\s+(?P<day>\d{2})-(?P<month>\d{2})-(?P<year>\d{4})", path.stem, re.IGNORECASE)
+            if not match:
+                continue
+            source = self._source_name(match.group("source"))
+            date = f"{match.group('year')}-{match.group('month')}-{match.group('day')}"
+            key = _sha256_text(f"researchreader|{source}|{date}|{path.name}:{path.stat().st_size}:{path.stat().st_mtime_ns}")
+            book_package = ExportPackage(
+                source=source, date=date, job_id="", package_path=path.parent,
+                index_path=path, docx_path=None, article_count=None, package_key=key,
+                origin="researchreader", extra_files=(path,),
+            )
+            matched = next((item for item in packages if item.source == source and item.date == date), None)
+            if matched:
+                packages[packages.index(matched)] = replace(
+                    matched, extra_files=matched.extra_files + (path,)
+                )
+            else:
+                unmatched_books.append(book_package)
+        packages.extend(unmatched_books)
+        return packages
+
+
 def _read_json(path: Path) -> dict[str, Any]:
     if not path.exists():
-        return {"packages": {}, "date_pages": {}, "source_pages": {}}
+        return {"packages": {}, "date_pages": {}, "source_pages": {}, "run_pages": {}}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -168,6 +264,7 @@ def _read_json(path: Path) -> dict[str, Any]:
     data.setdefault("packages", {})
     data.setdefault("date_pages", {})
     data.setdefault("source_pages", {})
+    data.setdefault("run_pages", {})
     return data
 
 
@@ -192,6 +289,8 @@ def load_notion_config(
     root_page_id: Optional[str] = None,
     export_root: str | Path = DEFAULT_EXPORT_ROOT,
     state_path: str | Path = DEFAULT_STATE_PATH,
+    researchreader_output: str | Path | None = None,
+    researchreader_books: str | Path | None = None,
 ) -> dict[str, Any]:
     load_dotenv()
     return {
@@ -200,6 +299,8 @@ def load_notion_config(
         "export_root": Path(os.environ.get("NOTION_EXPORT_ROOT", str(export_root))),
         "state_path": Path(os.environ.get("NOTION_SYNC_STATE", str(state_path))),
         "max_upload_bytes": notion_max_upload_bytes(),
+        "researchreader_output": Path(os.environ["RESEARCHREADER_OUTPUT_ROOT"]) if os.environ.get("RESEARCHREADER_OUTPUT_ROOT") else (Path(researchreader_output) if researchreader_output else None),
+        "researchreader_books": Path(os.environ["RESEARCHREADER_BOOKS_ROOT"]) if os.environ.get("RESEARCHREADER_BOOKS_ROOT") else (Path(researchreader_books) if researchreader_books else None),
     }
 
 
@@ -340,7 +441,10 @@ def _write_zip(files: list[Path], package_dir: Path, archive: Path) -> None:
 
 
 def _ordered_html_files(package: ExportPackage) -> list[Path]:
-    files = [path for path in package.package_path.rglob("*") if path.is_file() and path.suffix.lower() != ".docx"]
+    files = list(package.html_files) if package.html_files else [
+        path for path in package.package_path.rglob("*")
+        if path.is_file() and path.suffix.lower() != ".docx"
+    ]
     priority = {"index.html": 0, "open-reader.bat": 1, "server.py": 2}
     return sorted(files, key=lambda path: (priority.get(path.name.lower(), 3), path.relative_to(package.package_path).as_posix()))
 
@@ -429,6 +533,8 @@ def _build_html_artifacts(package: ExportPackage, target_dir: Path, max_bytes: i
 
 def _build_word_artifacts(package: ExportPackage, target_dir: Path, max_bytes: int) -> list[UploadArtifact]:
     target_dir.mkdir(parents=True, exist_ok=True)
+    if package.docx_path is None:
+        return []
     if package.docx_path.stat().st_size <= max_bytes:
         return [UploadArtifact(
             key="word:docx", path=package.docx_path, label=package.docx_path.name,
@@ -441,7 +547,27 @@ def _build_word_artifacts(package: ExportPackage, target_dir: Path, max_bytes: i
     )
 
 
+def _build_extra_artifacts(package: ExportPackage, target_dir: Path, max_bytes: int) -> list[UploadArtifact]:
+    artifacts: list[UploadArtifact] = []
+    for index, path in enumerate(package.extra_files, 1):
+        kind = path.suffix.lower().lstrip(".") or "file"
+        content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        if path.stat().st_size <= max_bytes:
+            artifacts.append(UploadArtifact(
+                key=f"{kind}:original:part:001", path=path, label=path.name,
+                kind=kind, content_type=content_type, fingerprint=_file_fingerprint(path),
+            ))
+        else:
+            artifacts.extend(_split_file(
+                path, target_dir, max_bytes, stem=path.name,
+                key_prefix=f"{kind}:original:{index:03d}", kind=f"{kind}_split",
+            ))
+    return artifacts
+
+
 def _artifact_blocks(artifacts: list[UploadArtifact], ids: dict[str, str], *, title: str, split_title: str) -> list[dict[str, Any]]:
+    if not artifacts:
+        return []
     if len(artifacts) == 1 and artifacts[0].kind in {"html_zip", "word"}:
         return _file_block(title, ids[artifacts[0].key])
     blocks = [_text_block(split_title, bold=True)]
@@ -453,6 +579,18 @@ def _artifact_blocks(artifacts: list[UploadArtifact], ids: dict[str, str], *, ti
         if item.kind.endswith("_manifest"):
             blocks.extend(_file_block("恢复说明", ids[item.key]))
     return blocks
+
+
+def _artifact_identity(package: ExportPackage, artifact: UploadArtifact) -> str:
+    artifact_type = artifact.kind.split("_", 1)[0]
+    if artifact.kind.endswith("_manifest"):
+        artifact_type = artifact.kind.removesuffix("_manifest")
+    part = artifact.key.rsplit(":", 1)[-1]
+    run = package.run_id or f"legacy:{package.package_key}"
+    return "|".join([
+        package.origin, package.source, package.date, run,
+        artifact_type, package.artifact_variant, part,
+    ])
 
 
 class NotionSync:
@@ -497,20 +635,42 @@ class NotionSync:
                 date_id = self.state["date_pages"].get(date_key)
                 if not date_id:
                     date_id = self.client.find_or_create_child_page(
-                        source_id, f"{package.date} · {package.source.upper()}"
+                        source_id, package.date
                     )
                     self.state["date_pages"][date_key] = date_id
                     self._save()
+                run_key = "|".join([
+                    package.origin, package.source, package.date,
+                    package.run_id or f"legacy:{package.package_key}",
+                ])
+                run_id = self.state["run_pages"].get(run_key)
+                if not run_id:
+                    parsed = parse_run_id(package.run_id) if package.run_id else None
+                    run_label = (
+                        f"{parsed.strftime('%H:%M:%S')} · {package.job_id or '手动运行'}"
+                        if parsed else f"Legacy · {package.job_id or '历史运行'}"
+                    )
+                    run_id = self.client.find_or_create_child_page(date_id, run_label)
+                    self.state["run_pages"][run_key] = run_id
+                    self._save()
                 record = dict(saved)
-                record.update({"source": source_key, "date": package.date, "job_id": package.job_id, "package_path": str(package.package_path), "notion_page_id": date_id})
+                record.update({
+                    "origin": package.origin, "source": source_key, "date": package.date,
+                    "run_id": package.run_id, "job_id": package.job_id,
+                    "artifact_variant": package.artifact_variant,
+                    "package_path": str(package.package_path),
+                    "date_page_id": date_id, "notion_page_id": run_id,
+                })
                 with tempfile.TemporaryDirectory(prefix="laxinwen-notion-") as temp:
                     html_artifacts = _build_html_artifacts(package, Path(temp), self.max_upload_bytes)
                     word_artifacts = _build_word_artifacts(package, Path(temp), self.max_upload_bytes)
-                    artifacts = html_artifacts + word_artifacts
+                    extra_artifacts = _build_extra_artifacts(package, Path(temp), self.max_upload_bytes)
+                    artifacts = html_artifacts + word_artifacts + extra_artifacts
                     artifact_state = record.setdefault("artifacts", {})
                     upload_ids: dict[str, str] = {}
                     for artifact in artifacts:
-                        saved_artifact = artifact_state.get(artifact.key, {})
+                        identity = _artifact_identity(package, artifact)
+                        saved_artifact = artifact_state.get(identity) or artifact_state.get(artifact.key, {})
                         if saved_artifact.get("fingerprint") == artifact.fingerprint and saved_artifact.get("upload_id"):
                             upload_ids[artifact.key] = saved_artifact["upload_id"]
                             continue
@@ -518,7 +678,8 @@ class NotionSync:
                             raise NotionSyncError(f"文件超过 Notion 安全上限：{artifact.path.name}")
                         assert self.client is not None
                         upload_id = self.client.upload_file(artifact.path, content_type=artifact.content_type)
-                        artifact_state[artifact.key] = {
+                        artifact_state[identity] = {
+                            "identity": identity,
                             "kind": artifact.kind,
                             "name": artifact.label,
                             "fingerprint": artifact.fingerprint,
@@ -529,15 +690,17 @@ class NotionSync:
                         upload_ids[artifact.key] = upload_id
                         self.state["packages"][package.package_key] = record
                         self._save()
-                label = f"{package.date} · {package.source.upper()}"
-                if package.job_id:
-                    label = f"{package.job_id} · {package.source.upper()}"
+                parsed = parse_run_id(package.run_id) if package.run_id else None
+                label = (
+                    f"{parsed.strftime('%H:%M:%S')} · {package.job_id or '手动运行'}"
+                    if parsed else f"Legacy · {package.job_id or '历史运行'}"
+                )
                 blocks = [_text_block(label, bold=True)]
                 if package.article_count is not None:
                     blocks.append(_text_block(f"新闻数量：{package.article_count}"))
                 blocks.extend(_artifact_blocks(
                     html_artifacts, upload_ids,
-                    title="HTML 阅读包（ZIP）",
+                    title=f"HTML 阅读包 · {package.artifact_variant}",
                     split_title="HTML 阅读包（文件较大，已自动分包）",
                 ))
                 blocks.extend(_artifact_blocks(
@@ -545,9 +708,18 @@ class NotionSync:
                     title="Word 阅读包",
                     split_title="Word 阅读包（文件较大，已自动分片）",
                 ))
+                for kind in ("epub", "pdf"):
+                    selected = [item for item in extra_artifacts if item.kind == kind]
+                    selected.extend(item for item in extra_artifacts if item.kind == f"{kind}_split")
+                    selected.extend(item for item in extra_artifacts if item.kind == f"{kind}_split_manifest")
+                    blocks.extend(_artifact_blocks(
+                        selected, upload_ids,
+                        title=f"原始 {kind.upper()}",
+                        split_title=f"原始 {kind.upper()}（文件较大，已自动分片）",
+                    ))
                 if not record.get("blocks_appended"):
                     assert self.client is not None
-                    self.client.append_blocks(date_id, blocks)
+                    self.client.append_blocks(run_id, blocks)
                     record["blocks_appended"] = True
                     self.state["packages"][package.package_key] = record
                     self._save()
@@ -570,9 +742,19 @@ def run_sync(
     state_path: str | Path = DEFAULT_STATE_PATH,
     timeout: float = 60.0,
     dry_run: bool = False,
+    researchreader_output: str | Path | None = None,
+    researchreader_books: str | Path | None = None,
 ) -> list[str]:
-    config = load_notion_config(token=token, root_page_id=root_page_id, export_root=export_root, state_path=state_path)
+    config = load_notion_config(
+        token=token, root_page_id=root_page_id, export_root=export_root,
+        state_path=state_path, researchreader_output=researchreader_output,
+        researchreader_books=researchreader_books,
+    )
     packages = ExportPackageScanner(config["export_root"]).scan()
+    if config["researchreader_output"] and config["researchreader_books"]:
+        packages.extend(ResearchReaderScanner(
+            config["researchreader_output"], config["researchreader_books"]
+        ).scan())
     if dry_run:
         return NotionSync(
             None, config["root_page_id"] or "dry-run",

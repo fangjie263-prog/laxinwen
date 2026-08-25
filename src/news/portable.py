@@ -556,6 +556,7 @@ def export_portable_package(
     source_id: Optional[str] = None,
     limit: int = 100,
     research_root: Optional[str | Path] = None,
+    run_id: str = "",
 ) -> PortableResult:
     """导出「HTML 新闻包」：``out_dir/index.html`` + ``out_dir/articles/NNN.html``。
 
@@ -670,6 +671,7 @@ def export_portable_reader_package(
     limit: int = 100,
     research_root: Optional[str | Path] = None,
     job_id: str = "",
+    run_id: str = "",
 ) -> PortableResult:
     """导出「便携阅读包」：面向分享给其他电脑用户的阅读包。
 
@@ -800,6 +802,8 @@ def export_portable_reader_package(
             source_id=source_id,
             limit=limit,
             job_id=job_id,
+            run_id=run_id,
+            rows=rows,
         )
         result.files.append(docx_path)
         # Word 与 HTML 导出篇数应当一致（同一批 rows）；若不一致以 Word 实际为准
