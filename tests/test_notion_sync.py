@@ -13,6 +13,7 @@ from news.notion_sync import (
     _build_html_artifacts,
     _build_word_artifacts,
     notion_max_upload_bytes,
+    NotionClient,
 )
 
 
@@ -263,3 +264,44 @@ def test_max_upload_env_and_default(monkeypatch):
     with pytest.raises(NotionSyncError):
         monkeypatch.setenv("NOTION_MAX_UPLOAD_MB", "0")
         notion_max_upload_bytes()
+
+
+def test_notion_client_upload_uses_configured_limit_without_stale_zip_constants(tmp_path, monkeypatch):
+    """真实文件上传路径不能引用已删除的 _ZIP_LIMIT/_PART_SIZE。"""
+    class FakeResponse:
+        status_code = 200
+        text = ""
+
+        def __init__(self, payload):
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    class FakeHttpClient:
+        timeout = 60
+
+        def __init__(self):
+            self.sent_parts = []
+
+        def request(self, method, url, **kwargs):
+            return FakeResponse({"id": "upload-1", "status": "uploaded"})
+
+        def post(self, url, **kwargs):
+            self.sent_parts.append(kwargs.get("data"))
+            return FakeResponse({"status": "uploaded"})
+
+    monkeypatch.delenv("NOTION_MAX_UPLOAD_MB", raising=False)
+    small = tmp_path / "small.bin"
+    small.write_bytes(b"small")
+    fake = FakeHttpClient()
+    assert NotionClient("token", client=fake).upload_file(small) == "upload-1"
+    assert fake.sent_parts == [None]
+
+    monkeypatch.setenv("NOTION_MAX_UPLOAD_MB", "0.00001")
+    large = tmp_path / "large.bin"
+    large.write_bytes(b"x" * 40)
+    fake = FakeHttpClient()
+    assert NotionClient("token", client=fake).upload_file(large) == "upload-1"
+    assert len(fake.sent_parts) == 4
+    assert all(part and "part_number" in part for part in fake.sent_parts)

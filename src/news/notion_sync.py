@@ -378,12 +378,15 @@ class NotionClient:
     def upload_file(self, path: Path, *, content_type: Optional[str] = None) -> str:
         content_type = content_type or mimetypes.guess_type(path.name)[0] or "application/octet-stream"
         size = path.stat().st_size
-        if size <= _ZIP_LIMIT:
+        # 上传大小必须与 artifact 准备阶段使用同一个正式配置；不要使用
+        # 未定义的旧版 _ZIP_LIMIT / _PART_SIZE 常量。
+        upload_limit = notion_max_upload_bytes()
+        if size <= upload_limit:
             mode = "single_part"
             number_of_parts = None
         else:
             mode = "multi_part"
-            number_of_parts = (size + _PART_SIZE - 1) // _PART_SIZE
+            number_of_parts = (size + upload_limit - 1) // upload_limit
         body: dict[str, Any] = {"mode": mode, "filename": path.name, "content_type": content_type}
         if number_of_parts:
             body["number_of_parts"] = number_of_parts
@@ -392,7 +395,7 @@ class NotionClient:
         with path.open("rb") as handle:
             part = 1
             while True:
-                chunk = handle.read(_PART_SIZE if number_of_parts else -1)
+                chunk = handle.read(upload_limit if number_of_parts else -1)
                 if not chunk:
                     break
                 data = {"part_number": str(part)} if number_of_parts else None
