@@ -11,6 +11,7 @@ from news.notion_sync import (
     NotionSyncError,
     ResearchReaderScanner,
     _build_html_artifacts,
+    _build_extra_artifacts,
     _build_word_artifacts,
     notion_max_upload_bytes,
     NotionClient,
@@ -148,6 +149,67 @@ def test_researchreader_scanner_only_selects_daily_html_images_and_books(tmp_pat
     assert item.run_id == ""
     assert {path.name for path in item.html_files} == {"daily.html", "cover.jpg"}
     assert item.extra_files == (book,)
+
+
+def test_researchreader_scanner_detects_translation_and_dual_html_variants(tmp_path):
+    output = tmp_path / "output"
+    package = output / "south-china-morning-post-6150_25-08-2026_Kobo"
+    (package / "images").mkdir(parents=True)
+    (package / "daily.html").write_text("<html><body>original</body></html>", encoding="utf-8")
+    translation = package / "daily-zh-CN-translation (7).html"
+    dual = package / "daily-zh-CN-dual (15).html"
+    translation.write_text("<html><body>中文</body></html>", encoding="utf-8")
+    dual.write_text("<html><body>中英</body></html>", encoding="utf-8")
+
+    found = ResearchReaderScanner(output, tmp_path / "books").scan()
+    item = found[0]
+    assert {path.name for path in item.extra_files} == {translation.name, dual.name}
+
+    artifacts = _build_extra_artifacts(item, tmp_path / "upload", 64 * 1024)
+    assert {artifact.artifact_variant for artifact in artifacts} == {
+        "zh-CN-translation", "zh-CN-dual"
+    }
+    assert all(artifact.kind == "html" for artifact in artifacts)
+    assert all(artifact.path.suffix == ".html" for artifact in artifacts)
+    assert all("images" not in artifact.path.parts for artifact in artifacts)
+
+
+def test_large_translation_html_is_split_at_article_boundaries_without_zip(tmp_path):
+    output = tmp_path / "output"
+    package_dir = output / "barrons_25-08-2026_Kobo"
+    package_dir.mkdir(parents=True)
+    (package_dir / "daily.html").write_text("<html><body>original</body></html>", encoding="utf-8")
+    translated = package_dir / "daily-zh-CN-translation (7).html"
+    translated.write_text(
+        "<html><head><title>T</title></head><body>"
+        + "".join(f"<article><h1>{i}</h1><p>{'x' * 250}</p></article>" for i in range(3))
+        + "</body></html>", encoding="utf-8"
+    )
+    package = ResearchReaderScanner(output, tmp_path / "books").scan()[0]
+
+    artifacts = _build_extra_artifacts(package, tmp_path / "upload", 600)
+    assert len(artifacts) > 1
+    assert all(artifact.kind == "html_split" for artifact in artifacts)
+    assert all(artifact.path.suffix == ".html" for artifact in artifacts)
+    assert all(artifact.path.stat().st_size <= 600 for artifact in artifacts)
+    assert all(b"PK" not in artifact.path.read_bytes()[:2] for artifact in artifacts)
+    assert all("<html" in artifact.path.read_text(encoding="utf-8") for artifact in artifacts)
+
+
+def test_date_page_position_is_date_descending():
+    class _Client:
+        timeout = 60
+
+    client = NotionClient("token", client=_Client())
+    client.child_pages = lambda _parent: [
+        {"id": "old", "title": "2026-08-01"},
+        {"id": "new", "title": "2026-08-25"},
+        {"id": "middle", "title": "2026-08-11"},
+    ]
+    assert client.date_page_position("source", "2026-08-05") == {
+        "type": "after_block", "after_block": {"id": "middle"}
+    }
+    assert client.date_page_position("source", "2026-08-30") == {"type": "start"}
 
 
 def test_legacy_synced_state_is_skipped_without_reupload(tmp_path):

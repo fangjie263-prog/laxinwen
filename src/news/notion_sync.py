@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 import httpx
+from selectolax.parser import HTMLParser
 
 from .ai.provider import load_dotenv
 from .run_identity import parse_run_id
@@ -42,6 +43,8 @@ _PACKAGE_RE = re.compile(
 _ARTICLE_RE = re.compile(r"(?:id|data-article-id)=[\"']article-(\d+)")
 DEFAULT_NOTION_MAX_UPLOAD_MB = 4.5
 _NOTION_MB = 1024 * 1024
+_TRANSLATED_HTML_RE = re.compile(r"^daily-zh-CN-translation.*\.html$", re.IGNORECASE)
+_DUAL_HTML_RE = re.compile(r"^daily-zh-CN-dual.*\.html$", re.IGNORECASE)
 
 
 class NotionSyncError(RuntimeError):
@@ -76,6 +79,7 @@ class UploadArtifact:
     kind: str
     content_type: str
     fingerprint: str
+    artifact_variant: str = "original"
 
 
 def _sha256_text(value: str) -> str:
@@ -210,7 +214,10 @@ class ResearchReaderScanner:
                 html_files = [daily]
                 if images.is_dir():
                     html_files.extend(item for item in images.rglob("*") if item.is_file())
-                files = list(html_files)
+                translated = sorted(path.glob("daily-zh-CN-translation*.html"))
+                dual = sorted(path.glob("daily-zh-CN-dual*.html"))
+                variant_files = [item for item in translated + dual if item.is_file()]
+                files = list(html_files) + variant_files
                 key_parts = [
                     "researchreader", self._source_name(match.group("source")), date,
                     path.name,
@@ -225,6 +232,7 @@ class ResearchReaderScanner:
                     package_path=path, index_path=daily, docx_path=None,
                     article_count=None, package_key=key, origin="researchreader",
                     html_files=tuple(html_files),
+                    extra_files=tuple(variant_files),
                 ))
         unmatched_books: list[ExportPackage] = []
         for path in sorted(self.books_root.glob("*")) if self.books_root.exists() else []:
@@ -361,7 +369,9 @@ class NotionClient:
                 break
         return result
 
-    def find_or_create_child_page(self, parent_id: str, title: str) -> str:
+    def find_or_create_child_page(
+        self, parent_id: str, title: str, *, position: Optional[dict[str, Any]] = None
+    ) -> str:
         for child in self.child_pages(parent_id):
             if child["title"].strip() == title:
                 return child["id"]
@@ -369,7 +379,28 @@ class NotionClient:
             "parent": {"page_id": parent_id},
             "properties": {"title": {"title": [{"type": "text", "text": {"content": title}}]}},
         }
+        if position:
+            payload["position"] = position
         return self._request("POST", "/pages", json=payload)["id"]
+
+    def date_page_position(self, parent_id: str, date: str) -> dict[str, Any]:
+        """计算新 Date Page 的位置，按真实日期从新到旧插入。"""
+        try:
+            target = datetime.strptime(date, "%Y-%m-%d").date()
+        except ValueError:
+            return {"type": "start"}
+        dated: list[tuple[Any, str]] = []
+        for child in self.child_pages(parent_id):
+            try:
+                child_date = datetime.strptime(child["title"].strip(), "%Y-%m-%d").date()
+            except (KeyError, ValueError):
+                continue
+            dated.append((child_date, child["id"]))
+        newer = [(child_date, child_id) for child_date, child_id in dated if child_date > target]
+        if not newer:
+            return {"type": "start"}
+        _, nearest_newer_id = min(newer, key=lambda item: item[0])
+        return {"type": "after_block", "after_block": {"id": nearest_newer_id}}
 
     def append_blocks(self, page_id: str, blocks: list[dict[str, Any]]) -> None:
         for start in range(0, len(blocks), 100):
@@ -550,9 +581,82 @@ def _build_word_artifacts(package: ExportPackage, target_dir: Path, max_bytes: i
     )
 
 
+def _html_variant(path: Path) -> Optional[str]:
+    if _TRANSLATED_HTML_RE.match(path.name):
+        return "zh-CN-translation"
+    if _DUAL_HTML_RE.match(path.name):
+        return "zh-CN-dual"
+    return None
+
+
+def _split_html_file(
+    path: Path, target_dir: Path, max_bytes: int, *, variant: str
+) -> list[UploadArtifact]:
+    """按 article/section 边界生成可独立打开的完整 HTML parts。"""
+    text = path.read_text(encoding="utf-8", errors="replace")
+    tree = HTMLParser(text)
+    nodes = tree.css("article") or tree.css("section")
+    if not nodes:
+        raise NotionSyncError(
+            f"无法按 article/section 边界切分 HTML：{path.name}"
+        )
+    head = tree.head.html if tree.head else "<head><meta charset=\"utf-8\"></head>"
+    prefix = "<!doctype html><html>"
+    suffix = "</body></html>"
+
+    def render(group: list[str]) -> bytes:
+        return (prefix + head + "<body>" + "".join(group) + suffix).encode("utf-8")
+
+    groups: list[list[str]] = []
+    current: list[str] = []
+    for node in nodes:
+        html = node.html
+        candidate = render(current + [html])
+        if len(candidate) <= max_bytes:
+            current.append(html)
+            continue
+        if not current:
+            raise NotionSyncError(
+                f"单个 HTML article/section 已超过 Notion 上限：{path.name}"
+            )
+        groups.append(current)
+        current = [html]
+    if current:
+        groups.append(current)
+
+    target_dir.mkdir(parents=True, exist_ok=True)
+    artifacts: list[UploadArtifact] = []
+    for index, group in enumerate(groups, 1):
+        part_path = target_dir / f"{path.name}.part{index:03d}.html"
+        part_path.write_bytes(render(group))
+        if part_path.stat().st_size > max_bytes:
+            raise NotionSyncError(f"生成 HTML part 超过 Notion 上限：{part_path.name}")
+        artifacts.append(UploadArtifact(
+            key=f"html:{variant}:{path.name}:part:{index:03d}",
+            path=part_path,
+            label=part_path.name,
+            kind="html_split",
+            content_type="text/html",
+            fingerprint=_file_fingerprint(part_path),
+            artifact_variant=variant,
+        ))
+    return artifacts
+
+
 def _build_extra_artifacts(package: ExportPackage, target_dir: Path, max_bytes: int) -> list[UploadArtifact]:
     artifacts: list[UploadArtifact] = []
     for index, path in enumerate(package.extra_files, 1):
+        variant = _html_variant(path) if path.suffix.lower() == ".html" else None
+        if variant:
+            if path.stat().st_size <= max_bytes:
+                artifacts.append(UploadArtifact(
+                    key=f"html:{variant}:{path.name}", path=path, label=path.name,
+                    kind="html", content_type="text/html",
+                    fingerprint=_file_fingerprint(path), artifact_variant=variant,
+                ))
+            else:
+                artifacts.extend(_split_html_file(path, target_dir, max_bytes, variant=variant))
+            continue
         kind = path.suffix.lower().lstrip(".") or "file"
         content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
         if path.stat().st_size <= max_bytes:
@@ -571,7 +675,7 @@ def _build_extra_artifacts(package: ExportPackage, target_dir: Path, max_bytes: 
 def _artifact_blocks(artifacts: list[UploadArtifact], ids: dict[str, str], *, title: str, split_title: str) -> list[dict[str, Any]]:
     if not artifacts:
         return []
-    if len(artifacts) == 1 and artifacts[0].kind in {"html_zip", "word"}:
+    if len(artifacts) == 1 and artifacts[0].kind in {"html_zip", "html", "word"}:
         return _file_block(title, ids[artifacts[0].key])
     blocks = [_text_block(split_title, bold=True)]
     parts = [item for item in artifacts if not item.kind.endswith("_manifest")]
@@ -588,11 +692,15 @@ def _artifact_identity(package: ExportPackage, artifact: UploadArtifact) -> str:
     artifact_type = artifact.kind.split("_", 1)[0]
     if artifact.kind.endswith("_manifest"):
         artifact_type = artifact.kind.removesuffix("_manifest")
-    part = artifact.key.rsplit(":", 1)[-1]
+    if artifact.artifact_variant == "original":
+        # Preserve the identity shape used by existing notion-sync.json files.
+        part = artifact.key.rsplit(":", 1)[-1]
+    else:
+        part = ":".join(artifact.key.split(":")[2:])
     run = package.run_id or f"legacy:{package.package_key}"
     return "|".join([
         package.origin, package.source, package.date, run,
-        artifact_type, package.artifact_variant, part,
+        artifact_type, artifact.artifact_variant, part,
     ])
 
 
@@ -637,9 +745,18 @@ class NotionSync:
                     self._save()
                 date_id = self.state["date_pages"].get(date_key)
                 if not date_id:
-                    date_id = self.client.find_or_create_child_page(
-                        source_id, package.date
+                    date_position = (
+                        self.client.date_page_position(source_id, package.date)
+                        if hasattr(self.client, "date_page_position") else None
                     )
+                    try:
+                        date_id = self.client.find_or_create_child_page(
+                            source_id, package.date, position=date_position
+                        )
+                    except TypeError as exc:
+                        if "position" not in str(exc):
+                            raise
+                        date_id = self.client.find_or_create_child_page(source_id, package.date)
                     self.state["date_pages"][date_key] = date_id
                     self._save()
                 run_key = "|".join([
@@ -703,9 +820,23 @@ class NotionSync:
                     blocks.append(_text_block(f"新闻数量：{package.article_count}"))
                 blocks.extend(_artifact_blocks(
                     html_artifacts, upload_ids,
-                    title=f"HTML 阅读包 · {package.artifact_variant}",
+                    title="HTML 阅读包 · 原文",
                     split_title="HTML 阅读包（文件较大，已自动分包）",
                 ))
+                for variant, title in (
+                    ("zh-CN-translation", "HTML 阅读包 · 中文 HTML"),
+                    ("zh-CN-dual", "HTML 阅读包 · 中英双语 HTML"),
+                ):
+                    selected = [
+                        item for item in extra_artifacts
+                        if item.artifact_variant == variant
+                        and item.kind in {"html", "html_split"}
+                    ]
+                    blocks.extend(_artifact_blocks(
+                        selected, upload_ids,
+                        title=title,
+                        split_title=f"{title}（文件较大，已自动分片）",
+                    ))
                 blocks.extend(_artifact_blocks(
                     word_artifacts, upload_ids,
                     title="Word 阅读包",
