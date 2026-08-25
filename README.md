@@ -365,7 +365,10 @@ laxinwen/
 ├── sites/{eco.yaml,hkej.yaml,rfi.yaml}
 ├── scripts/windows/{install-scheduled-fetch.bat,
 │                    delete-scheduled-fetch.bat,
-│                    run-scheduled-fetch-now.bat}
+│                    run-scheduled-fetch-now.bat,
+│                    install-notion-sync.bat,
+│                    run-notion-sync-now.bat,
+│                    delete-notion-sync.bat}
 ├── src/news/
 │   ├── cli.py, config.py, model.py, normalize.py
 │   ├── discover.py, fetch.py, extract.py, pipeline.py
@@ -373,6 +376,7 @@ laxinwen/
 │   ├── portable.py, word_export.py, reader_server.py
 │   ├── gui.py, ai_settings_dialog.py, beijing.py
 │   ├── scheduled_fetch.py, scheduler_config.py, task_scheduler.py
+│   ├── notion_sync.py
 │   ├── sources/{base.py,hkej.py,rfi.py}
 │   └── ai/{config_store.py,provider.py,openai_compatible.py,
 │           processor.py,prompts.py,schema.py}
@@ -393,6 +397,59 @@ xvfb-run -a uv run python -m pytest tests/test_gui.py tests/test_gui_monitor.py 
 ```
 
 测试不会自动创建真实 Windows Task Scheduler 任务；真实任务行为需要在 Windows 上由用户显式安装或运行。
+
+## Notion 自动归档
+
+`news notion-sync` 是独立的归档层，只扫描已经生成的 Portable Reader 包，不重新抓取新闻、不重新运行 AI，也不修改 HTML 或 Word 内容。默认扫描 `data/export/portable/`，并将内容归档为：
+
+```text
+NOTION_ROOT_PAGE_ID
+├── ECO
+│   └── 2026-08-24 · ECO
+├── RFI
+│   └── 2026-08-24 · RFI
+└── HKEJ
+    └── 2026-08-24 · HKEJ
+```
+
+日期页面只保存归档索引：文章数量、任务标识、HTML 阅读包 ZIP 和 Word 阅读包；不会把每篇新闻拆成 Notion 页面或大量 block。HTML 阅读包作为完整目录 ZIP 上传，Word 作为独立 DOCX 上传。文件使用 Notion 官方 File Upload API；大文件按 API 要求分片上传。
+
+### 配置
+
+在项目根目录 `.env` 中设置：
+
+```dotenv
+NOTION_TOKEN=
+NOTION_ROOT_PAGE_ID=
+NOTION_MAX_UPLOAD_MB=4.5
+```
+
+需要先在 Notion 创建 Integration，将它授权给 `Laxinwen News` 根页面，并填写根页面 ID。Token 不会写入代码、日志或 `data/notion-sync.json`。
+
+`NOTION_MAX_UPLOAD_MB` 可选，默认安全值为 4.5 MiB。HTML ZIP 会排除 Portable 目录中的所有 `.docx`，因此 Word 不会在 HTML ZIP 中重复上传。小包上传为单个 ZIP；超过阈值时按文件重新装箱为多个标准 ZIP。单个源文件仍超限时，会生成有恢复 manifest 的二进制分片。Word 小于阈值时直接上传 DOCX，超过阈值时使用同样的分片和恢复说明机制。
+
+### CLI 与状态
+
+```powershell
+uv run news notion-sync
+uv run news notion-sync --dry-run
+```
+
+同步状态保存在 `data/notion-sync.json`。状态身份结合来源、日期、包路径和包内文件元数据；每个 HTML/Word artifact 记录 fingerprint、part、文件大小和 Notion upload ID，因此失败重试只补传缺失 part。全部 artifact 和归档 block 成功后才标记包完成；同一个包成功同步后重复扫描会跳过，不会重复创建日期页面、上传文件或添加归档 block。多个 job 在同一 source/date 下共用日期页面，各自作为该页面中的独立阅读包条目。
+
+同步输出区分 `SYNC SUCCESS`、`SYNC SKIP` 和 `SYNC FAILED`。文件上传或 Notion API 在中途失败时，已完成的页面和文件 ID 会保存在状态文件，下一次运行可以继续。
+
+### Windows 独立任务
+
+Notion 同步不依赖新闻抓取任务，也不要求 GUI 或 PowerShell 窗口持续打开。可使用以下脚本安装每小时运行一次的独立任务：
+
+```text
+scripts/windows/install-notion-sync.bat
+scripts/windows/run-notion-sync-now.bat
+scripts/windows/delete-notion-sync.bat
+```
+
+真实 Notion API 上传需要有效的 Token、根页面授权和网络连接；没有这些条件时只能运行 `--dry-run` 或离线测试，不能宣称完成真实 Notion 验证。
 
 ## License
 

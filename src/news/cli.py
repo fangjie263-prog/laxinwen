@@ -511,6 +511,27 @@ def cmd_scheduler(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_notion_sync(args: argparse.Namespace) -> int:
+    """扫描 Portable Reader 包并同步到 Notion。"""
+    from .notion_sync import NotionSyncError, run_sync
+
+    try:
+        messages = run_sync(
+            token=args.notion_token,
+            root_page_id=args.root_page_id,
+            export_root=args.export_root,
+            state_path=args.state,
+            timeout=args.timeout,
+            dry_run=args.dry_run,
+        )
+    except NotionSyncError as exc:
+        print(f"NOTION SYNC FAILED · {exc}", file=sys.stderr)
+        return 1
+    for message in messages:
+        print(message)
+    return 0
+
+
 def _build_scheduled_fetch_argv(args: argparse.Namespace) -> list[str]:
     """把 cli 的 args 转发给 scheduled_fetch.main（避免重复构造 argparse）。"""
     argv = ["--db", str(args.db), "--log-file", str(args.log_file)]
@@ -626,6 +647,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_scheduler.add_argument("--project-root", default=None, help="项目根目录（默认自动探测）")
     _add_common_args(p_scheduler)
     p_scheduler.set_defaults(func=cmd_scheduler)
+
+    p_notion = sub.add_parser(
+        "notion-sync",
+        help="扫描 Portable 阅读包并同步到 Notion",
+    )
+    p_notion.add_argument("--export-root", default=str(Path("data") / "export" / "portable"), help="Portable 导出目录")
+    p_notion.add_argument("--state", default=str(Path("data") / "notion-sync.json"), help="本地同步状态文件")
+    p_notion.add_argument("--notion-token", default=None, help="临时覆盖 NOTION_TOKEN（不写入文件）")
+    p_notion.add_argument("--root-page-id", default=None, help="临时覆盖 NOTION_ROOT_PAGE_ID")
+    p_notion.add_argument("--timeout", type=float, default=60.0, help="Notion API 请求超时（秒）")
+    p_notion.add_argument("--dry-run", action="store_true", help="只扫描并显示待同步包，不调用 Notion API")
+    p_notion.set_defaults(func=cmd_notion_sync, verbose=False)
 
     p_export = sub.add_parser(
         "export",

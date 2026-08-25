@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import os
 import queue
 import re
@@ -109,6 +110,7 @@ _DONE_SENTINELS = {
     "__ARCHIVE_DONE__": "打开新闻库",
     "__RESEARCH_DONE__": "打开 AI 研究结果",
     "__PORTABLE_EXPORT_DONE__": "导出",
+    "__NOTION_SYNC_DONE__": "Notion 同步",
     "__SCHED_INSTALL_DONE__": "安装/更新定时任务",
     "__SCHED_DELETE_DONE__": "删除定时任务",
     "__SCHED_RUNNOW_DONE__": "立即运行一次",
@@ -249,6 +251,7 @@ class _NewsReaderApp:
         self._busy = False
         self._active_source = site
         self.last_action = "—"
+        self.notion_status_var = tk.StringVar(value="")
 
         # 抓取监控（小窗口摘要）：只保留最近若干条任务级摘要，不显示底层日志
         self._monitor_entries: list[str] = []
@@ -412,6 +415,14 @@ class _NewsReaderApp:
             text="一次生成 HTML 阅读包 + Word 研究阅读包",
             foreground="#666",
         ).pack(side="left", padx=(8, 0))
+        self.notion_sync_btn = ttk.Button(
+            row3, text="Notion 同步", command=self._on_notion_sync
+        )
+        self.notion_sync_btn.pack(side="left", padx=(12, 0))
+        ttk.Label(
+            row3, textvariable=self.notion_status_var, foreground="#666"
+        ).pack(side="left", padx=(8, 0))
+        self._refresh_notion_status()
 
         # ---- 自动抓取 / 定时任务卡片（多任务列表） ----
         sched_card = ttk.LabelFrame(outer, text="自动抓取 / 定时任务", padding=10)
@@ -1074,6 +1085,8 @@ class _NewsReaderApp:
                         # 防御：若手动抓取异常导致未 finalize，强制收尾
                         if self._monitor_task:
                             self._monitor_finalize()
+                    elif msg == "__NOTION_SYNC_DONE__":
+                        self._refresh_notion_status()
                     self._refresh_status()
                 else:
                     self.log(msg)
@@ -1107,6 +1120,7 @@ class _NewsReaderApp:
         self.ai_btn.configure(state=state)
         self.research_btn.configure(state=state)
         self.ai_settings_btn.configure(state=state)
+        self.notion_sync_btn.configure(state=state)
         self.site_combo.configure(state="disabled" if busy else "readonly")
         for e in (self.limit_entry, self.ai_limit_entry):
             e.configure(state=state)
@@ -1366,6 +1380,50 @@ class _NewsReaderApp:
                 self._queue.put("__PORTABLE_EXPORT_DONE__")
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def _on_notion_sync(self) -> None:
+        """后台扫描 Portable 包并同步到 Notion，不参与新闻抓取。"""
+        if self._busy:
+            self.log("已有任务运行中，请等待完成。")
+            return
+        self._set_busy(True, run="Notion 同步")
+
+        def worker() -> None:
+            try:
+                from .notion_sync import run_sync
+
+                messages = run_sync()
+                for message in messages:
+                    self._bg_log(message)
+            except Exception as exc:
+                self._bg_log(f"Notion 同步失败：\n{exc}")
+            finally:
+                self._queue.put("__NOTION_SYNC_DONE__")
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _refresh_notion_status(self) -> None:
+        """显示 Notion 配置和最近一次成功同步时间，不显示 Token。"""
+        try:
+            from .notion_sync import load_notion_config
+
+            config = load_notion_config()
+            configured = bool(config["token"] and config["root_page_id"])
+            last_sync = None
+            if config["state_path"].is_file():
+                data = json.loads(config["state_path"].read_text(encoding="utf-8"))
+                synced = [
+                    item.get("synced_at")
+                    for item in data.get("packages", {}).values()
+                    if item.get("synced_at")
+                ]
+                last_sync = max(synced) if synced else None
+            status = "已配置" if configured else "未配置"
+            self.notion_status_var.set(
+                f"状态：{status} · 最后同步：{last_sync or '—'}"
+            )
+        except Exception:
+            self.notion_status_var.set("状态：未配置 · 最后同步：—")
 
     # ------------------------------------------------------------------ 定时抓取（多任务列表）
 
