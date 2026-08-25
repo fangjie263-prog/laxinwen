@@ -9,8 +9,8 @@
 - 所有展示时间统一北京时间（Asia/Shanghai）24 小时制
 """
 
+import os
 import sys
-import signal
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -304,6 +304,8 @@ class TestPortableReaderPackage:
         bat = (pkg / "Open-Reader.bat").read_text(encoding="utf-8")
         import re
         assert not re.search(r"[A-Za-z]:\\", bat)
+        assert "--no-browser" not in bat
+        assert "%PYTHON% server.py" in bat
 
     def test_server_listens_127_only_and_auto_port(self, storage, tmp_path):
         pkg = tmp_path / "Laxinwen-ECO-2026-08-10"
@@ -316,6 +318,8 @@ class TestPortableReaderPackage:
         assert "range(8000, 8010)" in srv
         assert "serve_forever" in srv
         assert "server_close" in srv
+        assert '"--no-browser"' in srv
+        assert "if not no_browser:" in srv
 
     def test_http_access_and_port_release(self, storage, tmp_path):
         """index.html 可通过 HTTP 访问；关闭后端口释放。"""
@@ -334,11 +338,28 @@ class TestPortableReaderPackage:
         free_port = probe.getsockname()[1]
         probe.close()
 
+        # 这是独立 server.py 子进程的测试替身：若 --no-browser 失效，
+        # server.py 调用 webbrowser.open() 时会立即失败。
+        (tmp_path / "webbrowser.py").write_text(
+            "def open(url):\n"
+            "    raise AssertionError('browser must not open in test mode')\n",
+            encoding="utf-8",
+        )
+        child_env = os.environ.copy()
+        child_env["PYTHONPATH"] = str(tmp_path)
+
         proc = subprocess.Popen(
-            [sys.executable, str(pkg / "server.py"), str(pkg), str(free_port)],
+            [
+                sys.executable,
+                str(pkg / "server.py"),
+                str(pkg),
+                str(free_port),
+                "--no-browser",
+            ],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            env=child_env,
         )
         try:
             time.sleep(1.5)
@@ -353,11 +374,16 @@ class TestPortableReaderPackage:
             ) as resp:
                 assert "Corpo do artigo 0" in resp.read().decode("utf-8")
         finally:
-            proc.send_signal(signal.SIGINT)  # 模拟用户关闭窗口 (Ctrl+C)
-            try:
-                proc.wait(timeout=5)
-            except Exception:
-                proc.kill()
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=5)
+            # 回收管道，避免测试遗留子进程或句柄。
+            proc.communicate(timeout=5)
+            assert proc.returncode is not None
         time.sleep(0.5)
         # 关闭后端口应释放（进程已退出；用 SO_REUSEADDR 探测可再次绑定）
         released = False

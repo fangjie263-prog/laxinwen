@@ -103,11 +103,13 @@ def _start(directory, port):
 
 
 def main():
-    directory = sys.argv[1] if len(sys.argv) > 1 else "."
+    args = [arg for arg in sys.argv[1:] if arg != "--no-browser"]
+    no_browser = "--no-browser" in sys.argv[1:]
+    directory = args[0] if args else "."
     port = 0
-    if len(sys.argv) > 2:
+    if len(args) > 1:
         try:
-            port = int(sys.argv[2])
+            port = int(args[1])
         except ValueError:
             port = 0
 
@@ -119,11 +121,15 @@ def main():
     print("Laxinwen 便携阅读包 - 本地阅读服务器已启动")
     print("  地址: " + url)
     print("  仅本机可访问 (127.0.0.1)，不暴露到局域网。")
-    print("  正在打开默认浏览器……")
+    if no_browser:
+        print("  已禁用自动打开浏览器（--no-browser）")
+    else:
+        print("  正在打开默认浏览器……")
     print("  关闭本窗口（或按 Ctrl+C）即可结束阅读服务器。")
     print("=" * 56)
 
-    webbrowser.open(url)
+    if not no_browser:
+        webbrowser.open(url)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
