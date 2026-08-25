@@ -877,7 +877,8 @@ def test_auto_export_same_job_different_run_ids_keep_separate_directories(tmp_pa
 
     assert len(seen) == 2
     assert seen[0] != seen[1]
-    assert all("20260825-" in path.name for path in seen)
+    assert seen[0].name == "Laxinwen-RFI-2026-08-25-080012-rfi-default"
+    assert seen[1].name == "Laxinwen-RFI-2026-08-25-141035-rfi-default"
 
 
 def test_lock_is_job_specific_not_source_specific(tmp_path):

@@ -180,12 +180,12 @@ uv run news export --type both --site eco --limit 100
 便携阅读包结构：
 
 ```text
-data/export/portable/Laxinwen-<SITE>-<date>/
+data/export/portable/Laxinwen-<SITE>-<date>-<time>-<job>/
 ├── index.html
 ├── articles/
 ├── server.py
 ├── Open-Reader.bat
-└── Laxinwen-<SITE>-<date>.docx
+└── Laxinwen-<SITE>-<date>-<time>-<job>.docx
 ```
 
 双击 `Open-Reader.bat` 后，内置服务器只监听 `127.0.0.1`，通过 HTTP 打开页面而非 `file://`；整个目录可以复制到其它电脑。
@@ -427,11 +427,15 @@ Run 页面保存归档索引：文章数量、任务标识、HTML 阅读包 ZIP 
 NOTION_TOKEN=
 NOTION_ROOT_PAGE_ID=
 NOTION_MAX_UPLOAD_MB=4.5
+RESEARCHREADER_OUTPUT_ROOT=
+RESEARCHREADER_BOOKS_ROOT=
 ```
 
 需要先在 Notion 创建 Integration，将它授权给 `Laxinwen News` 根页面，并填写根页面 ID。Token 不会写入代码、日志或 `data/notion-sync.json`。
 
 `NOTION_MAX_UPLOAD_MB` 可选，默认安全值为 4.5 MiB。HTML ZIP 会排除 Portable 目录中的所有 `.docx`，因此 Word 不会在 HTML ZIP 中重复上传。小包上传为单个 ZIP；超过阈值时按文件重新装箱为多个标准 ZIP。单个源文件仍超限时，会生成有恢复 manifest 的二进制分片。Word 小于阈值时直接上传 DOCX，超过阈值时使用同样的分片和恢复说明机制。
+
+`RESEARCHREADER_OUTPUT_ROOT` 指向 ResearchReader 的 HTML 输出目录，`RESEARCHREADER_BOOKS_ROOT` 指向 EPUB/PDF 原始书籍目录；两项都配置时才会扫描 ResearchReader。路径只从 `.env` 或系统环境变量读取，不会写入代码。
 
 ### CLI 与状态
 

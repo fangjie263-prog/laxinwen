@@ -26,7 +26,7 @@ from .news_archive import export_news_archive
 from .portable import export_independent_html, export_portable_package
 from .scheduler_config import EXPORT_BOTH, EXPORT_PORTABLE, EXPORT_WORD
 from .word_export import export_word_package, default_word_path
-from .run_identity import new_run_identity
+from .run_identity import new_run_identity, portable_package_name
 from .fetch import FetcherOptions, HttpxFetcher
 from .pipeline import Pipeline
 from .storage import Storage
@@ -332,8 +332,8 @@ def _export_format(args: argparse.Namespace, storage: Storage, fmt: str) -> int:
 
         identity = new_run_identity(job_id=args.job_id, output_root=Path("data") / "export" / "portable", source_id=site)
         job_suffix = f"-{args.job_id}" if args.job_id else ""
-        out = Path(args.output) if args.output else Path("data") / "export" / "portable" / (
-            f"Laxinwen-{site.upper()}-{identity.started_at.strftime('%Y-%m-%d')}-{identity.run_id}{job_suffix}"
+        out = Path(args.output) if args.output else Path("data") / "export" / "portable" / portable_package_name(
+            site, identity.started_at, identity.run_id, args.job_id
         )
         result = export_portable_package(
             storage,
@@ -368,8 +368,8 @@ def _export_format(args: argparse.Namespace, storage: Storage, fmt: str) -> int:
         research_root = Path("data") / "export" / "html"
         identity = new_run_identity(job_id=args.job_id, output_root=Path("data") / "export" / "portable", source_id=site)
         job_suffix = f"-{args.job_id}" if args.job_id else ""
-        out = Path(args.output) if args.output else Path("data") / "export" / "portable" / (
-            f"Laxinwen-{site.upper()}-{identity.started_at.strftime('%Y-%m-%d')}-{identity.run_id}{job_suffix}"
+        out = Path(args.output) if args.output else Path("data") / "export" / "portable" / portable_package_name(
+            site, identity.started_at, identity.run_id, args.job_id
         )
         result = export_portable_reader_package(
             storage,

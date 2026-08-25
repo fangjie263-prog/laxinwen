@@ -31,6 +31,22 @@ class RunIdentity:
         return f"{self.display_time} · {self.job_id or '手动运行'}"
 
 
+def portable_package_name(
+    source_id: str, started_at: datetime, run_id: str, job_id: str = ""
+) -> str:
+    """返回统一的 Portable 包目录名。
+
+    日期来自运行开始时间，目录只保留 run_id 的时间部分，避免重复写入日期；
+    ``run_id`` 本身仍保持 ``YYYYMMDD-HHMMSS[-序号]`` 格式。
+    """
+    run_time = run_id.split("-", 1)[1][:6] if "-" in run_id else started_at.strftime("%H%M%S")
+    job_suffix = f"-{job_id}" if job_id else ""
+    return (
+        f"Laxinwen-{source_id.upper()}-{started_at:%Y-%m-%d}-"
+        f"{run_time}{job_suffix}"
+    )
+
+
 def new_run_identity(
     *,
     job_id: str = "",
@@ -48,8 +64,12 @@ def new_run_identity(
         date = started_at.strftime("%Y-%m-%d")
         suffix = f"-{job_id}" if job_id else ""
         index = 2
-        while (root / f"Laxinwen-{source}-{date}-{run_id}{suffix}").exists():
+        new_name = portable_package_name(source, started_at, run_id, job_id)
+        old_name = f"Laxinwen-{source}-{date}-{run_id}{suffix}"
+        while (root / new_name).exists() or (root / old_name).exists():
             run_id = f"{base}-{index:02d}"
+            new_name = portable_package_name(source, started_at, run_id, job_id)
+            old_name = f"Laxinwen-{source}-{date}-{run_id}{suffix}"
             index += 1
     return RunIdentity(run_id=run_id, started_at=started_at, job_id=job_id)
 

@@ -675,9 +675,9 @@ def export_portable_reader_package(
 ) -> PortableResult:
     """导出「便携阅读包」：面向分享给其他电脑用户的阅读包。
 
-    输出结构（建议 ``data/export/portable/Laxinwen-<site>-<date>/``）：::
+    输出结构（建议 ``data/export/portable/Laxinwen-<site>-<date>-<time>-<job>/``）：::
 
-        Laxinwen-<SITE>-<date>/
+        Laxinwen-<SITE>-<date>-<time>-<job>/
         ├── index.html          # 自包含阅读器（同 HTML 新闻包）
         ├── articles/           # 单篇自包含页
         │   ├── 001.html
@@ -685,7 +685,7 @@ def export_portable_reader_package(
         │   └── ...
         ├── server.py           # 内嵌的迷你 HTTP 阅读服务器（纯标准库）
         ├── Open-Reader.bat     # Windows 双击启动器
-        └── Laxinwen-<SITE>-<date>.docx   # Word 研究阅读包（与 HTML 同批）
+        └── Laxinwen-<SITE>-<date>-<time>-<job>.docx   # Word 研究阅读包（与 HTML 同批）
 
     与「HTML 新闻包」的区别：多出 ``server.py`` + ``Open-Reader.bat``，
     目标是**分享给其他电脑用户**。
@@ -840,7 +840,7 @@ def default_package_path(source_id: str) -> Path:
 
 
 def default_reader_path(source_id: str) -> Path:
-    """默认便携阅读包输出目录：``data/export/portable/Laxinwen-<site>-<date>/``。"""
+    """兼容旧调用方的日期目录路径；CLI/GUI/Scheduler 使用带 run identity 的路径。"""
     return (
         Path("data")
         / "export"

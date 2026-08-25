@@ -35,7 +35,7 @@ from .scheduler_config import (
     SchedulerConfig,
     load_config,
 )
-from .run_identity import new_run_identity, parse_run_id
+from .run_identity import new_run_identity, parse_run_id, portable_package_name
 
 logger = logging.getLogger("news.scheduled_fetch")
 
@@ -379,13 +379,9 @@ def _run_portable_export(
         run_id = new_run_identity(
             job_id=job_id, output_root=portable_dir, source_id=source_id
         ).run_id
-    job_suffix = f"-{job_id}" if job_id else ""
     run_dt = parse_run_id(run_id)
-    run_date = run_dt.strftime("%Y-%m-%d") if run_dt else datetime.now().strftime("%Y-%m-%d")
-    base = portable_dir / (
-        f"Laxinwen-{_source_label(source_id)}-"
-        f"{run_date}-{run_id}{job_suffix}"
-    )
+    run_dt = run_dt or datetime.now()
+    base = portable_dir / portable_package_name(source_id, run_dt, run_id, job_id)
     out_dir = _unique_dir(base)
     export = portable_export or _default_portable_export
     kwargs = dict(
@@ -471,7 +467,7 @@ def _run_auto_export(
 
     # ---- 便携阅读包：HTML + Word（DOCX）一次生成 ----
     # 复用 _default_portable_export（portable_reader_package），它会在同一目录
-    # 同时写出 index.html 与 Laxinwen-<SITE>-<date>.docx。
+    # 同时写出 index.html 与同一 run identity 的 Word DOCX。
     html_msg = ""
     word_msg = ""
     try:

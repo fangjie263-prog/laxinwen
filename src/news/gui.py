@@ -34,7 +34,7 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 
 from .reader_server import ReaderServer
-from .run_identity import new_run_identity
+from .run_identity import new_run_identity, portable_package_name
 
 # 定时抓取相关（延迟导入默认实现，便于测试注入）
 from .scheduler_config import (
@@ -2005,6 +2005,12 @@ class _NewsReaderApp:
         """
         site_ids = self._site_ids_for(self._active_source)
         source_display = self._source_display(self._active_source)
+        source_id = self._active_source if self._active_source in ("rfi", "eco", "hkej") else "rfi"
+        run_identity = new_run_identity(
+            job_id=f"{source_id}-default",
+            output_root=self.portable_dir,
+            source_id=source_id,
+        )
         self._bg_log(f"开始抓取 {source_display} 最新 {limit} 篇")
         # 打开新连接（线程内使用）；多个站点共用一个 Storage 连接
         totals = {
@@ -2060,7 +2066,7 @@ class _NewsReaderApp:
 
             # 固定自动导出（与定时任务一致：便携阅读包）
             export_status = self._auto_export_after_fetch(
-                storage, source_display, limit, totals
+                storage, source_display, limit, totals, run_identity=run_identity
             )
 
         self._bg_log(f"抓取完成（{source_display}，limit={limit}）")
@@ -2077,24 +2083,31 @@ class _NewsReaderApp:
         }
 
     def _auto_export_after_fetch(self, storage, source_display: str, limit: int,
-                                 totals: dict) -> str:
+                                 totals: dict, *, run_identity=None) -> str:
         """抓取完成后固定自动导出便携阅读包（与定时任务一致）。
 
         返回导出状态字符串：成功 / 失败 / 跳过。导出失败不影响抓取结果。
         """
         try:
             self._bg_log("自动导出开始（便携阅读包）……")
-            out_dir = (
-                self.portable_dir
-                / f"Laxinwen-{source_display}-{datetime.now().strftime('%Y-%m-%d')}"
+            source_id = self._active_source if self._active_source in ("rfi", "eco", "hkej") else "rfi"
+            run_identity = run_identity or new_run_identity(
+                job_id=f"{source_id}-default",
+                output_root=self.portable_dir,
+                source_id=source_id,
+            )
+            out_dir = self.portable_dir / portable_package_name(
+                source_id, run_identity.started_at, run_identity.run_id, run_identity.job_id
             )
             self._bg_log(f"正在导出便携阅读包（最近 {limit} 篇）→ {out_dir}")
             result = self._portable_reader_export(
                 storage,
                 out_dir,
-                source_id=self._active_source if self._active_source in ("rfi", "eco", "hkej") else "rfi",
+                source_id=source_id,
                 limit=limit,
                 research_root=self.research_dir,
+                run_id=run_identity.run_id,
+                job_id=run_identity.job_id,
             )
             bat = out_dir / "Open-Reader.bat"
             if not (out_dir / "index.html").exists() or not bat.exists():
@@ -2256,8 +2269,7 @@ class _NewsReaderApp:
                     output_root=self.portable_dir, source_id=sid
                 )
                 out_dir = self.portable_dir / (
-                    f"Laxinwen-{sid.upper()}-"
-                    f"{identity.started_at.strftime('%Y-%m-%d')}-{identity.run_id}"
+                    portable_package_name(sid, identity.started_at, identity.run_id, identity.job_id)
                 )
                 self._bg_log(
                     f"正在导出 {self._source_display(sid)} 便携阅读包（HTML + Word，最近 {limit} 篇）→ {out_dir}"
@@ -2560,12 +2572,14 @@ def _default_portable_package_export(storage, out_dir, *, source_id, limit, rese
     )
 
 
-def _default_portable_reader_export(storage, out_dir, *, source_id, limit, research_root=None, run_id=""):
+def _default_portable_reader_export(
+    storage, out_dir, *, source_id, limit, research_root=None, job_id="", run_id=""
+):
     from .portable import export_portable_reader_package
 
     return export_portable_reader_package(
         storage, out_dir, source_id=source_id, limit=limit,
-        research_root=research_root, run_id=run_id,
+        research_root=research_root, job_id=job_id, run_id=run_id,
     )
 
 
