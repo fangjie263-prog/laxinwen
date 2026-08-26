@@ -13,6 +13,8 @@ from news.notion_sync import (
     _build_html_artifacts,
     _build_extra_artifacts,
     _build_word_artifacts,
+    _artifact_identity,
+    _write_json,
     notion_max_upload_bytes,
     NotionClient,
 )
@@ -28,9 +30,9 @@ class FakeNotion:
     def retrieve_page(self, page_id):
         return {"id": page_id}
 
-    def find_or_create_child_page(self, parent_id, title):
+    def find_or_create_child_page(self, parent_id, title, *, position=None):
         page_id = f"page-{len(self.created) + 1}"
-        self.created.append((parent_id, title, page_id))
+        self.created.append((parent_id, title, page_id, position))
         return page_id
 
     def upload_file(self, path, *, content_type=None):
@@ -95,7 +97,7 @@ def test_sync_is_idempotent_and_groups_jobs_by_source_date(tmp_path):
 
     assert first_run == ["SYNC SUCCESS · ECO · 2026-08-24", "SYNC SUCCESS · ECO · 2026-08-24"]
     assert all("already synced" in message for message in second_run)
-    assert [title for _, title, _ in fake.created] == [
+    assert [title for _, title, _, _ in fake.created] == [
         "ECO", "2026-08-24", "14:20:02 · morning", "18:00:00 · evening"
     ]
     assert len(fake.uploads) == 4
@@ -114,7 +116,7 @@ def test_same_source_date_different_run_ids_create_distinct_run_pages(tmp_path):
 
     sync.sync(packages)
 
-    assert [title for _, title, _ in fake.created] == [
+    assert [title for _, title, _, _ in fake.created] == [
         "RFI", "2026-08-25", "08:00:12 · rfi-default", "14:10:35 · rfi-default"
     ]
     assert first.exists() and second.exists()
@@ -167,7 +169,7 @@ def test_researchreader_scanner_detects_translation_and_dual_html_variants(tmp_p
 
     artifacts = _build_extra_artifacts(item, tmp_path / "upload", 64 * 1024)
     assert {artifact.artifact_variant for artifact in artifacts} == {
-        "zh-CN-translation", "zh-CN-dual"
+        "original", "zh-CN-translation", "zh-CN-dual"
     }
     assert all(artifact.kind == "html" for artifact in artifacts)
     assert all(artifact.path.suffix == ".html" for artifact in artifacts)
@@ -189,11 +191,100 @@ def test_large_translation_html_is_split_at_article_boundaries_without_zip(tmp_p
 
     artifacts = _build_extra_artifacts(package, tmp_path / "upload", 600)
     assert len(artifacts) > 1
-    assert all(artifact.kind == "html_split" for artifact in artifacts)
+    assert sum(artifact.kind == "html_split" for artifact in artifacts) == 3
+    assert any(artifact.artifact_variant == "original" for artifact in artifacts)
     assert all(artifact.path.suffix == ".html" for artifact in artifacts)
     assert all(artifact.path.stat().st_size <= 600 for artifact in artifacts)
     assert all(b"PK" not in artifact.path.read_bytes()[:2] for artifact in artifacts)
     assert all("<html" in artifact.path.read_text(encoding="utf-8") for artifact in artifacts)
+
+
+def test_researchreader_original_html_has_distinct_zip_and_single_artifacts(tmp_path):
+    output = tmp_path / "output"
+    package_dir = output / "barrons_24-08-2026_Kobo"
+    (package_dir / "images").mkdir(parents=True)
+    (package_dir / "daily.html").write_text("<html><body>original</body></html>", encoding="utf-8")
+    (package_dir / "images" / "cover.jpg").write_bytes(b"image")
+    package = ResearchReaderScanner(output, tmp_path / "books").scan()[0]
+
+    html = _build_html_artifacts(package, tmp_path / "upload", 64 * 1024)
+    extra = _build_extra_artifacts(package, tmp_path / "upload", 64 * 1024)
+    original_html = [item for item in extra if item.artifact_variant == "original"]
+
+    assert len(html) == 1 and html[0].kind == "html_zip"
+    assert len(original_html) == 1 and original_html[0].path == package.index_path
+    assert _artifact_identity(package, html[0]) != _artifact_identity(package, original_html[0])
+    assert "images" not in original_html[0].path.parts
+
+
+def test_researchreader_variant_is_artifact_level_idempotent(tmp_path):
+    output = tmp_path / "output"
+    books = tmp_path / "books"
+    package_dir = output / "barrons_24-08-2026_Kobo"
+    (package_dir / "images").mkdir(parents=True)
+    books.mkdir()
+    (package_dir / "daily.html").write_text("<html><body>original</body></html>", encoding="utf-8")
+    (package_dir / "images" / "cover.jpg").write_bytes(b"image")
+    (books / "barrons 24-08-2026 (Kobo).epub").write_bytes(b"epub")
+    state_path = tmp_path / "state.json"
+
+    first = ResearchReaderScanner(output, books).scan()[0]
+    first_client = FakeNotion()
+    first_messages = NotionSync(first_client, "root", state_path=state_path).sync([first])
+    assert first_messages == ["SYNC SUCCESS · BARRON'S · 2026-08-24"]
+    assert len(first_client.uploads) == 3
+
+    dual = package_dir / "daily-zh-CN-dual (5).html"
+    dual.write_text("<html><body>双语内容</body></html>", encoding="utf-8")
+    second = ResearchReaderScanner(output, books).scan()[0]
+    assert second.package_key == first.package_key
+
+    dry_messages = NotionSync(None, "root", state_path=state_path).sync([second], dry_run=True)
+    assert "SYNC PLAN" in dry_messages[0]
+    assert "upload 1 file(s)" in dry_messages[0]
+    assert dual.name in dry_messages[0]
+    assert "already synced" not in dry_messages[0]
+
+    second_client = FakeNotion()
+    sync_messages = NotionSync(second_client, "root", state_path=state_path).sync([second])
+    assert sync_messages == ["SYNC SUCCESS · BARRON'S · 2026-08-24"]
+    assert [item[0] for item in second_client.uploads] == [dual.name]
+    assert "HTML 阅读包 · 中英双语 HTML" in str(second_client.blocks)
+    assert "Legacy · 历史运行" not in str(second_client.blocks)
+
+    third_dry = NotionSync(None, "root", state_path=state_path).sync([second], dry_run=True)
+    assert "already synced" in third_dry[0]
+
+    dual.write_text("<html><body>修改后的双语内容</body></html>", encoding="utf-8")
+    changed = ResearchReaderScanner(output, books).scan()[0]
+    changed_dry = NotionSync(None, "root", state_path=state_path).sync([changed], dry_run=True)
+    assert "SYNC PLAN" in changed_dry[0]
+    assert dual.name in changed_dry[0]
+
+
+def test_researchreader_old_package_key_lookup_allows_new_variant(tmp_path):
+    output = tmp_path / "output"
+    books = tmp_path / "books"
+    package_dir = output / "barrons_24-08-2026_Kobo"
+    package_dir.mkdir(parents=True)
+    books.mkdir()
+    (package_dir / "daily.html").write_text("<html><body>original</body></html>", encoding="utf-8")
+    (books / "barrons 24-08-2026 (Kobo).epub").write_bytes(b"epub")
+    state_path = tmp_path / "state.json"
+    package = ResearchReaderScanner(output, books).scan()[0]
+    NotionSync(FakeNotion(), "root", state_path=state_path).sync([package])
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    record = state["packages"].pop(package.package_key)
+    state["packages"]["old-package-key"] = record
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    dual = package_dir / "daily-zh-CN-dual (5).html"
+    dual.write_text("<html><body>双语内容</body></html>", encoding="utf-8")
+    updated = ResearchReaderScanner(output, books).scan()[0]
+    message = NotionSync(None, "root", state_path=state_path).sync([updated], dry_run=True)[0]
+    assert "upload 1 file(s)" in message
+    assert dual.name in message
 
 
 def test_date_page_position_is_date_descending():
@@ -210,6 +301,22 @@ def test_date_page_position_is_date_descending():
         "type": "after_block", "after_block": {"id": "middle"}
     }
     assert client.date_page_position("source", "2026-08-30") == {"type": "start"}
+
+
+def test_run_page_position_is_time_descending():
+    class _Client:
+        timeout = 60
+
+    client = NotionClient("token", client=_Client())
+    client.child_pages = lambda _parent: [
+        {"id": "old", "title": "09:00:00 · morning"},
+        {"id": "new", "title": "14:00:00 · afternoon"},
+        {"id": "middle", "title": "11:00:00 · noon"},
+    ]
+    assert client.run_page_position("date", "20260825-100000") == {
+        "type": "after_block", "after_block": {"id": "middle"}
+    }
+    assert client.run_page_position("date", "20260825-150000") == {"type": "start"}
 
 
 def test_legacy_synced_state_is_skipped_without_reupload(tmp_path):
@@ -367,3 +474,22 @@ def test_notion_client_upload_uses_configured_limit_without_stale_zip_constants(
     assert NotionClient("token", client=fake).upload_file(large) == "upload-1"
     assert len(fake.sent_parts) == 4
     assert all(part and "part_number" in part for part in fake.sent_parts)
+
+
+def test_state_write_retries_replace_and_cleans_temp_file(tmp_path, monkeypatch):
+    state_path = tmp_path / "state.json"
+    original_replace = os.replace
+    attempts = []
+
+    def flaky_replace(source, destination):
+        attempts.append(source)
+        if len(attempts) < 3:
+            raise PermissionError("simulated Windows sharing violation")
+        return original_replace(source, destination)
+
+    monkeypatch.setattr("news.notion_sync.os.replace", flaky_replace)
+    _write_json(state_path, {"packages": {"one": {"synced": True}}})
+
+    assert json.loads(state_path.read_text(encoding="utf-8"))["packages"]["one"]["synced"] is True
+    assert len(attempts) == 3
+    assert not list(tmp_path.glob(".notion-sync-*.json"))

@@ -14,6 +14,7 @@ import mimetypes
 import os
 import re
 import tempfile
+import time
 import zipfile
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
@@ -217,15 +218,10 @@ class ResearchReaderScanner:
                 translated = sorted(path.glob("daily-zh-CN-translation*.html"))
                 dual = sorted(path.glob("daily-zh-CN-dual*.html"))
                 variant_files = [item for item in translated + dual if item.is_file()]
-                files = list(html_files) + variant_files
                 key_parts = [
                     "researchreader", self._source_name(match.group("source")), date,
                     path.name,
                 ]
-                key_parts.extend(
-                    f"{item.relative_to(path)}:{item.stat().st_size}:{item.stat().st_mtime_ns}"
-                    for item in files
-                )
                 key = _sha256_text("|".join(key_parts))
                 packages.append(ExportPackage(
                     source=self._source_name(match.group("source")), date=date, job_id="",
@@ -283,7 +279,16 @@ def _write_json(path: Path, data: dict[str, Any]) -> None:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             json.dump(data, handle, ensure_ascii=False, indent=2)
             handle.write("\n")
-        os.replace(temp_name, path)
+            handle.flush()
+            os.fsync(handle.fileno())
+        for attempt in range(3):
+            try:
+                os.replace(temp_name, path)
+                break
+            except OSError:
+                if attempt == 2:
+                    raise
+                time.sleep(0.05 * (attempt + 1))
     finally:
         try:
             os.unlink(temp_name)
@@ -397,6 +402,27 @@ class NotionClient:
                 continue
             dated.append((child_date, child["id"]))
         newer = [(child_date, child_id) for child_date, child_id in dated if child_date > target]
+        if not newer:
+            return {"type": "start"}
+        _, nearest_newer_id = min(newer, key=lambda item: item[0])
+        return {"type": "after_block", "after_block": {"id": nearest_newer_id}}
+
+    def run_page_position(self, parent_id: str, run_id: str) -> Optional[dict[str, Any]]:
+        """计算新 Run Page 的位置，按运行时间从新到旧插入。"""
+        target = parse_run_id(run_id) if run_id else None
+        if target is None:
+            return None
+        dated: list[tuple[datetime, str]] = []
+        for child in self.child_pages(parent_id):
+            match = re.match(r"^(\d{2}:\d{2}:\d{2})\s*·", child["title"].strip())
+            if not match:
+                continue
+            try:
+                child_time = datetime.strptime(match.group(1), "%H:%M:%S").time()
+            except ValueError:
+                continue
+            dated.append((datetime.combine(target.date(), child_time), child["id"]))
+        newer = [(child_time, child_id) for child_time, child_id in dated if child_time > target]
         if not newer:
             return {"type": "start"}
         _, nearest_newer_id = min(newer, key=lambda item: item[0])
@@ -645,6 +671,16 @@ def _split_html_file(
 
 def _build_extra_artifacts(package: ExportPackage, target_dir: Path, max_bytes: int) -> list[UploadArtifact]:
     artifacts: list[UploadArtifact] = []
+    if package.origin == "researchreader" and package.index_path.is_file():
+        path = package.index_path
+        if path.stat().st_size <= max_bytes:
+            artifacts.append(UploadArtifact(
+                key="html:original:single", path=path, label=path.name,
+                kind="html", content_type="text/html",
+                fingerprint=_file_fingerprint(path), artifact_variant="original",
+            ))
+        else:
+            artifacts.extend(_split_html_file(path, target_dir, max_bytes, variant="original"))
     for index, path in enumerate(package.extra_files, 1):
         variant = _html_variant(path) if path.suffix.lower() == ".html" else None
         if variant:
@@ -692,16 +728,77 @@ def _artifact_identity(package: ExportPackage, artifact: UploadArtifact) -> str:
     artifact_type = artifact.kind.split("_", 1)[0]
     if artifact.kind.endswith("_manifest"):
         artifact_type = artifact.kind.removesuffix("_manifest")
-    if artifact.artifact_variant == "original":
+    if artifact.artifact_variant == "original" and package.origin != "researchreader":
         # Preserve the identity shape used by existing notion-sync.json files.
         part = artifact.key.rsplit(":", 1)[-1]
     else:
-        part = ":".join(artifact.key.split(":")[2:])
+        part = ":".join(artifact.key.split(":")[1:])
     run = package.run_id or f"legacy:{package.package_key}"
     return "|".join([
         package.origin, package.source, package.date, run,
         artifact_type, artifact.artifact_variant, part,
     ])
+
+
+def _normalized_path(value: str | Path) -> str:
+    return os.path.normcase(os.path.abspath(str(value)))
+
+
+def _package_state(
+    state: dict[str, Any], package: ExportPackage
+) -> tuple[str, dict[str, Any]]:
+    """按当前 key 查找，并兼容旧 ResearchReader package key。"""
+    packages = state.get("packages", {})
+    if package.package_key in packages:
+        return package.package_key, packages[package.package_key]
+    if package.origin != "researchreader":
+        return package.package_key, {}
+    current_path = _normalized_path(package.package_path)
+    for key, record in packages.items():
+        if (
+            record.get("origin") == "researchreader"
+            and str(record.get("source", "")).lower() == package.source.lower()
+            and record.get("date") == package.date
+            and record.get("package_path")
+            and _normalized_path(record["package_path"]) == current_path
+        ):
+            return key, record
+    return package.package_key, {}
+
+
+def _legacy_artifact_state(
+    record: dict[str, Any], package: ExportPackage, artifact: UploadArtifact
+) -> Optional[dict[str, Any]]:
+    """按 fingerprint/name 找旧 identity，避免 package key 迁移导致重传。"""
+    artifacts = record.get("artifacts", {})
+    identity = _artifact_identity(package, artifact)
+    candidate = artifacts.get(identity) or artifacts.get(artifact.key)
+    if candidate:
+        return candidate
+    for item in artifacts.values():
+        if (
+            item.get("kind") == artifact.kind
+            and item.get("name") == artifact.label
+            and item.get("fingerprint") == artifact.fingerprint
+            and item.get("artifact_variant", "original") == artifact.artifact_variant
+            and item.get("upload_id")
+        ):
+            return item
+    if not artifacts and record.get("synced") and artifact.artifact_variant == "original":
+        legacy_upload_id = None
+        if artifact.kind == "html_zip":
+            legacy_upload_id = record.get("html_upload_id") or f"legacy-synced:{artifact.key}"
+        elif artifact.kind == "word":
+            legacy_upload_id = record.get("word_upload_id")
+        elif package.origin != "researchreader":
+            legacy_upload_id = f"legacy-synced:{artifact.key}"
+        if legacy_upload_id:
+            return {
+                "upload_id": legacy_upload_id,
+                "fingerprint": artifact.fingerprint,
+                "block_appended": True,
+            }
+    return None
 
 
 class NotionSync:
@@ -722,78 +819,122 @@ class NotionSync:
             self.client.retrieve_page(self.root_page_id)
         messages: list[str] = []
         for package in packages:
-            saved = self.state["packages"].get(package.package_key, {})
-            if saved.get("synced"):
-                messages.append(f"SYNC SKIP · {package.source.upper()} · {package.date} · already synced")
-                continue
-            if dry_run:
-                with tempfile.TemporaryDirectory(prefix="laxinwen-notion-") as temp:
-                    html = _build_html_artifacts(package, Path(temp), self.max_upload_bytes)
-                    word = _build_word_artifacts(package, Path(temp), self.max_upload_bytes)
-                messages.append(
-                    f"SYNC PLAN · {package.source.upper()} · {package.date} · "
-                    f"{package.package_path.name} · upload {len(html) + len(word)} file(s)"
-                )
-                continue
             try:
-                source_key = package.source.lower()
-                date_key = f"{source_key}:{package.date}"
-                source_id = self.state["source_pages"].get(source_key)
-                if not source_id:
-                    source_id = self.client.find_or_create_child_page(self.root_page_id, package.source.upper())
-                    self.state["source_pages"][source_key] = source_id
-                    self._save()
-                date_id = self.state["date_pages"].get(date_key)
-                if not date_id:
-                    date_position = (
-                        self.client.date_page_position(source_id, package.date)
-                        if hasattr(self.client, "date_page_position") else None
-                    )
-                    try:
-                        date_id = self.client.find_or_create_child_page(
-                            source_id, package.date, position=date_position
-                        )
-                    except TypeError as exc:
-                        if "position" not in str(exc):
-                            raise
-                        date_id = self.client.find_or_create_child_page(source_id, package.date)
-                    self.state["date_pages"][date_key] = date_id
-                    self._save()
-                run_key = "|".join([
-                    package.origin, package.source, package.date,
-                    package.run_id or f"legacy:{package.package_key}",
-                ])
-                run_id = self.state["run_pages"].get(run_key)
-                if not run_id:
-                    parsed = parse_run_id(package.run_id) if package.run_id else None
-                    run_label = (
-                        f"{parsed.strftime('%H:%M:%S')} · {package.job_id or '手动运行'}"
-                        if parsed else f"Legacy · {package.job_id or '历史运行'}"
-                    )
-                    run_id = self.client.find_or_create_child_page(date_id, run_label)
-                    self.state["run_pages"][run_key] = run_id
-                    self._save()
+                _, saved = _package_state(self.state, package)
                 record = dict(saved)
-                record.update({
-                    "origin": package.origin, "source": source_key, "date": package.date,
-                    "run_id": package.run_id, "job_id": package.job_id,
-                    "artifact_variant": package.artifact_variant,
-                    "package_path": str(package.package_path),
-                    "date_page_id": date_id, "notion_page_id": run_id,
-                })
                 with tempfile.TemporaryDirectory(prefix="laxinwen-notion-") as temp:
-                    html_artifacts = _build_html_artifacts(package, Path(temp), self.max_upload_bytes)
-                    word_artifacts = _build_word_artifacts(package, Path(temp), self.max_upload_bytes)
-                    extra_artifacts = _build_extra_artifacts(package, Path(temp), self.max_upload_bytes)
+                    target_dir = Path(temp)
+                    html_artifacts = _build_html_artifacts(package, target_dir, self.max_upload_bytes)
+                    word_artifacts = _build_word_artifacts(package, target_dir, self.max_upload_bytes)
+                    extra_artifacts = _build_extra_artifacts(package, target_dir, self.max_upload_bytes)
                     artifacts = html_artifacts + word_artifacts + extra_artifacts
-                    artifact_state = record.setdefault("artifacts", {})
-                    upload_ids: dict[str, str] = {}
+                    artifact_state = dict(record.get("artifacts", {}))
+                    resolved: dict[str, dict[str, Any]] = {}
+                    pending: list[UploadArtifact] = []
                     for artifact in artifacts:
                         identity = _artifact_identity(package, artifact)
-                        saved_artifact = artifact_state.get(identity) or artifact_state.get(artifact.key, {})
-                        if saved_artifact.get("fingerprint") == artifact.fingerprint and saved_artifact.get("upload_id"):
-                            upload_ids[artifact.key] = saved_artifact["upload_id"]
-                            continue
+                        prior = _legacy_artifact_state(record, package, artifact)
+                        if prior and prior.get("fingerprint") == artifact.fingerprint and prior.get("upload_id"):
+                            current = dict(prior)
+                            current.update({
+                                "identity": identity,
+                                "kind": artifact.kind,
+                                "name": artifact.label,
+                                "fingerprint": artifact.fingerprint,
+                                "artifact_variant": artifact.artifact_variant,
+                            })
+                            if "block_appended" not in current:
+                                current["block_appended"] = bool(record.get("blocks_appended"))
+                            artifact_state[identity] = current
+                            resolved[identity] = current
+                        else:
+                            pending.append(artifact)
+
+                    if dry_run:
+                        if not pending:
+                            messages.append(f"SYNC SKIP · {package.source.upper()} · {package.date} · already synced")
+                        else:
+                            labels = ", ".join(
+                                f"{item.artifact_variant}:{item.label}" for item in pending
+                            )
+                            messages.append(
+                                f"SYNC PLAN · {package.source.upper()} · {package.date} · "
+                                f"{package.package_path.name} · upload {len(pending)} file(s) · {labels}"
+                            )
+                        continue
+
+                    block_pending = [
+                        artifact for artifact in artifacts
+                        if not resolved.get(_artifact_identity(package, artifact), {}).get("block_appended")
+                    ]
+                    if not pending and not block_pending:
+                        messages.append(f"SYNC SKIP · {package.source.upper()} · {package.date} · already synced")
+                        continue
+                    source_key = package.source.lower()
+                    date_key = f"{source_key}:{package.date}"
+                    source_id = self.state["source_pages"].get(source_key)
+                    if not source_id:
+                        source_id = self.client.find_or_create_child_page(self.root_page_id, package.source.upper())
+                        self.state["source_pages"][source_key] = source_id
+                        self._save()
+                    date_id = self.state["date_pages"].get(date_key)
+                    if not date_id:
+                        date_position = (
+                            self.client.date_page_position(source_id, package.date)
+                            if hasattr(self.client, "date_page_position") else None
+                        )
+                        try:
+                            date_id = self.client.find_or_create_child_page(
+                                source_id, package.date, position=date_position
+                            )
+                        except TypeError as exc:
+                            if "position" not in str(exc):
+                                raise
+                            date_id = self.client.find_or_create_child_page(source_id, package.date)
+                        self.state["date_pages"][date_key] = date_id
+                        self._save()
+                    run_key = "|".join([
+                        package.origin, package.source, package.date,
+                        package.run_id or f"legacy:{package.package_key}",
+                    ])
+                    run_id = self.state["run_pages"].get(run_key)
+                    if not run_id:
+                        parsed = parse_run_id(package.run_id) if package.run_id else None
+                        run_label = (
+                            f"{parsed.strftime('%H:%M:%S')} · {package.job_id or '手动运行'}"
+                            if parsed else f"Legacy · {package.job_id or '历史运行'}"
+                        )
+                        run_position = (
+                            self.client.run_page_position(date_id, package.run_id)
+                            if hasattr(self.client, "run_page_position") else None
+                        )
+                        try:
+                            run_id = self.client.find_or_create_child_page(
+                                date_id, run_label, position=run_position
+                            )
+                        except TypeError as exc:
+                            if "position" not in str(exc):
+                                raise
+                            run_id = self.client.find_or_create_child_page(date_id, run_label)
+                        self.state["run_pages"][run_key] = run_id
+                        self._save()
+                    record.update({
+                        "origin": package.origin, "source": source_key, "date": package.date,
+                        "run_id": package.run_id, "job_id": package.job_id,
+                        "artifact_variant": package.artifact_variant,
+                        "package_path": str(package.package_path),
+                        "date_page_id": date_id, "notion_page_id": run_id,
+                    })
+                    record["synced"] = False
+                    record["artifacts"] = artifact_state
+                    upload_ids: dict[str, str] = {}
+                    for identity, item in resolved.items():
+                        if item.get("upload_id"):
+                            upload_ids[
+                                next(item_.key for item_ in artifacts if _artifact_identity(package, item_) == identity)
+                            ] = item["upload_id"]
+                    for artifact in pending:
+                        identity = _artifact_identity(package, artifact)
                         if artifact.path.stat().st_size > self.max_upload_bytes:
                             raise NotionSyncError(f"文件超过 Notion 安全上限：{artifact.path.name}")
                         assert self.client is not None
@@ -802,66 +943,81 @@ class NotionSync:
                             "identity": identity,
                             "kind": artifact.kind,
                             "name": artifact.label,
+                            "artifact_variant": artifact.artifact_variant,
                             "fingerprint": artifact.fingerprint,
                             "size": artifact.path.stat().st_size,
                             "upload_id": upload_id,
+                            "block_appended": False,
                             "uploaded_at": datetime.now(timezone.utc).isoformat(),
                         }
                         upload_ids[artifact.key] = upload_id
+                        resolved[identity] = artifact_state[identity]
                         self.state["packages"][package.package_key] = record
                         self._save()
-                parsed = parse_run_id(package.run_id) if package.run_id else None
-                label = (
-                    f"{parsed.strftime('%H:%M:%S')} · {package.job_id or '手动运行'}"
-                    if parsed else f"Legacy · {package.job_id or '历史运行'}"
-                )
-                blocks = [_text_block(label, bold=True)]
-                if package.article_count is not None:
-                    blocks.append(_text_block(f"新闻数量：{package.article_count}"))
-                blocks.extend(_artifact_blocks(
-                    html_artifacts, upload_ids,
-                    title="HTML 阅读包 · 原文",
-                    split_title="HTML 阅读包（文件较大，已自动分包）",
-                ))
-                for variant, title in (
-                    ("zh-CN-translation", "HTML 阅读包 · 中文 HTML"),
-                    ("zh-CN-dual", "HTML 阅读包 · 中英双语 HTML"),
-                ):
-                    selected = [
-                        item for item in extra_artifacts
-                        if item.artifact_variant == variant
-                        and item.kind in {"html", "html_split"}
-                    ]
+                    parsed = parse_run_id(package.run_id) if package.run_id else None
+                    label = (
+                        f"{parsed.strftime('%H:%M:%S')} · {package.job_id or '手动运行'}"
+                        if parsed else f"Legacy · {package.job_id or '历史运行'}"
+                    )
+                    blocks = []
+                    if not record.get("blocks_appended"):
+                        blocks.append(_text_block(label, bold=True))
+                        if package.article_count is not None:
+                            blocks.append(_text_block(f"新闻数量：{package.article_count}"))
+                    selected = [item for item in block_pending if item in html_artifacts]
                     blocks.extend(_artifact_blocks(
                         selected, upload_ids,
-                        title=title,
-                        split_title=f"{title}（文件较大，已自动分片）",
+                        title="HTML 阅读包 · 原文",
+                        split_title="HTML 阅读包（文件较大，已自动分包）",
                     ))
-                blocks.extend(_artifact_blocks(
-                    word_artifacts, upload_ids,
-                    title="Word 阅读包",
-                    split_title="Word 阅读包（文件较大，已自动分片）",
-                ))
-                for kind in ("epub", "pdf"):
-                    selected = [item for item in extra_artifacts if item.kind == kind]
-                    selected.extend(item for item in extra_artifacts if item.kind == f"{kind}_split")
-                    selected.extend(item for item in extra_artifacts if item.kind == f"{kind}_split_manifest")
+                    for variant, title in (
+                        ("original", "HTML 阅读包 · 原文 HTML"),
+                        ("zh-CN-translation", "HTML 阅读包 · 中文 HTML"),
+                        ("zh-CN-dual", "HTML 阅读包 · 中英双语 HTML"),
+                    ):
+                        selected = [
+                            item for item in block_pending
+                            if item.artifact_variant == variant
+                            and item.kind in {"html", "html_split"}
+                            and (variant != "original" or item in extra_artifacts)
+                        ]
+                        blocks.extend(_artifact_blocks(
+                            selected, upload_ids,
+                            title=title,
+                            split_title=f"{title}（文件较大，已自动分片）",
+                        ))
                     blocks.extend(_artifact_blocks(
-                        selected, upload_ids,
-                        title=f"原始 {kind.upper()}",
-                        split_title=f"原始 {kind.upper()}（文件较大，已自动分片）",
+                        [item for item in block_pending if item in word_artifacts], upload_ids,
+                        title="Word 阅读包",
+                        split_title="Word 阅读包（文件较大，已自动分片）",
                     ))
-                if not record.get("blocks_appended"):
-                    assert self.client is not None
-                    self.client.append_blocks(run_id, blocks)
-                    record["blocks_appended"] = True
+                    for kind in ("epub", "pdf"):
+                        selected = [item for item in block_pending if item.kind == kind]
+                        selected.extend(item for item in block_pending if item.kind == f"{kind}_split")
+                        selected.extend(item for item in block_pending if item.kind == f"{kind}_split_manifest")
+                        blocks.extend(_artifact_blocks(
+                            selected, upload_ids,
+                            title=f"原始 {kind.upper()}",
+                            split_title=f"原始 {kind.upper()}（文件较大，已自动分片）",
+                        ))
+                    if blocks:
+                        assert self.client is not None
+                        self.client.append_blocks(run_id, blocks)
+                        for artifact in block_pending:
+                            artifact_state[_artifact_identity(package, artifact)]["block_appended"] = True
+                    record["blocks_appended"] = all(
+                        artifact_state.get(_artifact_identity(package, artifact), {}).get("block_appended")
+                        for artifact in artifacts
+                    )
+                    record["synced"] = record["blocks_appended"] and all(
+                        artifact_state.get(_artifact_identity(package, artifact), {}).get("fingerprint") == artifact.fingerprint
+                        and artifact_state.get(_artifact_identity(package, artifact), {}).get("upload_id")
+                        for artifact in artifacts
+                    )
+                    record["synced_at"] = datetime.now(timezone.utc).isoformat()
                     self.state["packages"][package.package_key] = record
                     self._save()
-                record["synced"] = True
-                record["synced_at"] = datetime.now(timezone.utc).isoformat()
-                self.state["packages"][package.package_key] = record
-                self._save()
-                messages.append(f"SYNC SUCCESS · {package.source.upper()} · {package.date}")
+                    messages.append(f"SYNC SUCCESS · {package.source.upper()} · {package.date}")
             except Exception as exc:
                 messages.append(f"SYNC FAILED · {package.source.upper()} · {package.date} · {exc}")
                 logger.error("Notion 同步失败 %s: %s", package.package_path, exc)
