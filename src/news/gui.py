@@ -35,6 +35,7 @@ from tkinter import messagebox, ttk
 
 from .reader_server import ReaderServer
 from .run_identity import new_run_identity, portable_package_name
+from .integration.researchreader_adapter import LocalNewsFile, ResearchReaderAdapter
 
 # 定时抓取相关（延迟导入默认实现，便于测试注入）
 from .scheduler_config import (
@@ -112,6 +113,8 @@ _DONE_SENTINELS = {
     "__RESEARCH_DONE__": "打开 AI 研究结果",
     "__PORTABLE_EXPORT_DONE__": "导出",
     "__NOTION_SYNC_DONE__": "Notion 同步",
+    "__RR_DONE__": "ResearchReader 提取 HTML",
+    "__RR_NOTION_DONE__": "ResearchReader Notion 同步",
     "__SCHED_INSTALL_DONE__": "安装/更新定时任务",
     "__SCHED_DELETE_DONE__": "删除定时任务",
     "__SCHED_RUNNOW_DONE__": "立即运行一次",
@@ -183,6 +186,7 @@ class _NewsReaderApp:
         scheduler_enable=None,
         scheduler_disable=None,
         scheduler_config_path=None,
+        researchreader_adapter=None,
     ):
         self.root = root
         self.db_path = Path(db_path)
@@ -214,6 +218,8 @@ class _NewsReaderApp:
         self._ai_config_store = ai_config_store or _default_ai_config_store()
         self._ai_test_connection = ai_test_connection or _default_ai_test_connection
         self._ai_show_settings = ai_show_settings or _default_ai_show_settings
+        self._researchreader = researchreader_adapter or ResearchReaderAdapter()
+        self._local_files: list[LocalNewsFile] = []
 
         # 定时抓取：配置存取 + Task Scheduler 操作（可注入假实现便于测试）
         self._scheduler_load = scheduler_load or _default_scheduler_load
@@ -248,7 +254,7 @@ class _NewsReaderApp:
         self._sched_install_failed: set[str] = set()
 
         # 后台线程 → GUI 消息队列
-        self._queue: "queue.Queue[str]" = queue.Queue()
+        self._queue: "queue.Queue[object]" = queue.Queue()
         self._busy = False
         self._active_source = site
         self.last_action = "—"
@@ -424,6 +430,37 @@ class _NewsReaderApp:
             row3, textvariable=self.notion_status_var, foreground="#666"
         ).pack(side="left", padx=(8, 0))
         self._refresh_notion_status()
+
+        # ---- 自动抓取 / 定时任务卡片（多任务列表） ----
+        local_card = ttk.LabelFrame(outer, text="本地新闻文件（ResearchReader）", padding=10)
+        local_card.pack(fill="x", pady=(10, 0))
+        ttk.Label(
+            local_card,
+            text="扫描 ResearchReader 输入目录中的 EPUB / PDF；当前仅启用 EPUB → HTML。",
+            foreground="#666",
+        ).pack(anchor="w")
+        self.local_tree = ttk.Treeview(
+            local_card, columns=("file", "kind", "status", "output"), show="headings", height=4
+        )
+        for column, title, width in (
+            ("file", "文件", 220), ("kind", "类型", 60), ("status", "状态", 80), ("output", "HTML 输出", 300)
+        ):
+            self.local_tree.heading(column, text=title)
+            self.local_tree.column(column, width=width, anchor="w")
+        self.local_tree.pack(fill="x", pady=(6, 0))
+        self.local_tree.bind("<<TreeviewSelect>>", self._on_local_file_select)
+        local_buttons = ttk.Frame(local_card)
+        local_buttons.pack(fill="x", pady=(8, 0))
+        self.local_scan_btn = ttk.Button(local_buttons, text="扫描文件", command=self._on_local_scan)
+        self.local_scan_btn.pack(side="left")
+        self.local_extract_btn = ttk.Button(local_buttons, text="提取 HTML", command=self._on_local_extract)
+        self.local_extract_btn.pack(side="left", padx=(6, 0))
+        self.local_process_btn = ttk.Button(local_buttons, text="处理", command=self._on_local_process)
+        self.local_process_btn.pack(side="left", padx=(6, 0))
+        self.local_upload_btn = ttk.Button(local_buttons, text="上传 Notion", command=self._on_local_upload)
+        self.local_upload_btn.pack(side="left", padx=(6, 0))
+        self.local_status_var = tk.StringVar(value="输入目录：—")
+        ttk.Label(local_card, textvariable=self.local_status_var, foreground="#666").pack(anchor="w", pady=(6, 0))
 
         # ---- 自动抓取 / 定时任务卡片（多任务列表） ----
         sched_card = ttk.LabelFrame(outer, text="自动抓取 / 定时任务", padding=10)
@@ -1068,6 +1105,9 @@ class _NewsReaderApp:
         try:
             while True:
                 msg = self._queue.get_nowait()
+                if isinstance(msg, tuple) and msg and msg[0] == "__RR_RESULT__":
+                    self._handle_local_result(msg[1], msg[2])
+                    continue
                 if msg in _DONE_SENTINELS:
                     self._set_busy(False, run=_DONE_SENTINELS[msg])
                     if msg.startswith("__SCHED"):
@@ -1113,6 +1153,109 @@ class _NewsReaderApp:
                 pass
         self.root.after(100, self._poll_queue)
 
+    # ------------------------------------------------------------------ ResearchReader 本地文件
+
+    def _selected_local_file(self) -> LocalNewsFile | None:
+        selection = self.local_tree.selection()
+        if not selection:
+            self.log("请先选择一个本地新闻文件。")
+            return None
+        index = int(selection[0])
+        return self._local_files[index] if 0 <= index < len(self._local_files) else None
+
+    def _render_local_files(self) -> None:
+        for item in self.local_tree.get_children():
+            self.local_tree.delete(item)
+        for index, item in enumerate(self._local_files):
+            output = str(item.output_path) if item.output_path else "—"
+            self.local_tree.insert("", "end", iid=str(index), values=(item.path.name, item.kind, item.status, output))
+        self.local_status_var.set(f"输入目录：{self._researchreader.books_root} · 共 {len(self._local_files)} 个文件")
+
+    def _on_local_scan(self) -> None:
+        try:
+            self._local_files = self._researchreader.scan_files()
+            self._render_local_files()
+            self.log(f"ResearchReader 扫描完成：发现 {len(self._local_files)} 个本地文件。")
+        except Exception as exc:
+            self.log(f"ResearchReader 扫描失败：\n{exc}")
+
+    def _on_local_file_select(self, _event=None) -> None:
+        item = self._selected_local_file()
+        if item and item.output_path:
+            self.local_status_var.set(f"HTML 输出：{item.output_path}")
+
+    def _on_local_extract(self) -> None:
+        if self._busy:
+            self.log("已有任务运行中，请等待完成。")
+            return
+        item = self._selected_local_file()
+        if item is None:
+            return
+        if item.kind != "EPUB":
+            self.log("PDF 支持将在后续阶段启用；本阶段未调用 PDF 流程。")
+            return
+        index = self._local_files.index(item)
+        self._local_files[index] = LocalNewsFile(item.path, item.kind, "处理中")
+        self._render_local_files()
+        self._set_busy(True, run="ResearchReader 提取 HTML")
+
+        def worker() -> None:
+            try:
+                result = self._researchreader.extract_epub_to_html(item.path)
+                self._queue.put(("__RR_RESULT__", True, result))
+            except Exception as exc:
+                self._queue.put(("__RR_RESULT__", False, (item, str(exc))))
+            finally:
+                self._queue.put("__RR_DONE__")
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _handle_local_result(self, success: bool, payload) -> None:
+        if success:
+            item = payload
+            for index, current in enumerate(self._local_files):
+                if current.path.resolve() == item.path.resolve():
+                    self._local_files[index] = item
+                    break
+            self._render_local_files()
+            self.local_status_var.set(f"HTML 已生成：{item.output_path}")
+            self.log(f"ResearchReader EPUB → HTML 完成：{item.output_path}")
+        else:
+            item, error = payload
+            for index, current in enumerate(self._local_files):
+                if current.path.resolve() == item.path.resolve():
+                    self._local_files[index] = LocalNewsFile(item.path, item.kind, "失败", error=error)
+                    break
+            self._render_local_files()
+            self.log(f"ResearchReader EPUB → HTML 失败：\n{error}")
+
+    def _on_local_process(self) -> None:
+        self.log("ResearchReader 内容处理按钮将在后续阶段启用；本阶段只接入 EPUB → HTML。")
+
+    def _on_local_upload(self) -> None:
+        if self._busy:
+            self.log("已有任务运行中，请等待完成。")
+            return
+        item = self._selected_local_file()
+        if item is None:
+            return
+        if not item.output_path or not item.output_path.is_file():
+            self.log("请先完成 EPUB → HTML，再上传 Notion。")
+            return
+        self._set_busy(True, run="ResearchReader Notion 同步")
+
+        def worker() -> None:
+            try:
+                from .notion_sync import run_sync
+                for message in run_sync():
+                    self._bg_log(message)
+            except Exception as exc:
+                self._bg_log(f"ResearchReader Notion 同步失败：\n{exc}")
+            finally:
+                self._queue.put("__RR_NOTION_DONE__")
+
+        threading.Thread(target=worker, daemon=True).start()
+
     def _set_busy(self, busy: bool, *, run: str) -> None:
         self._busy = busy
         state = "disabled" if busy else "normal"
@@ -1133,6 +1276,10 @@ class _NewsReaderApp:
             self.sched_install_btn,
             self.sched_delete_btn,
             self.sched_runnow_btn,
+            self.local_scan_btn,
+            self.local_extract_btn,
+            self.local_process_btn,
+            self.local_upload_btn,
         ):
             btn.configure(state=state)
         if busy:
