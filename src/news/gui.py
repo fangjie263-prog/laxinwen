@@ -1246,8 +1246,7 @@ class _NewsReaderApp:
 
         def worker() -> None:
             try:
-                from .notion_sync import run_sync
-                for message in run_sync():
+                for message in self._researchreader.upload_to_notion(item.path):
                     self._bg_log(message)
             except Exception as exc:
                 self._bg_log(f"ResearchReader Notion 同步失败：\n{exc}")

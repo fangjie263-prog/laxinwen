@@ -32,6 +32,7 @@ class ResearchReaderAdapter:
         output_root: str | Path | None = None,
         *,
         runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
+        notion_sync_runner: Callable[..., list[str]] | None = None,
     ) -> None:
         project_root = Path(__file__).resolve().parents[4]
         default_books = project_root / "ResearchReader" / "researchreader" / "books"
@@ -43,6 +44,7 @@ class ResearchReaderAdapter:
             output_root or os.environ.get("RESEARCHREADER_OUTPUT_ROOT") or default_output
         ).expanduser()
         self._runner = runner or subprocess.run
+        self._notion_sync_runner = notion_sync_runner or self._sync_one_package
 
         # 让现有 notion_sync.ResearchReaderScanner 能发现本 adapter 的输出。
         os.environ.setdefault("RESEARCHREADER_BOOKS_ROOT", str(self.books_root))
@@ -103,6 +105,52 @@ class ResearchReaderAdapter:
             return LocalNewsFile(source, "EPUB" if source.suffix.lower() == ".epub" else "PDF", "已完成", output)
         return LocalNewsFile(source, source.suffix.upper().lstrip("."), "待处理")
 
+    def upload_to_notion(self, source_path: str | Path, *, dry_run: bool = False) -> list[str]:
+        """只同步 source_path 对应的 ResearchReader 输出 package。"""
+        output_path = self.get_output_path(source_path).resolve()
+        if not output_path.is_file():
+            raise FileNotFoundError(f"ResearchReader HTML 输出不存在：{output_path}")
+
+        # 复用现有 scanner 生成 ExportPackage；只把当前输出对应的一个 package
+        # 交给 NotionSync，绝不调用全量 run_sync()。
+        from ..notion_sync import ResearchReaderScanner
+
+        packages = [
+            package
+            for package in ResearchReaderScanner(self.output_root, self.books_root).scan()
+            if package.index_path.resolve() == output_path
+        ]
+        if not packages:
+            raise FileNotFoundError(f"未找到 HTML 对应的 ResearchReader package：{output_path}")
+        return self._notion_sync_runner(packages[0], dry_run=dry_run)
+
+    def _sync_one_package(self, package, *, dry_run: bool = False) -> list[str]:
+        from ..notion_sync import NotionClient, NotionSync, load_notion_config
+
+        config = load_notion_config(
+            researchreader_output=self.output_root,
+            researchreader_books=self.books_root,
+        )
+        if dry_run:
+            return NotionSync(
+                None,
+                config["root_page_id"] or "dry-run",
+                state_path=config["state_path"],
+                max_upload_bytes=config["max_upload_bytes"],
+            ).sync([package], dry_run=True)
+        if not config["root_page_id"]:
+            raise RuntimeError("缺少 NOTION_ROOT_PAGE_ID")
+        client = NotionClient(config["token"], timeout=60.0)
+        try:
+            return NotionSync(
+                client,
+                config["root_page_id"],
+                state_path=config["state_path"],
+                max_upload_bytes=config["max_upload_bytes"],
+            ).sync([package])
+        finally:
+            client.close()
+
     def _reader_root(self) -> Path:
         return Path(__file__).resolve().parents[4] / "ResearchReader" / "researchreader"
 
@@ -119,7 +167,10 @@ class ResearchReaderAdapter:
         # 生成现有 ResearchReaderScanner 识别的 source_DD-MM-YYYY_Kobo 目录。
         match = re.search(r"(?P<source>[a-z][a-z0-9-]*).*?(?P<year>20\d{2})[-_](?P<month>\d{2})[-_](?P<day>\d{2})", source.stem, re.I)
         if match:
-            name = f"{match.group('source')}_{match.group('day')}-{match.group('month')}-{match.group('year')}_Kobo"
+            source_name = match.group("source")
+            if source_name.casefold() == "wsj":
+                source_name = "the-wall-street-journal"
+            name = f"{source_name}_{match.group('day')}-{match.group('month')}-{match.group('year')}_Kobo"
         else:
             name = f"{source.stem}_Kobo"
         return self.output_root / name
