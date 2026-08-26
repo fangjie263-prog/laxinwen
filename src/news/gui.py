@@ -432,37 +432,6 @@ class _NewsReaderApp:
         self._refresh_notion_status()
 
         # ---- 自动抓取 / 定时任务卡片（多任务列表） ----
-        local_card = ttk.LabelFrame(outer, text="本地新闻文件（ResearchReader）", padding=10)
-        local_card.pack(fill="x", pady=(10, 0))
-        ttk.Label(
-            local_card,
-            text="扫描 ResearchReader 输入目录中的 EPUB / PDF；当前仅启用 EPUB → HTML。",
-            foreground="#666",
-        ).pack(anchor="w")
-        self.local_tree = ttk.Treeview(
-            local_card, columns=("file", "kind", "status", "output"), show="headings", height=4
-        )
-        for column, title, width in (
-            ("file", "文件", 220), ("kind", "类型", 60), ("status", "状态", 80), ("output", "HTML 输出", 300)
-        ):
-            self.local_tree.heading(column, text=title)
-            self.local_tree.column(column, width=width, anchor="w")
-        self.local_tree.pack(fill="x", pady=(6, 0))
-        self.local_tree.bind("<<TreeviewSelect>>", self._on_local_file_select)
-        local_buttons = ttk.Frame(local_card)
-        local_buttons.pack(fill="x", pady=(8, 0))
-        self.local_scan_btn = ttk.Button(local_buttons, text="扫描文件", command=self._on_local_scan)
-        self.local_scan_btn.pack(side="left")
-        self.local_extract_btn = ttk.Button(local_buttons, text="提取 HTML", command=self._on_local_extract)
-        self.local_extract_btn.pack(side="left", padx=(6, 0))
-        self.local_process_btn = ttk.Button(local_buttons, text="处理", command=self._on_local_process)
-        self.local_process_btn.pack(side="left", padx=(6, 0))
-        self.local_upload_btn = ttk.Button(local_buttons, text="上传 Notion", command=self._on_local_upload)
-        self.local_upload_btn.pack(side="left", padx=(6, 0))
-        self.local_status_var = tk.StringVar(value="输入目录：—")
-        ttk.Label(local_card, textvariable=self.local_status_var, foreground="#666").pack(anchor="w", pady=(6, 0))
-
-        # ---- 自动抓取 / 定时任务卡片（多任务列表） ----
         sched_card = ttk.LabelFrame(outer, text="自动抓取 / 定时任务", padding=10)
         sched_card.pack(fill="x", pady=(10, 0))
 
@@ -525,6 +494,38 @@ class _NewsReaderApp:
         ttk.Label(sched_card, textvariable=self.sched_status_var).pack(
             anchor="w", pady=(6, 0)
         )
+
+        # ---- 本地新闻文件（ResearchReader） ----
+        # 保持 Scheduler 紧跟抓取设置，避免固定窗口高度把原有任务区推到不可见区域。
+        local_card = ttk.LabelFrame(outer, text="本地新闻文件（ResearchReader）", padding=10)
+        local_card.pack(fill="x", pady=(10, 0))
+        ttk.Label(
+            local_card,
+            text="扫描 ResearchReader 输入目录中的 EPUB / PDF；当前仅启用 EPUB → HTML。",
+            foreground="#666",
+        ).pack(anchor="w")
+        self.local_tree = ttk.Treeview(
+            local_card, columns=("file", "kind", "status", "output"), show="headings", height=4
+        )
+        for column, title, width in (
+            ("file", "文件", 220), ("kind", "类型", 60), ("status", "状态", 80), ("output", "HTML 输出", 300)
+        ):
+            self.local_tree.heading(column, text=title)
+            self.local_tree.column(column, width=width, anchor="w")
+        self.local_tree.pack(fill="x", pady=(6, 0))
+        self.local_tree.bind("<<TreeviewSelect>>", self._on_local_file_select)
+        local_buttons = ttk.Frame(local_card)
+        local_buttons.pack(fill="x", pady=(8, 0))
+        self.local_scan_btn = ttk.Button(local_buttons, text="扫描文件", command=self._on_local_scan)
+        self.local_scan_btn.pack(side="left")
+        self.local_extract_btn = ttk.Button(local_buttons, text="提取 HTML", command=self._on_local_extract)
+        self.local_extract_btn.pack(side="left", padx=(6, 0))
+        self.local_process_btn = ttk.Button(local_buttons, text="处理", command=self._on_local_process)
+        self.local_process_btn.pack(side="left", padx=(6, 0))
+        self.local_upload_btn = ttk.Button(local_buttons, text="上传 Notion", command=self._on_local_upload)
+        self.local_upload_btn.pack(side="left", padx=(6, 0))
+        self.local_status_var = tk.StringVar(value="输入目录：—")
+        ttk.Label(local_card, textvariable=self.local_status_var, foreground="#666").pack(anchor="w", pady=(6, 0))
 
         # ---- 抓取监控（小窗口摘要） ----
         monitor_card = ttk.LabelFrame(outer, text="抓取监控", padding=8)
