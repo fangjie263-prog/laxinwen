@@ -300,7 +300,8 @@ def test_date_page_position_is_date_descending():
     assert client.date_page_position("source", "2026-08-05") == {
         "type": "after_block", "after_block": {"id": "middle"}
     }
-    assert client.date_page_position("source", "2026-08-30") == {"type": "start"}
+    assert client.date_page_position("source", "2026-08-30") == {"type": "page_start"}
+    assert client.date_page_position("source", "invalid-date") == {"type": "page_start"}
 
 
 def test_run_page_position_is_time_descending():
@@ -316,7 +317,14 @@ def test_run_page_position_is_time_descending():
     assert client.run_page_position("date", "20260825-100000") == {
         "type": "after_block", "after_block": {"id": "middle"}
     }
-    assert client.run_page_position("date", "20260825-150000") == {"type": "start"}
+    assert client.run_page_position("date", "20260825-150000") == {"type": "page_start"}
+
+
+def test_page_position_types_are_valid_notion_api_values():
+    source = Path("src/news/notion_sync.py").read_text(encoding="utf-8")
+    assert '"type": "start"' not in source
+    assert '"type": "page_start"' in source
+    assert '"type": "after_block"' in source
 
 
 def test_legacy_synced_state_is_skipped_without_reupload(tmp_path):

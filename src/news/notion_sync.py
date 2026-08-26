@@ -393,7 +393,7 @@ class NotionClient:
         try:
             target = datetime.strptime(date, "%Y-%m-%d").date()
         except ValueError:
-            return {"type": "start"}
+            return {"type": "page_start"}
         dated: list[tuple[Any, str]] = []
         for child in self.child_pages(parent_id):
             try:
@@ -403,7 +403,7 @@ class NotionClient:
             dated.append((child_date, child["id"]))
         newer = [(child_date, child_id) for child_date, child_id in dated if child_date > target]
         if not newer:
-            return {"type": "start"}
+            return {"type": "page_start"}
         _, nearest_newer_id = min(newer, key=lambda item: item[0])
         return {"type": "after_block", "after_block": {"id": nearest_newer_id}}
 
@@ -424,7 +424,7 @@ class NotionClient:
             dated.append((datetime.combine(target.date(), child_time), child["id"]))
         newer = [(child_time, child_id) for child_time, child_id in dated if child_time > target]
         if not newer:
-            return {"type": "start"}
+            return {"type": "page_start"}
         _, nearest_newer_id = min(newer, key=lambda item: item[0])
         return {"type": "after_block", "after_block": {"id": nearest_newer_id}}
 
