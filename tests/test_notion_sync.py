@@ -1,5 +1,8 @@
 import os
 import json
+import subprocess
+import sys
+import time
 import zipfile
 from types import SimpleNamespace
 from pathlib import Path
@@ -12,9 +15,11 @@ from news.notion_sync import (
     NotionSyncError,
     ResearchReaderScanner,
     _build_html_artifacts,
+    _build_mobile_html_artifacts,
     _build_extra_artifacts,
     _build_word_artifacts,
     _artifact_identity,
+    _state_lock,
     _write_json,
     notion_max_upload_bytes,
     NotionClient,
@@ -102,7 +107,7 @@ def test_sync_is_idempotent_and_groups_jobs_by_source_date(tmp_path):
     assert [title for _, title, _, _ in fake.created] == [
         "ECO", "2026-08-24", "14:20:02 · morning", "18:00:00 · evening"
     ]
-    assert len(fake.uploads) == 4
+    assert len(fake.uploads) == 6
     assert len(fake.blocks) == 2
     assert first.exists() and second.exists()
 
@@ -178,6 +183,28 @@ def test_researchreader_scanner_detects_translation_and_dual_html_variants(tmp_p
     assert all("images" not in artifact.path.parts for artifact in artifacts)
 
 
+def test_researchreader_scanner_accepts_cn_variant_names_case_insensitively(tmp_path):
+    output = tmp_path / "output"
+    package = output / "wsj_25-08-2026_Kobo"
+    package.mkdir(parents=True)
+    (package / "daily.html").write_text("<html/>", encoding="utf-8")
+    (package / "daily-CN-translation.html").write_text("<html/>", encoding="utf-8")
+    (package / "daily-ZH-cn-DUAL.html").write_text("<html/>", encoding="utf-8")
+
+    item = ResearchReaderScanner(output, tmp_path / "books").scan()[0]
+    variants = {
+        path.name: _build_extra_artifacts(item, tmp_path / "upload", 64 * 1024)
+        for path in item.extra_files
+    }
+    assert set(variants) == {"daily-CN-translation.html", "daily-ZH-cn-DUAL.html"}
+    assert {
+        artifact.artifact_variant
+        for artifacts in variants.values()
+        for artifact in artifacts
+        if artifact.artifact_variant != "original"
+    } == {"zh-CN-translation", "zh-CN-dual"}
+
+
 def test_large_translation_html_is_split_at_article_boundaries_without_zip(tmp_path):
     output = tmp_path / "output"
     package_dir = output / "barrons_25-08-2026_Kobo"
@@ -201,7 +228,7 @@ def test_large_translation_html_is_split_at_article_boundaries_without_zip(tmp_p
     assert all("<html" in artifact.path.read_text(encoding="utf-8") for artifact in artifacts)
 
 
-def test_researchreader_original_html_has_distinct_zip_and_single_artifacts(tmp_path):
+def test_researchreader_original_html_is_single_artifact_without_zip(tmp_path):
     output = tmp_path / "output"
     package_dir = output / "barrons_24-08-2026_Kobo"
     (package_dir / "images").mkdir(parents=True)
@@ -213,9 +240,8 @@ def test_researchreader_original_html_has_distinct_zip_and_single_artifacts(tmp_
     extra = _build_extra_artifacts(package, tmp_path / "upload", 64 * 1024)
     original_html = [item for item in extra if item.artifact_variant == "original"]
 
-    assert len(html) == 1 and html[0].kind == "html_zip"
+    assert html == []
     assert len(original_html) == 1 and original_html[0].path == package.index_path
-    assert _artifact_identity(package, html[0]) != _artifact_identity(package, original_html[0])
     assert "images" not in original_html[0].path.parts
 
 
@@ -234,7 +260,7 @@ def test_researchreader_variant_is_artifact_level_idempotent(tmp_path):
     first_client = FakeNotion()
     first_messages = NotionSync(first_client, "root", state_path=state_path).sync([first])
     assert first_messages == ["SYNC SUCCESS · BARRON'S · 2026-08-24"]
-    assert len(first_client.uploads) == 3
+    assert len(first_client.uploads) == 2
 
     dual = package_dir / "daily-zh-CN-dual (5).html"
     dual.write_text("<html><body>双语内容</body></html>", encoding="utf-8")
@@ -290,7 +316,7 @@ def test_researchreader_old_package_key_lookup_allows_new_variant(tmp_path):
     assert dual.name in message
 
 
-def test_variant_pages_are_unique_and_siblings_of_run_page(tmp_path):
+def test_researchreader_variants_are_artifacts_under_date_without_run_page(tmp_path):
     output = tmp_path / "output"
     package_dir = output / "barrons_24-08-2026_Kobo"
     package_dir.mkdir(parents=True)
@@ -302,19 +328,18 @@ def test_variant_pages_are_unique_and_siblings_of_run_page(tmp_path):
     client = FakeNotion()
 
     NotionSync(client, "root", state_path=state_path).sync([package])
-    variant_titles = [title for _, title, _, _ in client.created]
-    assert variant_titles.count("中文") == 1
-    assert variant_titles.count("中英双语") == 1
-    run_id = next(page_id for _, title, page_id, _ in client.created if title == "Legacy · 历史运行")
-    variant_page_ids = {
-        page_id for _, title, page_id, _ in client.created if title in {"中文", "中英双语"}
-    }
-    assert all(page_id != run_id for page_id in variant_page_ids)
+    assert [title for _, title, _, _ in client.created] == ["BARRON'S", "2026-08-24"]
+    assert len(client.blocks) == 1
+    assert client.blocks[0][0] == "page-2"
+    block_text = str(client.blocks[0][1])
+    assert "HTML 阅读包 · 原文" in block_text
+    assert "HTML 阅读包 · 中文" in block_text
+    assert "HTML 阅读包 · 中英双语" in block_text
     first_created = len(client.created)
 
     NotionSync(client, "root", state_path=state_path).sync([package])
     assert len(client.created) == first_created
-    assert len(client.uploads) == 4
+    assert len(client.uploads) == 3
 
 
 def test_date_page_position_is_date_descending():
@@ -430,9 +455,17 @@ def test_small_html_and_word_are_single_uploads(tmp_path):
     package = ExportPackageScanner(tmp_path / "portable").scan()[0]
 
     html = _build_html_artifacts(package, tmp_path / "upload", 64 * 1024)
+    mobile = _build_mobile_html_artifacts(package, tmp_path / "upload", 64 * 1024)
     word = _build_word_artifacts(package, tmp_path / "upload", 64 * 1024)
 
     assert len(html) == 1 and html[0].kind == "html_zip"
+    assert len(mobile) == 1 and mobile[0].kind == "html_mobile"
+    assert mobile[0].path.suffix == ".html"
+    assert "article-1" in mobile[0].path.read_text(encoding="utf-8")
+    assert _artifact_identity(package, mobile[0]) != _artifact_identity(package, html[0])
+    assert {package.origin, package.source, package.date, "legacy:" + package.package_key}.issubset(
+        set(_artifact_identity(package, mobile[0]).split("|"))
+    )
     assert len(word) == 1 and word[0].path == package.docx_path
 
 
@@ -454,6 +487,27 @@ def test_large_html_is_split_into_valid_bounded_zips(tmp_path):
             names.extend(archive.namelist())
     assert len(names) == len(set(names))
     assert "index.html" in names and "server.py" in names
+
+
+def test_large_laxinwen_mobile_html_is_split_as_html_not_zip(tmp_path):
+    package_dir = tmp_path / "portable" / "Laxinwen-RFI-2026-08-24"
+    package_dir.mkdir(parents=True)
+    (package_dir / "index.html").write_text(
+        "<html><head><title>News</title></head><body>"
+        + "".join(f"<article><h1>{i}</h1><p>{'x' * 250}</p></article>" for i in range(3))
+        + "</body></html>", encoding="utf-8"
+    )
+    (package_dir / "articles").mkdir()
+    (package_dir / "RFI.docx").write_bytes(b"docx")
+    package = ExportPackageScanner(tmp_path / "portable").scan()[0]
+
+    artifacts = _build_mobile_html_artifacts(package, tmp_path / "upload", 600)
+
+    assert len(artifacts) == 3
+    assert all(item.kind == "html_mobile_split" for item in artifacts)
+    assert all(item.path.suffix == ".html" for item in artifacts)
+    assert all(item.path.stat().st_size <= 600 for item in artifacts)
+    assert all(b"PK" not in item.path.read_bytes()[:2] for item in artifacts)
 
 
 def test_oversized_single_html_file_uses_bounded_fallback(tmp_path):
@@ -493,7 +547,7 @@ def test_upload_state_resumes_only_missing_artifacts(tmp_path):
 
     fake.fail_after = None
     assert sync.sync([package])[0].startswith("SYNC SUCCESS")
-    assert len(fake.uploads) == 2
+    assert len(fake.uploads) == 3
     assert len(fake.blocks) == 1
 
 
@@ -584,3 +638,26 @@ def test_state_write_retries_replace_and_cleans_temp_file(tmp_path, monkeypatch)
     assert json.loads(state_path.read_text(encoding="utf-8"))["packages"]["one"]["synced"] is True
     assert len(attempts) == 3
     assert not list(tmp_path.glob(".notion-sync-*.json"))
+
+
+def test_state_lock_blocks_second_process_and_releases_after_exit(tmp_path):
+    state_path = tmp_path / "state.json"
+    code = (
+        "from pathlib import Path; import time; "
+        "from news.notion_sync import _state_lock; "
+        f"p=Path({str(state_path)!r}); "
+        "exec('with _state_lock(p, timeout=2):\\n    time.sleep(1.5)')"
+    )
+    child = subprocess.Popen([sys.executable, "-c", code], cwd=str(Path.cwd()))
+    try:
+        lock_path = state_path.with_name("state.json.lock")
+        deadline = time.monotonic() + 2
+        while not lock_path.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        with pytest.raises(NotionSyncError, match="状态文件正在被占用"):
+            with _state_lock(state_path, timeout=0.1):
+                pass
+    finally:
+        child.wait(timeout=5)
+    with _state_lock(state_path, timeout=0.1):
+        pass

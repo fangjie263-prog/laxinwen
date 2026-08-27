@@ -16,6 +16,7 @@ import re
 import tempfile
 import time
 import zipfile
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -44,8 +45,8 @@ _PACKAGE_RE = re.compile(
 _ARTICLE_RE = re.compile(r"(?:id|data-article-id)=[\"']article-(\d+)")
 DEFAULT_NOTION_MAX_UPLOAD_MB = 4.5
 _NOTION_MB = 1024 * 1024
-_TRANSLATED_HTML_RE = re.compile(r"^daily-zh-CN-translation.*\.html$", re.IGNORECASE)
-_DUAL_HTML_RE = re.compile(r"^daily-zh-CN-dual.*\.html$", re.IGNORECASE)
+_TRANSLATED_HTML_RE = re.compile(r"^daily-(?:zh-)?CN-translation.*\.html$", re.IGNORECASE)
+_DUAL_HTML_RE = re.compile(r"^daily-(?:zh-)?CN-dual.*\.html$", re.IGNORECASE)
 
 
 class NotionSyncError(RuntimeError):
@@ -215,9 +216,10 @@ class ResearchReaderScanner:
                 html_files = [daily]
                 if images.is_dir():
                     html_files.extend(item for item in images.rglob("*") if item.is_file())
-                translated = sorted(path.glob("daily-zh-CN-translation*.html"))
-                dual = sorted(path.glob("daily-zh-CN-dual*.html"))
-                variant_files = [item for item in translated + dual if item.is_file()]
+                variant_files = sorted(
+                    item for item in path.glob("*.html")
+                    if item.is_file() and _html_variant(item)
+                )
                 key_parts = [
                     "researchreader", self._source_name(match.group("source")), date,
                     path.name,
@@ -271,6 +273,50 @@ def _read_json(path: Path) -> dict[str, Any]:
     data.setdefault("run_pages", {})
     data.setdefault("variant_pages", {})
     return data
+
+
+@contextmanager
+def _state_lock(path: Path, *, timeout: float = 30.0):
+    """Hold a cross-process lock for the entire Notion sync lifecycle."""
+    lock_path = path.with_name(f"{path.name}.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = lock_path.open("a+b")
+    deadline = time.monotonic() + timeout
+    locked = False
+    try:
+        handle.seek(0)
+        handle.write(b"0")
+        handle.flush()
+        while True:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                locked = True
+                break
+            except (OSError, BlockingIOError) as exc:
+                if time.monotonic() >= deadline:
+                    raise NotionSyncError(f"Notion 同步状态文件正在被占用：{lock_path}") from exc
+                time.sleep(0.05)
+        yield
+    finally:
+        if locked:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            finally:
+                handle.close()
+        else:
+            handle.close()
 
 
 def _write_json(path: Path, data: dict[str, Any]) -> None:
@@ -574,6 +620,8 @@ def _split_file(path: Path, target_dir: Path, max_bytes: int, *, stem: str, key_
 
 
 def _build_html_artifacts(package: ExportPackage, target_dir: Path, max_bytes: int) -> list[UploadArtifact]:
+    if package.origin == "researchreader":
+        return []
     target_dir.mkdir(parents=True, exist_ok=True)
     files = _ordered_html_files(package)
     groups: list[list[Path]] = []
@@ -616,6 +664,31 @@ def _build_html_artifacts(package: ExportPackage, target_dir: Path, max_bytes: i
     return artifacts
 
 
+def _build_mobile_html_artifacts(
+    package: ExportPackage, target_dir: Path, max_bytes: int
+) -> list[UploadArtifact]:
+    """Build a standalone, text-first HTML artifact for Laxinwen packages."""
+    if package.origin == "researchreader" or not package.index_path.is_file():
+        return []
+    target_dir.mkdir(parents=True, exist_ok=True)
+    mobile_path = target_dir / f"{package.package_path.name}-mobile.html"
+    mobile_path.write_bytes(package.index_path.read_bytes())
+    if mobile_path.stat().st_size <= max_bytes:
+        return [UploadArtifact(
+            key="html:mobile:original",
+            path=mobile_path,
+            label=mobile_path.name,
+            kind="html_mobile",
+            content_type="text/html",
+            fingerprint=_file_fingerprint(mobile_path),
+        )]
+    return _split_html_file(
+        mobile_path, target_dir, max_bytes, variant="original",
+        artifact_kind="html_mobile_split",
+        key_prefix="html:mobile",
+    )
+
+
 def _build_word_artifacts(package: ExportPackage, target_dir: Path, max_bytes: int) -> list[UploadArtifact]:
     target_dir.mkdir(parents=True, exist_ok=True)
     if package.docx_path is None:
@@ -641,7 +714,8 @@ def _html_variant(path: Path) -> Optional[str]:
 
 
 def _split_html_file(
-    path: Path, target_dir: Path, max_bytes: int, *, variant: str
+    path: Path, target_dir: Path, max_bytes: int, *, variant: str,
+    artifact_kind: str = "html_split", key_prefix: str | None = None,
 ) -> list[UploadArtifact]:
     """按 article/section 边界生成可独立打开的完整 HTML parts。"""
     text = path.read_text(encoding="utf-8", errors="replace")
@@ -683,10 +757,10 @@ def _split_html_file(
         if part_path.stat().st_size > max_bytes:
             raise NotionSyncError(f"生成 HTML part 超过 Notion 上限：{part_path.name}")
         artifacts.append(UploadArtifact(
-            key=f"html:{variant}:{path.name}:part:{index:03d}",
+            key=(key_prefix or f"html:{variant}:{path.name}") + f":part:{index:03d}",
             path=part_path,
             label=part_path.name,
-            kind="html_split",
+            kind=artifact_kind,
             content_type="text/html",
             fingerprint=_file_fingerprint(part_path),
             artifact_variant=variant,
@@ -696,7 +770,11 @@ def _split_html_file(
 
 def _build_extra_artifacts(package: ExportPackage, target_dir: Path, max_bytes: int) -> list[UploadArtifact]:
     artifacts: list[UploadArtifact] = []
-    if package.origin == "researchreader" and package.index_path.is_file():
+    if (
+        package.origin == "researchreader"
+        and package.index_path.is_file()
+        and package.index_path.suffix.lower() == ".html"
+    ):
         path = package.index_path
         if path.stat().st_size <= max_bytes:
             artifacts.append(UploadArtifact(
@@ -736,7 +814,7 @@ def _build_extra_artifacts(package: ExportPackage, target_dir: Path, max_bytes: 
 def _artifact_blocks(artifacts: list[UploadArtifact], ids: dict[str, str], *, title: str, split_title: str) -> list[dict[str, Any]]:
     if not artifacts:
         return []
-    if len(artifacts) == 1 and artifacts[0].kind in {"html_zip", "html", "word"}:
+    if len(artifacts) == 1 and artifacts[0].kind in {"html_zip", "html", "html_mobile", "word"}:
         return _file_block(title, ids[artifacts[0].key])
     blocks = [_text_block(split_title, bold=True)]
     parts = [item for item in artifacts if not item.kind.endswith("_manifest")]
@@ -751,6 +829,8 @@ def _artifact_blocks(artifacts: list[UploadArtifact], ids: dict[str, str], *, ti
 
 def _artifact_identity(package: ExportPackage, artifact: UploadArtifact) -> str:
     artifact_type = artifact.kind.split("_", 1)[0]
+    if artifact.kind.startswith("html_mobile"):
+        artifact_type = "html_mobile"
     if artifact.kind.endswith("_manifest"):
         artifact_type = artifact.kind.removesuffix("_manifest")
     if artifact.artifact_variant == "original" and package.origin != "researchreader":
@@ -840,6 +920,13 @@ class NotionSync:
         _write_json(self.state_path, self.state)
 
     def sync(self, packages: Iterable[ExportPackage], *, dry_run: bool = False) -> list[str]:
+        # Reload under the lock so a second process cannot sync from a stale
+        # state snapshot after the first process has completed.
+        with _state_lock(self.state_path):
+            self.state = _read_json(self.state_path)
+            return self._sync_unlocked(packages, dry_run=dry_run)
+
+    def _sync_unlocked(self, packages: Iterable[ExportPackage], *, dry_run: bool = False) -> list[str]:
         if not dry_run:
             self.client.retrieve_page(self.root_page_id)
         messages: list[str] = []
@@ -850,9 +937,15 @@ class NotionSync:
                 with tempfile.TemporaryDirectory(prefix="laxinwen-notion-") as temp:
                     target_dir = Path(temp)
                     html_artifacts = _build_html_artifacts(package, target_dir, self.max_upload_bytes)
+                    mobile_html_artifacts = _build_mobile_html_artifacts(
+                        package, target_dir, self.max_upload_bytes
+                    )
                     word_artifacts = _build_word_artifacts(package, target_dir, self.max_upload_bytes)
                     extra_artifacts = _build_extra_artifacts(package, target_dir, self.max_upload_bytes)
-                    artifacts = html_artifacts + word_artifacts + extra_artifacts
+                    artifacts = (
+                        mobile_html_artifacts + html_artifacts
+                        + word_artifacts + extra_artifacts
+                    )
                     artifact_state = dict(record.get("artifacts", {}))
                     resolved: dict[str, dict[str, Any]] = {}
                     pending: list[UploadArtifact] = []
@@ -922,27 +1015,34 @@ class NotionSync:
                         package.origin, package.source, package.date,
                         package.run_id or f"legacy:{package.package_key}",
                     ])
-                    run_id = self.state["run_pages"].get(run_key)
-                    if not run_id:
-                        parsed = parse_run_id(package.run_id) if package.run_id else None
-                        run_label = (
-                            f"{parsed.strftime('%H:%M:%S')} · {package.job_id or '手动运行'}"
-                            if parsed else f"Legacy · {package.job_id or '历史运行'}"
-                        )
-                        run_position = (
-                            self.client.run_page_position(date_id, package.run_id)
-                            if hasattr(self.client, "run_page_position") else None
-                        )
-                        try:
-                            run_id = self.client.find_or_create_child_page(
-                                date_id, run_label, position=run_position
+                    is_researchreader = package.origin == "researchreader"
+                    if is_researchreader:
+                        # ResearchReader is file/version-oriented: its
+                        # artifacts are siblings directly under Date, with no
+                        # synthetic ResearchReader or Legacy Run page.
+                        run_id = date_id
+                    else:
+                        run_id = self.state["run_pages"].get(run_key)
+                        if not run_id:
+                            parsed = parse_run_id(package.run_id) if package.run_id else None
+                            run_label = (
+                                f"{parsed.strftime('%H:%M:%S')} · {package.job_id or '手动运行'}"
+                                if parsed else f"Legacy · {package.job_id or '历史运行'}"
                             )
-                        except TypeError as exc:
-                            if "position" not in str(exc):
-                                raise
-                            run_id = self.client.find_or_create_child_page(date_id, run_label)
-                        self.state["run_pages"][run_key] = run_id
-                        self._save()
+                            run_position = (
+                                self.client.run_page_position(date_id, package.run_id)
+                                if hasattr(self.client, "run_page_position") else None
+                            )
+                            try:
+                                run_id = self.client.find_or_create_child_page(
+                                    date_id, run_label, position=run_position
+                                )
+                            except TypeError as exc:
+                                if "position" not in str(exc):
+                                    raise
+                                run_id = self.client.find_or_create_child_page(date_id, run_label)
+                            self.state["run_pages"][run_key] = run_id
+                            self._save()
                     record.update({
                         "origin": package.origin, "source": source_key, "date": package.date,
                         "run_id": package.run_id, "job_id": package.job_id,
@@ -986,22 +1086,29 @@ class NotionSync:
                     )
                     run_artifacts = [
                         item for item in artifacts
-                        if item.artifact_variant == "original"
+                        if is_researchreader
+                        or item.artifact_variant == "original"
                         or item in word_artifacts
                         or item.kind.split("_", 1)[0] in {"epub", "pdf"}
                     ]
                     run_block_pending = [item for item in block_pending if item in run_artifacts]
                     variant_block_pending = [item for item in block_pending if item not in run_artifacts]
                     blocks = []
-                    if not record.get("blocks_appended"):
+                    if not record.get("blocks_appended") and not is_researchreader:
                         blocks.append(_text_block(label, bold=True))
                         if package.article_count is not None:
                             blocks.append(_text_block(f"新闻数量：{package.article_count}"))
-                    selected = [item for item in run_block_pending if item in html_artifacts]
+                    selected = [item for item in run_block_pending if item in mobile_html_artifacts]
                     blocks.extend(_artifact_blocks(
                         selected, upload_ids,
                         title="HTML 阅读包 · 原文",
-                        split_title="HTML 阅读包（文件较大，已自动分包）",
+                        split_title="HTML 阅读包 · 原文（文件较大，已自动分片）",
+                    ))
+                    selected = [item for item in run_block_pending if item in html_artifacts]
+                    blocks.extend(_artifact_blocks(
+                        selected, upload_ids,
+                        title="完整 HTML 阅读包",
+                        split_title="完整 HTML 阅读包（文件较大，已自动分包）",
                     ))
                     blocks.extend(_artifact_blocks(
                         [item for item in run_block_pending if item in word_artifacts], upload_ids,
@@ -1017,6 +1124,22 @@ class NotionSync:
                             title=f"原始 {kind.upper()}",
                             split_title=f"原始 {kind.upper()}（文件较大，已自动分片）",
                         ))
+                    if is_researchreader:
+                        for variant, page_title in (
+                            ("original", "HTML 阅读包 · 原文"),
+                            ("zh-CN-translation", "HTML 阅读包 · 中文"),
+                            ("zh-CN-dual", "HTML 阅读包 · 中英双语"),
+                        ):
+                            selected = [
+                                item for item in run_block_pending
+                                if item.artifact_variant == variant
+                                and item.kind in {"html", "html_split"}
+                            ]
+                            blocks.extend(_artifact_blocks(
+                                selected, upload_ids,
+                                title=page_title,
+                                split_title=f"{page_title}（文件较大，已自动分片）",
+                            ))
                     if blocks:
                         assert self.client is not None
                         self.client.append_blocks(run_id, blocks)
@@ -1027,6 +1150,8 @@ class NotionSync:
                         "zh-CN-dual": "中英双语",
                     }
                     for variant, page_title in variant_titles.items():
+                        if is_researchreader:
+                            continue
                         selected = [
                             item for item in variant_block_pending
                             if item.artifact_variant == variant
