@@ -1,6 +1,7 @@
 import os
 import json
 import zipfile
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,7 @@ from news.notion_sync import (
     notion_max_upload_bytes,
     NotionClient,
 )
+from news.cli import cmd_notion_sync
 
 
 class FakeNotion:
@@ -249,7 +251,8 @@ def test_researchreader_variant_is_artifact_level_idempotent(tmp_path):
     sync_messages = NotionSync(second_client, "root", state_path=state_path).sync([second])
     assert sync_messages == ["SYNC SUCCESS · BARRON'S · 2026-08-24"]
     assert [item[0] for item in second_client.uploads] == [dual.name]
-    assert "HTML 阅读包 · 中英双语 HTML" in str(second_client.blocks)
+    assert "HTML 阅读包 · 中英双语" in str(second_client.blocks)
+    assert second_client.blocks[-1][0] != "page-3"
     assert "Legacy · 历史运行" not in str(second_client.blocks)
 
     third_dry = NotionSync(None, "root", state_path=state_path).sync([second], dry_run=True)
@@ -285,6 +288,33 @@ def test_researchreader_old_package_key_lookup_allows_new_variant(tmp_path):
     message = NotionSync(None, "root", state_path=state_path).sync([updated], dry_run=True)[0]
     assert "upload 1 file(s)" in message
     assert dual.name in message
+
+
+def test_variant_pages_are_unique_and_siblings_of_run_page(tmp_path):
+    output = tmp_path / "output"
+    package_dir = output / "barrons_24-08-2026_Kobo"
+    package_dir.mkdir(parents=True)
+    (package_dir / "daily.html").write_text("<html><body>original</body></html>", encoding="utf-8")
+    (package_dir / "daily-zh-CN-translation.html").write_text("<html><body>中文</body></html>", encoding="utf-8")
+    (package_dir / "daily-zh-CN-dual.html").write_text("<html><body>双语</body></html>", encoding="utf-8")
+    package = ResearchReaderScanner(output, tmp_path / "books").scan()[0]
+    state_path = tmp_path / "state.json"
+    client = FakeNotion()
+
+    NotionSync(client, "root", state_path=state_path).sync([package])
+    variant_titles = [title for _, title, _, _ in client.created]
+    assert variant_titles.count("中文") == 1
+    assert variant_titles.count("中英双语") == 1
+    run_id = next(page_id for _, title, page_id, _ in client.created if title == "Legacy · 历史运行")
+    variant_page_ids = {
+        page_id for _, title, page_id, _ in client.created if title in {"中文", "中英双语"}
+    }
+    assert all(page_id != run_id for page_id in variant_page_ids)
+    first_created = len(client.created)
+
+    NotionSync(client, "root", state_path=state_path).sync([package])
+    assert len(client.created) == first_created
+    assert len(client.uploads) == 4
 
 
 def test_date_page_position_is_date_descending():
@@ -325,6 +355,40 @@ def test_page_position_types_are_valid_notion_api_values():
     assert '"type": "start"' not in source
     assert '"type": "page_start"' in source
     assert '"type": "after_block"' in source
+
+
+def test_legacy_page_position_names_are_normalized_to_current_api_values():
+    class _Client:
+        timeout = 60
+
+        def __init__(self):
+            self.payload = None
+
+        def request(self, method, url, **kwargs):
+            self.payload = kwargs["json"]
+            return type("Response", (), {
+                "status_code": 200,
+                "json": lambda _self: {"id": "page-1"},
+            })()
+
+    client = NotionClient("token", client=_Client())
+    client.child_pages = lambda _parent: []
+    assert client.find_or_create_child_page("root", "title", position={"type": "start"}) == "page-1"
+    assert client.client.payload["position"] == {"type": "page_start"}
+
+
+def test_notion_cli_returns_nonzero_when_any_sync_fails(monkeypatch, capsys):
+    args = SimpleNamespace(
+        notion_token=None, root_page_id=None, export_root="data/export/portable",
+        state="data/notion-sync.json", timeout=60.0, dry_run=True,
+        researchreader_output=None, researchreader_books=None,
+    )
+    monkeypatch.setattr("news.notion_sync.run_sync", lambda **_kwargs: ["SYNC FAILED · ECO · 2026-08-26 · error"])
+    assert cmd_notion_sync(args) == 1
+    assert "SYNC FAILED" in capsys.readouterr().out
+
+    monkeypatch.setattr("news.notion_sync.run_sync", lambda **_kwargs: ["SYNC SUCCESS · ECO · 2026-08-26"])
+    assert cmd_notion_sync(args) == 0
 
 
 def test_legacy_synced_state_is_skipped_without_reupload(tmp_path):
@@ -460,12 +524,23 @@ def test_notion_client_upload_uses_configured_limit_without_stale_zip_constants(
 
         def __init__(self):
             self.sent_parts = []
+            self.sent_urls = []
 
         def request(self, method, url, **kwargs):
-            return FakeResponse({"id": "upload-1", "status": "uploaded"})
+            if url.endswith("/file_uploads"):
+                return FakeResponse({
+                    "id": "upload-1", "status": "pending",
+                    "upload_url": "https://upload.example/send",
+                    "complete_url": "https://upload.example/complete",
+                })
+            self.sent_urls.append(url)
+            return FakeResponse({"status": "uploaded"})
 
         def post(self, url, **kwargs):
             self.sent_parts.append(kwargs.get("data"))
+            self.sent_urls.append(url)
+            assert "Content-Type" not in kwargs["headers"]
+            assert "file" in kwargs["files"]
             return FakeResponse({"status": "uploaded"})
 
     monkeypatch.delenv("NOTION_MAX_UPLOAD_MB", raising=False)
@@ -474,6 +549,7 @@ def test_notion_client_upload_uses_configured_limit_without_stale_zip_constants(
     fake = FakeHttpClient()
     assert NotionClient("token", client=fake).upload_file(small) == "upload-1"
     assert fake.sent_parts == [None]
+    assert fake.sent_urls == ["https://upload.example/send"]
 
     monkeypatch.setenv("NOTION_MAX_UPLOAD_MB", "0.00001")
     large = tmp_path / "large.bin"
@@ -482,6 +558,13 @@ def test_notion_client_upload_uses_configured_limit_without_stale_zip_constants(
     assert NotionClient("token", client=fake).upload_file(large) == "upload-1"
     assert len(fake.sent_parts) == 4
     assert all(part and "part_number" in part for part in fake.sent_parts)
+    assert fake.sent_urls == [
+        "https://upload.example/send",
+        "https://upload.example/send",
+        "https://upload.example/send",
+        "https://upload.example/send",
+        "https://upload.example/complete",
+    ]
 
 
 def test_state_write_retries_replace_and_cleans_temp_file(tmp_path, monkeypatch):

@@ -258,7 +258,7 @@ class ResearchReaderScanner:
 
 def _read_json(path: Path) -> dict[str, Any]:
     if not path.exists():
-        return {"packages": {}, "date_pages": {}, "source_pages": {}, "run_pages": {}}
+        return {"packages": {}, "date_pages": {}, "source_pages": {}, "run_pages": {}, "variant_pages": {}}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -269,6 +269,7 @@ def _read_json(path: Path) -> dict[str, Any]:
     data.setdefault("date_pages", {})
     data.setdefault("source_pages", {})
     data.setdefault("run_pages", {})
+    data.setdefault("variant_pages", {})
     return data
 
 
@@ -338,8 +339,9 @@ class NotionClient:
     def _request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
         headers = dict(self.headers)
         headers.update(kwargs.pop("headers", {}))
+        url = path if path.startswith(("http://", "https://")) else NOTION_API + path
         try:
-            response = self.client.request(method, NOTION_API + path, headers=headers, **kwargs)
+            response = self.client.request(method, url, headers=headers, **kwargs)
         except httpx.HTTPError as exc:
             raise NotionSyncError(f"Notion 网络错误：{exc}") from exc
         if response.status_code >= 400:
@@ -385,6 +387,15 @@ class NotionClient:
             "properties": {"title": {"title": [{"type": "text", "text": {"content": title}}]}},
         }
         if position:
+            position = dict(position)
+            # Compatibility guard for callers from older revisions.  The
+            # current Notion API names these positions page_start/page_end.
+            position["type"] = {
+                "start": "page_start",
+                "end": "page_end",
+            }.get(position.get("type"), position.get("type"))
+            if position.get("type") not in {"after_block", "page_start", "page_end"}:
+                raise NotionSyncError(f"不支持的 Notion 页面位置：{position.get('type')}")
             payload["position"] = position
         return self._request("POST", "/pages", json=payload)["id"]
 
@@ -449,6 +460,8 @@ class NotionClient:
             body["number_of_parts"] = number_of_parts
         upload = self._request("POST", "/file_uploads", json=body)
         upload_id = upload["id"]
+        send_url = upload.get("upload_url") or f"{NOTION_API}/file_uploads/{upload_id}/send"
+        complete_url = upload.get("complete_url") or f"{NOTION_API}/file_uploads/{upload_id}/complete"
         with path.open("rb") as handle:
             part = 1
             while True:
@@ -458,7 +471,9 @@ class NotionClient:
                 data = {"part_number": str(part)} if number_of_parts else None
                 try:
                     response = self.client.post(
-                        f"{NOTION_API}/file_uploads/{upload_id}/send",
+                        send_url,
+                        # httpx builds multipart/form-data and its boundary when
+                        # `files` is supplied; do not override Content-Type here.
                         headers={k: v for k, v in self.headers.items() if k != "Content-Type"},
                         files={"file": (path.name, chunk, content_type)},
                         data=data,
@@ -467,16 +482,26 @@ class NotionClient:
                 except httpx.HTTPError as exc:
                     raise NotionSyncError(f"上传文件网络错误：{exc}") from exc
                 if response.status_code >= 400:
+                    if response.status_code == 403 and any(
+                        marker in response.text.lower()
+                        for marker in ("cloudflare", "blocked", "unable to access notion.com")
+                    ):
+                        raise NotionSyncError(
+                            "Notion/Cloudflare 拒绝了文件上传请求（HTTP 403）；"
+                            "请检查网络环境，非 Token 配置错误"
+                        )
                     raise NotionSyncError(f"Notion 文件上传 HTTP {response.status_code}：{response.text}")
                 try:
                     upload = response.json()
                 except ValueError:
                     upload = {"status": "uploaded"}
+                send_url = upload.get("upload_url") or send_url
+                complete_url = upload.get("complete_url") or complete_url
                 part += 1
                 if not number_of_parts:
                     break
         if number_of_parts:
-            upload = self._request("POST", f"/file_uploads/{upload_id}/complete")
+            upload = self._request("POST", complete_url)
         if upload.get("status") not in (None, "uploaded"):
             raise NotionSyncError(f"Notion 文件上传未完成：{upload.get('status')}")
         return upload_id
@@ -959,42 +984,34 @@ class NotionSync:
                         f"{parsed.strftime('%H:%M:%S')} · {package.job_id or '手动运行'}"
                         if parsed else f"Legacy · {package.job_id or '历史运行'}"
                     )
+                    run_artifacts = [
+                        item for item in artifacts
+                        if item.artifact_variant == "original"
+                        or item in word_artifacts
+                        or item.kind.split("_", 1)[0] in {"epub", "pdf"}
+                    ]
+                    run_block_pending = [item for item in block_pending if item in run_artifacts]
+                    variant_block_pending = [item for item in block_pending if item not in run_artifacts]
                     blocks = []
                     if not record.get("blocks_appended"):
                         blocks.append(_text_block(label, bold=True))
                         if package.article_count is not None:
                             blocks.append(_text_block(f"新闻数量：{package.article_count}"))
-                    selected = [item for item in block_pending if item in html_artifacts]
+                    selected = [item for item in run_block_pending if item in html_artifacts]
                     blocks.extend(_artifact_blocks(
                         selected, upload_ids,
                         title="HTML 阅读包 · 原文",
                         split_title="HTML 阅读包（文件较大，已自动分包）",
                     ))
-                    for variant, title in (
-                        ("original", "HTML 阅读包 · 原文 HTML"),
-                        ("zh-CN-translation", "HTML 阅读包 · 中文 HTML"),
-                        ("zh-CN-dual", "HTML 阅读包 · 中英双语 HTML"),
-                    ):
-                        selected = [
-                            item for item in block_pending
-                            if item.artifact_variant == variant
-                            and item.kind in {"html", "html_split"}
-                            and (variant != "original" or item in extra_artifacts)
-                        ]
-                        blocks.extend(_artifact_blocks(
-                            selected, upload_ids,
-                            title=title,
-                            split_title=f"{title}（文件较大，已自动分片）",
-                        ))
                     blocks.extend(_artifact_blocks(
-                        [item for item in block_pending if item in word_artifacts], upload_ids,
+                        [item for item in run_block_pending if item in word_artifacts], upload_ids,
                         title="Word 阅读包",
                         split_title="Word 阅读包（文件较大，已自动分片）",
                     ))
                     for kind in ("epub", "pdf"):
-                        selected = [item for item in block_pending if item.kind == kind]
-                        selected.extend(item for item in block_pending if item.kind == f"{kind}_split")
-                        selected.extend(item for item in block_pending if item.kind == f"{kind}_split_manifest")
+                        selected = [item for item in run_block_pending if item.kind == kind]
+                        selected.extend(item for item in run_block_pending if item.kind == f"{kind}_split")
+                        selected.extend(item for item in run_block_pending if item.kind == f"{kind}_split_manifest")
                         blocks.extend(_artifact_blocks(
                             selected, upload_ids,
                             title=f"原始 {kind.upper()}",
@@ -1003,8 +1020,35 @@ class NotionSync:
                     if blocks:
                         assert self.client is not None
                         self.client.append_blocks(run_id, blocks)
-                        for artifact in block_pending:
+                        for artifact in run_block_pending:
                             artifact_state[_artifact_identity(package, artifact)]["block_appended"] = True
+                    variant_titles = {
+                        "zh-CN-translation": "中文",
+                        "zh-CN-dual": "中英双语",
+                    }
+                    for variant, page_title in variant_titles.items():
+                        selected = [
+                            item for item in variant_block_pending
+                            if item.artifact_variant == variant
+                            and item.kind in {"html", "html_split"}
+                        ]
+                        if not selected:
+                            continue
+                        variant_key = f"{source_key}:{package.date}:{variant}"
+                        variant_page_id = self.state["variant_pages"].get(variant_key)
+                        if not variant_page_id:
+                            variant_page_id = self.client.find_or_create_child_page(date_id, page_title)
+                            self.state["variant_pages"][variant_key] = variant_page_id
+                            self._save()
+                        variant_blocks = _artifact_blocks(
+                            selected, upload_ids,
+                            title=f"HTML 阅读包 · {page_title}",
+                            split_title=f"HTML 阅读包 · {page_title}（文件较大，已自动分片）",
+                        )
+                        if variant_blocks:
+                            self.client.append_blocks(variant_page_id, variant_blocks)
+                            for artifact in selected:
+                                artifact_state[_artifact_identity(package, artifact)]["block_appended"] = True
                     record["blocks_appended"] = all(
                         artifact_state.get(_artifact_identity(package, artifact), {}).get("block_appended")
                         for artifact in artifacts

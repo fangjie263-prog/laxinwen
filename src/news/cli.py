@@ -535,7 +535,7 @@ def cmd_notion_sync(args: argparse.Namespace) -> int:
         return 1
     for message in messages:
         print(message)
-    return 0
+    return 1 if any(message.startswith("SYNC FAILED") for message in messages) else 0
 
 
 def _build_scheduled_fetch_argv(args: argparse.Namespace) -> list[str]:
