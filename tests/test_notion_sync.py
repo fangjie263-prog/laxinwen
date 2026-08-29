@@ -469,6 +469,33 @@ def test_small_html_and_word_are_single_uploads(tmp_path):
     assert len(word) == 1 and word[0].path == package.docx_path
 
 
+def test_laxinwen_artifact_display_names_and_generic_variants(tmp_path):
+    package_dir = _make_package(tmp_path / "portable", "Laxinwen-ECO-2026-08-24")
+    (package_dir / "bulletin-CN-translation (2).html").write_text(
+        "<html><body><article>中文</article></body></html>", encoding="utf-8"
+    )
+    (package_dir / "bulletin-CN-dual.html").write_text(
+        "<html><body><article>双语</article></body></html>", encoding="utf-8"
+    )
+    package = ExportPackageScanner(tmp_path / "portable").scan()[0]
+    client = FakeNotion()
+
+    messages = NotionSync(client, "root", state_path=tmp_path / "state.json").sync([package])
+
+    assert messages == ["SYNC SUCCESS · ECO · 2026-08-24"]
+    assert len(client.uploads) == 5
+    block_text = str(client.blocks)
+    assert "HTML 阅读包 · 原文（完整）" in block_text
+    assert "手机 HTML 阅读 · 原文" in block_text
+    assert "Word 阅读包" in block_text
+    assert "HTML 阅读包 · 中文" in block_text
+    assert "HTML 阅读包 · 中英双语" in block_text
+    assert all(not name.endswith(".zip") for name in {
+        item[0] for item in client.uploads
+        if "translation" in item[0].lower() or "dual" in item[0].lower()
+    })
+
+
 def test_large_html_is_split_into_valid_bounded_zips(tmp_path):
     _make_package(tmp_path / "portable", "Laxinwen-RFI-2026-08-24", article_count=4, article_bytes=3 * 1024)
     package = ExportPackageScanner(tmp_path / "portable").scan()[0]

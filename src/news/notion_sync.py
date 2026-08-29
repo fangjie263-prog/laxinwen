@@ -45,8 +45,12 @@ _PACKAGE_RE = re.compile(
 _ARTICLE_RE = re.compile(r"(?:id|data-article-id)=[\"']article-(\d+)")
 DEFAULT_NOTION_MAX_UPLOAD_MB = 4.5
 _NOTION_MB = 1024 * 1024
-_TRANSLATED_HTML_RE = re.compile(r"^daily-(?:zh-)?CN-translation.*\.html$", re.IGNORECASE)
-_DUAL_HTML_RE = re.compile(r"^daily-(?:zh-)?CN-dual.*\.html$", re.IGNORECASE)
+_TRANSLATED_HTML_RE = re.compile(
+    r"^.+-(?:zh-)?CN-translation(?:\s*\(\d+\))?\.html$", re.IGNORECASE
+)
+_DUAL_HTML_RE = re.compile(
+    r"^.+-(?:zh-)?CN-dual(?:\s*\(\d+\))?\.html$", re.IGNORECASE
+)
 
 
 class NotionSyncError(RuntimeError):
@@ -784,7 +788,17 @@ def _build_extra_artifacts(package: ExportPackage, target_dir: Path, max_bytes: 
             ))
         else:
             artifacts.extend(_split_html_file(path, target_dir, max_bytes, variant="original"))
-    for index, path in enumerate(package.extra_files, 1):
+    if package.origin == "researchreader":
+        candidates = list(package.extra_files)
+    else:
+        # Other sources may also emit translation/dual HTML in the same
+        # reading-package directory.  Only recognized variants are promoted
+        # to direct HTML artifacts; server/resources remain ZIP-only.
+        candidates = [
+            path for path in package.html_files
+            if path.suffix.lower() == ".html" and _html_variant(path)
+        ]
+    for index, path in enumerate(candidates, 1):
         variant = _html_variant(path) if path.suffix.lower() == ".html" else None
         if variant:
             if path.stat().st_size <= max_bytes:
@@ -1084,15 +1098,8 @@ class NotionSync:
                         f"{parsed.strftime('%H:%M:%S')} · {package.job_id or '手动运行'}"
                         if parsed else f"Legacy · {package.job_id or '历史运行'}"
                     )
-                    run_artifacts = [
-                        item for item in artifacts
-                        if is_researchreader
-                        or item.artifact_variant == "original"
-                        or item in word_artifacts
-                        or item.kind.split("_", 1)[0] in {"epub", "pdf"}
-                    ]
+                    run_artifacts = list(artifacts)
                     run_block_pending = [item for item in block_pending if item in run_artifacts]
-                    variant_block_pending = [item for item in block_pending if item not in run_artifacts]
                     blocks = []
                     if not record.get("blocks_appended") and not is_researchreader:
                         blocks.append(_text_block(label, bold=True))
@@ -1101,13 +1108,13 @@ class NotionSync:
                     selected = [item for item in run_block_pending if item in mobile_html_artifacts]
                     blocks.extend(_artifact_blocks(
                         selected, upload_ids,
-                        title="HTML 阅读包 · 原文",
-                        split_title="HTML 阅读包 · 原文（文件较大，已自动分片）",
+                        title="手机 HTML 阅读 · 原文",
+                        split_title="手机 HTML 阅读 · 原文（文件较大，已自动分片）",
                     ))
                     selected = [item for item in run_block_pending if item in html_artifacts]
                     blocks.extend(_artifact_blocks(
                         selected, upload_ids,
-                        title="完整 HTML 阅读包",
+                        title="HTML 阅读包 · 原文（完整）",
                         split_title="完整 HTML 阅读包（文件较大，已自动分包）",
                     ))
                     blocks.extend(_artifact_blocks(
@@ -1124,56 +1131,31 @@ class NotionSync:
                             title=f"原始 {kind.upper()}",
                             split_title=f"原始 {kind.upper()}（文件较大，已自动分片）",
                         ))
-                    if is_researchreader:
-                        for variant, page_title in (
-                            ("original", "HTML 阅读包 · 原文"),
-                            ("zh-CN-translation", "HTML 阅读包 · 中文"),
-                            ("zh-CN-dual", "HTML 阅读包 · 中英双语"),
-                        ):
-                            selected = [
-                                item for item in run_block_pending
-                                if item.artifact_variant == variant
-                                and item.kind in {"html", "html_split"}
-                            ]
-                            blocks.extend(_artifact_blocks(
-                                selected, upload_ids,
-                                title=page_title,
-                                split_title=f"{page_title}（文件较大，已自动分片）",
-                            ))
+                    for variant, page_title in (
+                        ("original", "HTML 阅读包 · 原文"),
+                        ("zh-CN-translation", "HTML 阅读包 · 中文"),
+                        ("zh-CN-dual", "HTML 阅读包 · 中英双语"),
+                    ):
+                        selected = [
+                            item for item in run_block_pending
+                            if item.artifact_variant == variant
+                            and item.kind in {"html", "html_split"}
+                        ]
+                        # Laxinwen's original HTML is represented by its
+                        # mobile artifact; ResearchReader uses this branch for
+                        # daily.html and translated/dual variants.
+                        if not is_researchreader and variant == "original":
+                            selected = []
+                        blocks.extend(_artifact_blocks(
+                            selected, upload_ids,
+                            title=page_title,
+                            split_title=f"{page_title}（文件较大，已自动分片）",
+                        ))
                     if blocks:
                         assert self.client is not None
                         self.client.append_blocks(run_id, blocks)
                         for artifact in run_block_pending:
                             artifact_state[_artifact_identity(package, artifact)]["block_appended"] = True
-                    variant_titles = {
-                        "zh-CN-translation": "中文",
-                        "zh-CN-dual": "中英双语",
-                    }
-                    for variant, page_title in variant_titles.items():
-                        if is_researchreader:
-                            continue
-                        selected = [
-                            item for item in variant_block_pending
-                            if item.artifact_variant == variant
-                            and item.kind in {"html", "html_split"}
-                        ]
-                        if not selected:
-                            continue
-                        variant_key = f"{source_key}:{package.date}:{variant}"
-                        variant_page_id = self.state["variant_pages"].get(variant_key)
-                        if not variant_page_id:
-                            variant_page_id = self.client.find_or_create_child_page(date_id, page_title)
-                            self.state["variant_pages"][variant_key] = variant_page_id
-                            self._save()
-                        variant_blocks = _artifact_blocks(
-                            selected, upload_ids,
-                            title=f"HTML 阅读包 · {page_title}",
-                            split_title=f"HTML 阅读包 · {page_title}（文件较大，已自动分片）",
-                        )
-                        if variant_blocks:
-                            self.client.append_blocks(variant_page_id, variant_blocks)
-                            for artifact in selected:
-                                artifact_state[_artifact_identity(package, artifact)]["block_appended"] = True
                     record["blocks_appended"] = all(
                         artifact_state.get(_artifact_identity(package, artifact), {}).get("block_appended")
                         for artifact in artifacts

@@ -9,8 +9,7 @@ if not exist ".venv\Scripts\python.exe" (
     exit /b 1
 )
 
-schtasks /Create /TN "Laxinwen-Notion-Sync" /SC HOURLY /MO 1 /F ^
-  /TR "\"%CD%\.venv\Scripts\python.exe\" -m news notion-sync"
+".venv\Scripts\python.exe" -m news scheduler install notion-sync --project-root "%CD%"
 if errorlevel 1 (
     echo [ERROR] Could not install the Windows task.
     pause

@@ -477,13 +477,41 @@ def cmd_scheduler(args: argparse.Namespace) -> int:
     从 data/scheduler.json 读取指定 job（默认第一个）执行对应操作。
     供 GUI / BAT 复用同一套逻辑。
     """
-    from .scheduler_config import load_config, load_job
+    from .scheduler_config import NotionSyncSchedulerConfig, load_config, load_job
     from .task_scheduler import (
         delete_task,
         install_task,
         query_task,
         run_now,
+        delete_notion_sync_task,
+        install_notion_sync_task,
+        query_notion_sync_task,
+        run_notion_sync_task,
     )
+
+    action = args.scheduler_action
+    target = args.job_id
+    notion_alias = action.endswith("-notion-sync")
+    if notion_alias:
+        action = action.removesuffix("-notion-sync")
+        target = "notion-sync"
+    if target == "notion-sync":
+        cfg = NotionSyncSchedulerConfig(
+            enabled=True,
+            frequency=args.frequency,
+            time=args.time,
+            minute_offset=args.minute_offset,
+        )
+        op = {"install": install_notion_sync_task, "delete": delete_notion_sync_task,
+              "run": run_notion_sync_task, "status": query_notion_sync_task}[action]
+        result = op(cfg, project_root=args.project_root) if action == "install" else op(cfg)
+        ok = result.get("ok")
+        print(f"{'OK' if ok else 'ERROR'}: {result.get('message', '')}")
+        if result.get("cmd"):
+            print("命令:", " ".join(result["cmd"]))
+        if action == "status" and not result.get("executed", True):
+            print("预期配置:", cfg.frequency, cfg.time if cfg.frequency == "daily" else f"minute={cfg.minute_offset}")
+        return 0 if ok else 1
 
     if args.job_id:
         cfg = load_job(args.job_id, args.config)
@@ -492,7 +520,6 @@ def cmd_scheduler(args: argparse.Namespace) -> int:
             return 1
     else:
         cfg = load_config(args.config)
-    action = args.scheduler_action
     op = {
         "install": install_task,
         "delete": delete_task,
@@ -519,6 +546,18 @@ def cmd_notion_sync(args: argparse.Namespace) -> int:
     """扫描 Portable Reader 包并同步到 Notion。"""
     from .notion_sync import NotionSyncError, run_sync
 
+    log_path = Path(__file__).resolve().parents[2] / "data" / "logs" / "notion-sync.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def emit(message: str) -> None:
+        print(message)
+        try:
+            with log_path.open("a", encoding="utf-8") as handle:
+                handle.write(message + "\n")
+        except OSError:
+            logger.warning("无法写入 Notion Sync 日志：%s", log_path)
+
+    emit("NOTION SYNC START")
     try:
         messages = run_sync(
             token=args.notion_token,
@@ -531,11 +570,20 @@ def cmd_notion_sync(args: argparse.Namespace) -> int:
             researchreader_books=args.researchreader_books,
         )
     except NotionSyncError as exc:
-        print(f"NOTION SYNC FAILED · {exc}", file=sys.stderr)
+        message = f"NOTION SYNC FAILED · {exc}"
+        emit(message)
+        print(message, file=sys.stderr)
         return 1
     for message in messages:
-        print(message)
-    return 1 if any(message.startswith("SYNC FAILED") for message in messages) else 0
+        emit(message)
+    failed = any(message.startswith("SYNC FAILED") for message in messages)
+    if failed:
+        emit("NOTION SYNC FAILED · one or more packages failed")
+    elif not messages or all(message.startswith("SYNC SKIP") for message in messages):
+        emit("NOTION SYNC COMPLETE · nothing to upload")
+    else:
+        emit("NOTION SYNC COMPLETE")
+    return 1 if failed else 0
 
 
 def _build_scheduled_fetch_argv(args: argparse.Namespace) -> list[str]:
@@ -640,7 +688,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_scheduler.add_argument(
         "scheduler_action",
-        choices=["install", "delete", "run", "status"],
+        choices=["install", "delete", "run", "status", "install-notion-sync", "delete-notion-sync", "run-notion-sync", "status-notion-sync"],
         help="操作：install=安装/更新，delete=删除，run=立即运行，status=查询",
     )
     p_scheduler.add_argument(
@@ -651,6 +699,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_scheduler.add_argument("--config", default=None, help="scheduler 配置文件路径（默认 data/scheduler.json）")
     p_scheduler.add_argument("--project-root", default=None, help="项目根目录（默认自动探测）")
+    p_scheduler.add_argument("--frequency", choices=["hourly", "daily"], default="hourly", help="Notion Sync 频率")
+    p_scheduler.add_argument("--time", default="08:10", help="Notion Sync 每日时间 HH:MM")
+    p_scheduler.add_argument("--minute-offset", type=int, default=10, help="Notion Sync 每小时分钟偏移（0-59）")
     _add_common_args(p_scheduler)
     p_scheduler.set_defaults(func=cmd_scheduler)
 

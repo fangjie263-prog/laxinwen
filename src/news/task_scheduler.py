@@ -32,6 +32,7 @@ from typing import Optional
 
 from .scheduler_config import (
     FREQ_DAILY,
+    NotionSyncSchedulerConfig,
     SchedulerConfig,
 )
 
@@ -151,6 +152,79 @@ def build_schtasks_create(
     ]
     # 工作目录：schtasks 无法直接设置 cwd，因此由后台入口自行 cd（见 scheduled_fetch.py）。
     return cmd
+
+
+def build_notion_sync_arguments() -> str:
+    """构建独立 Notion Sync 任务的固定 Action 参数。"""
+    return "-m news notion-sync"
+
+
+def build_notion_sync_schtasks_create(
+    cfg: NotionSyncSchedulerConfig,
+    *,
+    python_exe: Optional[str] = None,
+    project_root: Optional[str | Path] = None,
+) -> list[str]:
+    """构建 Laxinwen-Notion-Sync 的 schtasks 命令。"""
+    root = Path(project_root) if project_root else default_project_root()
+    py = python_exe or find_python_executable(root)
+    # schtasks 没有 cwd 参数；用 cmd.exe 先切到项目根，确保 data/ 相对路径可靠。
+    cmd_line = f'cmd.exe /d /c "cd /d {_quote_win(str(root))} && {_quote_win(py)} {build_notion_sync_arguments()}"'
+    cmd = ["schtasks", "/Create", "/TN", cfg.task_name(), "/TR", cmd_line,
+           "/SC", _schedule_type(cfg)]
+    if cfg.frequency == FREQ_DAILY:
+        cmd += ["/ST", cfg.time]
+    else:
+        cmd += ["/MO", str(cfg.interval_hours), "/ST", f"00:{cfg.minute_offset:02d}"]
+    cmd += ["/F", "/RL", "LIMITED"]
+    return cmd
+
+
+def build_notion_sync_schtasks_delete(cfg: NotionSyncSchedulerConfig) -> list[str]:
+    return ["schtasks", "/Delete", "/TN", cfg.task_name(), "/F"]
+
+
+def build_notion_sync_schtasks_run(cfg: NotionSyncSchedulerConfig) -> list[str]:
+    return ["schtasks", "/Run", "/TN", cfg.task_name()]
+
+
+def build_notion_sync_schtasks_query(cfg: NotionSyncSchedulerConfig) -> list[str]:
+    return ["schtasks", "/Query", "/TN", cfg.task_name(), "/V", "/FO", "LIST"]
+
+
+def _notion_task_op(cfg, builder, *, project_root=None, missing_ok=False) -> dict:
+    name = cfg.task_name()
+    if not is_windows():
+        return {"ok": True, "task_name": name,
+                "message": "命令已生成（REQUIRES WINDOWS REAL TEST）",
+                "cmd": builder(cfg) if builder is not build_notion_sync_schtasks_create else builder(cfg, project_root=project_root),
+                "executed": False}
+    rc, out = run_schtasks(builder(cfg) if builder is not build_notion_sync_schtasks_create else builder(cfg, project_root=project_root))
+    ok = rc == 0 or (missing_ok and "not found" in out.lower())
+    return {"ok": ok, "task_name": name,
+            "message": out or (f"操作完成：{name}" if ok else "操作失败"), "executed": True}
+
+
+def install_notion_sync_task(cfg: NotionSyncSchedulerConfig, *, project_root=None) -> dict:
+    ok, reason = cfg.is_valid()
+    if not ok:
+        return {"ok": False, "task_name": cfg.task_name(), "message": reason}
+    if is_windows():
+        # /F 更新同名任务；先删除可清理旧版本 trigger，仍保持幂等。
+        run_schtasks(build_notion_sync_schtasks_delete(cfg))
+    return _notion_task_op(cfg, build_notion_sync_schtasks_create, project_root=project_root)
+
+
+def delete_notion_sync_task(cfg: NotionSyncSchedulerConfig) -> dict:
+    return _notion_task_op(cfg, build_notion_sync_schtasks_delete, missing_ok=True)
+
+
+def run_notion_sync_task(cfg: NotionSyncSchedulerConfig) -> dict:
+    return _notion_task_op(cfg, build_notion_sync_schtasks_run)
+
+
+def query_notion_sync_task(cfg: NotionSyncSchedulerConfig) -> dict:
+    return _notion_task_op(cfg, build_notion_sync_schtasks_query)
 
 
 def _schedule_type(cfg: SchedulerConfig) -> str:

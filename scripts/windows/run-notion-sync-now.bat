@@ -9,7 +9,7 @@ if not exist ".venv\Scripts\python.exe" (
 )
 
 echo Running Notion sync now ...
-".venv\Scripts\python.exe" -m news notion-sync
+".venv\Scripts\python.exe" -m news scheduler run notion-sync
 if errorlevel 1 (
     echo [ERROR] Notion sync failed. Check NOTION_TOKEN and NOTION_ROOT_PAGE_ID.
     pause

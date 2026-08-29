@@ -49,6 +49,57 @@ SUPPORTED_SOURCES = ("rfi", "eco", "hkej")
 # 每小时模式的间隔选项（小时）
 HOURLY_INTERVALS = (1, 2, 3, 6)
 
+
+@dataclass
+class NotionSyncSchedulerConfig:
+    """独立的 Notion Sync Windows 任务配置。
+
+    Notion Sync 不是新闻 source，因此不复用 ``SchedulerConfig.source``。
+    这份配置只描述 Windows 触发器，artifact state 仍由 notion-sync.json 管理。
+    """
+
+    enabled: bool = False
+    frequency: str = FREQ_HOURLY
+    time: str = "08:10"
+    minute_offset: int = 10
+    interval_hours: int = 1
+
+    def task_name(self) -> str:
+        return "Laxinwen-Notion-Sync"
+
+    def is_valid(self) -> tuple[bool, str]:
+        if self.frequency not in FREQUENCIES:
+            return False, f"不支持的 Notion Sync 频率：{self.frequency}"
+        if self.frequency == FREQ_DAILY:
+            try:
+                datetime.strptime(self.time, "%H:%M")
+            except ValueError:
+                return False, f"每日时间格式无效（应为 HH:MM）：{self.time}"
+        else:
+            if self.interval_hours not in HOURLY_INTERVALS:
+                return False, f"每小时间隔无效：{self.interval_hours}"
+            if not isinstance(self.minute_offset, int) or not 0 <= self.minute_offset <= 59:
+                return False, f"每小时分钟偏移无效：{self.minute_offset}"
+        return True, "ok"
+
+    def next_run(self, now: Optional[datetime] = None) -> Optional[datetime]:
+        ok, _ = self.is_valid()
+        if not ok:
+            return None
+        now = now or datetime.now().astimezone()
+        if now.tzinfo is None:
+            now = now.astimezone()
+        if self.frequency == FREQ_DAILY:
+            hh, mm = self.time.split(":")
+            target = now.replace(hour=int(hh), minute=int(mm), second=0, microsecond=0)
+            if target <= now:
+                target += timedelta(days=1)
+            return target
+        target = now.replace(minute=self.minute_offset, second=0, microsecond=0)
+        if target <= now:
+            target += timedelta(hours=self.interval_hours)
+        return target
+
 # 默认配置
 DEFAULTS = {
     "enabled": False,

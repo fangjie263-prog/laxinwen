@@ -45,6 +45,7 @@ from .scheduler_config import (
     FREQ_DAILY,
     FREQ_HOURLY,
     HOURLY_INTERVALS,
+    NotionSyncSchedulerConfig,
     SchedulerConfig,
     load_config as _default_scheduler_load,
     load_jobs as _default_scheduler_load_jobs,
@@ -58,6 +59,10 @@ from .task_scheduler import (
     run_now as _default_task_run_now,
     enable_task as _default_task_enable,
     disable_task as _default_task_disable,
+    install_notion_sync_task as _default_notion_install,
+    delete_notion_sync_task as _default_notion_delete,
+    run_notion_sync_task as _default_notion_run,
+    query_notion_sync_task as _default_notion_query,
 )
 
 
@@ -186,6 +191,10 @@ class _NewsReaderApp:
         scheduler_enable=None,
         scheduler_disable=None,
         scheduler_config_path=None,
+        notion_scheduler_install=None,
+        notion_scheduler_delete=None,
+        notion_scheduler_run=None,
+        notion_scheduler_query=None,
         researchreader_adapter=None,
     ):
         self.root = root
@@ -235,6 +244,12 @@ class _NewsReaderApp:
         self._scheduler_config_path = (
             Path(scheduler_config_path) if scheduler_config_path else None
         )
+        # 独立 Notion Sync Scheduler：默认实现可被测试或宿主注入替换。
+        self._notion_scheduler_install = notion_scheduler_install or _default_notion_install
+        self._notion_scheduler_delete = notion_scheduler_delete or _default_notion_delete
+        self._notion_scheduler_run = notion_scheduler_run or _default_notion_run
+        self._notion_scheduler_query = notion_scheduler_query or _default_notion_query
+        self._notion_scheduler_cfg = NotionSyncSchedulerConfig()
         # 当前定时任务列表（多任务 GUI 状态）
         self._scheduler_jobs = self._scheduler_load_jobs(self._scheduler_config_path)
         for job in self._scheduler_jobs:
@@ -259,6 +274,9 @@ class _NewsReaderApp:
         self._active_source = site
         self.last_action = "—"
         self.notion_status_var = tk.StringVar(value="")
+        self.notion_sched_frequency_var = tk.StringVar(value="hourly")
+        self.notion_sched_time_var = tk.StringVar(value="08:10")
+        self.notion_sched_status_var = tk.StringVar(value="自动同步 Notion：未知")
 
         # 抓取监控（小窗口摘要）：只保留最近若干条任务级摘要，不显示底层日志
         self._monitor_entries: list[str] = []
@@ -494,6 +512,23 @@ class _NewsReaderApp:
         ttk.Label(sched_card, textvariable=self.sched_status_var).pack(
             anchor="w", pady=(6, 0)
         )
+
+        notion_card = ttk.LabelFrame(outer, text="自动同步 Notion", padding=10)
+        notion_card.pack(fill="x", pady=(10, 0))
+        notion_row = ttk.Frame(notion_card)
+        notion_row.pack(fill="x")
+        ttk.Label(notion_row, text="频率").pack(side="left")
+        ttk.Combobox(
+            notion_row, textvariable=self.notion_sched_frequency_var,
+            values=("hourly", "daily"), state="readonly", width=9,
+        ).pack(side="left", padx=(5, 10))
+        ttk.Label(notion_row, text="每日时间").pack(side="left")
+        ttk.Entry(notion_row, textvariable=self.notion_sched_time_var, width=7).pack(side="left", padx=(5, 10))
+        ttk.Button(notion_row, text="启用", command=self._on_notion_sched_enable).pack(side="left")
+        ttk.Button(notion_row, text="禁用", command=self._on_notion_sched_disable).pack(side="left", padx=(6, 0))
+        ttk.Button(notion_row, text="立即运行", command=self._on_notion_sched_run).pack(side="left", padx=(6, 0))
+        ttk.Label(notion_card, textvariable=self.notion_sched_status_var, foreground="#666").pack(anchor="w", pady=(6, 0))
+        self._refresh_notion_scheduler()
 
         # ---- 本地新闻文件（ResearchReader） ----
         # 保持 Scheduler 紧跟抓取设置，避免固定窗口高度把原有任务区推到不可见区域。
@@ -1576,6 +1611,53 @@ class _NewsReaderApp:
     # ------------------------------------------------------------------ 定时抓取（多任务列表）
 
     # ---- 任务列表刷新与选择 ----
+
+    def _notion_scheduler_config_from_ui(self) -> NotionSyncSchedulerConfig:
+        frequency = self.notion_sched_frequency_var.get().strip() or "hourly"
+        return NotionSyncSchedulerConfig(
+            enabled=True,
+            frequency=frequency,
+            time=self.notion_sched_time_var.get().strip() or "08:10",
+            minute_offset=10,
+        )
+
+    def _refresh_notion_scheduler(self) -> None:
+        """只查询独立 Notion Task，不创建或修改 Windows 任务。"""
+        try:
+            result = self._notion_scheduler_query(self._notion_scheduler_cfg)
+            if result.get("ok"):
+                raw = result.get("message", "")
+                state = "执行中" if re.search(r"Status:\s+Running|正在运行", raw) else "已启用"
+                if re.search(r"Scheduled Task State:\s+Disabled|计划任务状态:\s+已停用", raw):
+                    state = "未启用"
+                next_run = re.search(r"Next Run Time:\s*(.+)", raw)
+                suffix = f"；下次运行：{next_run.group(1).strip()}" if next_run else ""
+                self.notion_sched_status_var.set(f"状态：{state}{suffix}")
+            else:
+                self.notion_sched_status_var.set("状态：未启用（任务不存在）")
+        except Exception:
+            self.notion_sched_status_var.set("状态：未知")
+
+    def _on_notion_sched_enable(self) -> None:
+        cfg = self._notion_scheduler_config_from_ui()
+        self._notion_scheduler_cfg = cfg
+        self.notion_sched_status_var.set("状态：正在启用…")
+        threading.Thread(target=lambda: self._notion_scheduler_finish(self._notion_scheduler_install(cfg)), daemon=True).start()
+
+    def _on_notion_sched_disable(self) -> None:
+        cfg = self._notion_scheduler_cfg
+        self.notion_sched_status_var.set("状态：正在禁用…")
+        threading.Thread(target=lambda: self._notion_scheduler_finish(self._notion_scheduler_delete(cfg)), daemon=True).start()
+
+    def _on_notion_sched_run(self) -> None:
+        cfg = self._notion_scheduler_cfg
+        self.notion_sched_status_var.set("状态：正在运行…")
+        threading.Thread(target=lambda: self._notion_scheduler_finish(self._notion_scheduler_run(cfg)), daemon=True).start()
+
+    def _notion_scheduler_finish(self, result: dict) -> None:
+        message = result.get("message", "操作完成")
+        self._bg_log(f"Notion Sync Scheduler：{message}")
+        self.root.after(0, self._refresh_notion_scheduler)
 
     def _apply_scheduler_to_ui(self) -> None:
         """把已保存的定时任务列表回显到 UI（任务表格）。
