@@ -22,6 +22,7 @@ import threading
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Optional, Sequence
+from urllib.parse import quote
 
 logger = logging.getLogger(__name__)
 
@@ -152,4 +153,4 @@ class ReaderServer:
         if self._httpd is None:
             raise RuntimeError("服务器尚未启动，无法生成 URL。")
         rel = str(rel_path).lstrip("/").replace("\\", "/")
-        return f"http://{self.host}:{self.port}/{rel}"
+        return f"http://{self.host}:{self.port}/{quote(rel, safe='/')}"

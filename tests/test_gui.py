@@ -37,6 +37,7 @@ from news.gui import (  # noqa: E402
 )
 from news.model import Article, utcnow  # noqa: E402
 from news.storage import Storage  # noqa: E402
+from news.integration.researchreader_adapter import LocalNewsFile  # noqa: E402
 
 
 # ------------------------------------------------------------------ 工具
@@ -129,6 +130,7 @@ def _make_app(
     ai_config: dict | None = None,
     settings_opened=None,
     use_real_config_store: bool = False,
+    researchreader_adapter=None,
 ):
     """构造带全部假实现的 app，返回 (app, ctx)。
 
@@ -304,6 +306,7 @@ def _make_app(
         ai_config_store=None if use_real_config_store else _FakeConfigStore,
         ai_test_connection=fake_test_connection,
         ai_show_settings=fake_show_settings,
+        researchreader_adapter=researchreader_adapter,
     )
     ctx = {
         "db": db,
@@ -527,6 +530,64 @@ class TestAIResearchButton:
         log = _log_text(app)
         assert "AI 研究结果已启动" in log
         assert url in log
+
+
+class TestResearchReaderBrowserButton:
+    def test_opens_selected_researchreader_html_via_http_with_images(self, root, tmp_path):
+        output_root = tmp_path / "researchreader output"
+        book_dir = output_root / "WSJ 2026-08-26 (Kobo)"
+        html_path = book_dir / "daily.html"
+        image_path = book_dir / "images" / "cover.txt"
+        image_path.parent.mkdir(parents=True)
+        image_path.write_text("image resource", encoding="utf-8")
+        html_path.write_text(
+            '<html><body>selected book<img src="images/cover.txt"></body></html>',
+            encoding="utf-8",
+        )
+        adapter = SimpleNamespace(output_root=output_root, books_root=tmp_path / "books")
+        app, ctx = _make_app(
+            root, tmp_path, use_real_server=True, researchreader_adapter=adapter
+        )
+        source = tmp_path / "WSJ_2026-08-26.epub"
+        app._local_files = [
+            LocalNewsFile(source, "EPUB", "已完成", output_path=html_path)
+        ]
+        app._render_local_files()
+        app.local_tree.selection_set("0")
+
+        app._on_local_open_browser()
+
+        assert len(ctx["opened_urls"]) == 1
+        url = ctx["opened_urls"][0]
+        assert url.startswith("http://127.0.0.1:")
+        assert "file://" not in url
+        assert "WSJ%202026-08-26%20%28Kobo%29/daily.html" in url
+        import urllib.request
+
+        assert "selected book" in urllib.request.urlopen(url, timeout=5).read().decode("utf-8")
+        image_url = url.replace("daily.html", "images/cover.txt")
+        assert urllib.request.urlopen(image_url, timeout=5).read() == b"image resource"
+        assert app._researchreader_http_server is not None
+        app._on_local_open_browser()
+        assert len(ctx["opened_urls"]) == 2
+        app._on_close()
+        assert app._researchreader_http_server is None
+
+    def test_browser_button_requires_completed_html(self, root, tmp_path):
+        output_root = tmp_path / "researchreader output"
+        adapter = SimpleNamespace(output_root=output_root, books_root=tmp_path / "books")
+        app, ctx = _make_app(
+            root, tmp_path, researchreader_adapter=adapter
+        )
+        source = tmp_path / "WSJ-2026-08-26.epub"
+        app._local_files = [LocalNewsFile(source, "EPUB", "待处理")]
+        app._render_local_files()
+        app.local_tree.selection_set("0")
+
+        app._on_local_open_browser()
+
+        assert ctx["opened_urls"] == []
+        assert "请先完成 EPUB → HTML" in _log_text(app)
 
 
 class TestAIProcess:

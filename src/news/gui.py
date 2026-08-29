@@ -209,6 +209,7 @@ class _NewsReaderApp:
         # 依赖注入（默认走真实实现；测试可替换为假实现）
         self._server_factory = server_factory or _default_server_factory
         self._http_server = None
+        self._researchreader_http_server = None
         self._server_lock = threading.Lock()
         self._storage_factory = storage_factory or _default_storage_factory
         self._pipeline_factory = pipeline_factory or _default_pipeline_factory
@@ -557,6 +558,10 @@ class _NewsReaderApp:
         self.local_extract_btn.pack(side="left", padx=(6, 0))
         self.local_process_btn = ttk.Button(local_buttons, text="处理", command=self._on_local_process)
         self.local_process_btn.pack(side="left", padx=(6, 0))
+        self.local_browser_btn = ttk.Button(
+            local_buttons, text="浏览器打开原文", command=self._on_local_open_browser
+        )
+        self.local_browser_btn.pack(side="left", padx=(6, 0))
         self.local_upload_btn = ttk.Button(local_buttons, text="上传 Notion", command=self._on_local_upload)
         self.local_upload_btn.pack(side="left", padx=(6, 0))
         self.local_status_var = tk.StringVar(value="输入目录：—")
@@ -1268,6 +1273,44 @@ class _NewsReaderApp:
     def _on_local_process(self) -> None:
         self.log("ResearchReader 内容处理按钮将在后续阶段启用；本阶段只接入 EPUB → HTML。")
 
+    def _on_local_open_browser(self) -> None:
+        """通过 ResearchReader 专用静态 server 打开当前文件的原始 HTML。"""
+        item = self._selected_local_file()
+        if item is None:
+            return
+        output_path = item.output_path
+        if output_path is None:
+            self.log("请先完成 EPUB → HTML。")
+            return
+        output_path = Path(output_path).resolve()
+        if output_path.suffix.lower() != ".html":
+            self.log("当前文件没有可用于浏览器阅读的 HTML 输出。")
+            return
+        if not output_path.is_file():
+            self.log("未找到该文件对应的 HTML 输出。")
+            return
+
+        try:
+            root_dir = Path(self._researchreader.output_root).resolve()
+            relative_path = output_path.relative_to(root_dir)
+            with self._server_lock:
+                if self._researchreader_http_server is None:
+                    server = self._server_factory(root_dir)
+                    server.start()
+                    self._researchreader_http_server = server
+                    self._bg_log(
+                        "ResearchReader 本地 HTTP 阅读模式已启动（仅供本机访问，127.0.0.1）：\n"
+                        f"http://127.0.0.1:{server.port}/"
+                    )
+                server = self._researchreader_http_server
+                url = server.url_for(relative_path.as_posix())
+            self._open_url(url)
+            self.log(f"已在浏览器打开 ResearchReader 原文：{url}")
+        except ValueError:
+            self.log("未找到该文件对应的 HTML 输出。")
+        except Exception as exc:
+            self.log(f"打开 ResearchReader 原文失败：\n{exc}")
+
     def _on_local_upload(self) -> None:
         if self._busy:
             self.log("已有任务运行中，请等待完成。")
@@ -1314,6 +1357,7 @@ class _NewsReaderApp:
             self.local_scan_btn,
             self.local_extract_btn,
             self.local_process_btn,
+            self.local_browser_btn,
             self.local_upload_btn,
         ):
             btn.configure(state=state)
@@ -1345,6 +1389,14 @@ class _NewsReaderApp:
                 except Exception as exc:
                     logging.getLogger("news.gui").warning("停止 HTTP 服务器失败: %s", exc)
                 self._http_server = None
+            if self._researchreader_http_server is not None:
+                try:
+                    self._researchreader_http_server.stop()
+                except Exception as exc:
+                    logging.getLogger("news.gui").warning(
+                        "停止 ResearchReader HTTP 服务器失败: %s", exc
+                    )
+                self._researchreader_http_server = None
         self.root.destroy()
 
     def _count_failed(self, storage, source_id: str) -> int:
