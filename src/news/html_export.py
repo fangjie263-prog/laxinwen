@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .beijing import fmt_date as _bj_fmt_date, fmt_dt as _bj_fmt_dt
+from .article_copy import COPY_ARTICLE_JS
 from .storage import Storage
 
 logger = logging.getLogger(__name__)
@@ -550,7 +551,7 @@ def render_article_html(
     if body_text and body_text.strip():
         original_body_html = (
             '<details><summary>显示原文正文（与 AI 分析分区展示）</summary>'
-            f'<div class="original-body">{_e(body_text)}</div></details>'
+            f'<div class="original-body" data-copy-role="original">{_e(body_text)}</div></details>'
         )
 
     return f"""<!DOCTYPE html>
@@ -568,7 +569,7 @@ def render_article_html(
 
   <div class="card">
     <span class="site-badge">{_e(source_name)}</span>
-    <h1>{_e(title)}</h1>
+    <h1>{_e(title)} <button type="button" class="btn-original copy-article">复制</button></h1>
     <div class="meta">
       <table>
         <tr><td>作者：</td><td>{_e(', '.join(authors)) if authors else '—'}</td></tr>
@@ -645,6 +646,7 @@ def render_article_html(
     由 laxinwen 生成 · AI 分析结果仅供研究参考，不构成投资建议
   </div>
 </div>
+<script>{COPY_ARTICLE_JS}</script>
 </body>
 </html>
 """

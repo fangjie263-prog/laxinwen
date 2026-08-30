@@ -426,6 +426,17 @@ class TestBodyHtmlPriority:
         )
         assert "ECO plain text" in html
 
+    def test_render_article_section_has_copy_button_for_original_body(self):
+        from news.news_archive import render_article_section
+
+        html = render_article_section(
+            index=2, article_id=2, title="第二篇标题", source_name="ECO",
+            authors=[], published_at=None, canonical_url="https://example.test/2",
+            body_text="第一段\n第二段", body_html=None, ai_status="none", analysis={},
+        )
+        assert 'class="copy-article"' in html
+        assert 'data-copy-role="original"' in html
+
     def test_render_article_page_body_html_priority(self):
         """render_article_page 单篇页 body_html 优先。"""
         html = render_article_page(

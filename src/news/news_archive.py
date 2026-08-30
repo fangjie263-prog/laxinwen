@@ -39,6 +39,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .beijing import fmt_date as _bj_fmt_date, fmt_dt as _bj_fmt_dt
+from .article_copy import COPY_ARTICLE_JS
 from .storage import Storage
 
 logger = logging.getLogger(__name__)
@@ -725,6 +726,7 @@ def render_article_section(
         f'<div class="article-head">'
         f'<button type="button" class="read-toggle" data-id="{n}" title="标记为已读" aria-label="标记已读">□</button>'
         f'<button type="button" class="star-toggle" data-id="{n}" title="收藏" aria-label="收藏">☆</button>'
+        f'<button type="button" class="copy-article" title="复制原文">复制</button>'
         f'<h2 class="article-title">{_e(title)}</h2>'
         f'</div>'
     )
@@ -744,9 +746,9 @@ def render_article_section(
 
     # 原文正文：body_html 存在则直接 HTML 渲染；否则 fallback 到 body_text
     if body_html and body_html.strip():
-        body_render = f'<div class="original-body">{body_html}</div>'
+        body_render = f'<div class="original-body" data-copy-role="original">{body_html}</div>'
     elif body_text and body_text.strip():
-        body_render = f'<div class="original-body">{_e(body_text)}</div>'
+        body_render = f'<div class="original-body" data-copy-role="original">{_e(body_text)}</div>'
     else:
         body_render = '<p class="empty-body">（暂无原文正文）</p>'
 
@@ -897,6 +899,7 @@ def render_reader_index_html(
 </div>
 
 <script>{_READER_JS}</script>
+<script>{COPY_ARTICLE_JS}</script>
 </body>
 </html>
 """
@@ -993,9 +996,9 @@ def render_article_page(
 
     body_render = ""
     if body_html and body_html.strip():
-        body_render = f'<div class="original-body">{body_html}</div>'
+        body_render = f'<div class="original-body" data-copy-role="original">{body_html}</div>'
     elif body_text and body_text.strip():
-        body_render = f'<div class="original-body">{_e(body_text)}</div>'
+        body_render = f'<div class="original-body" data-copy-role="original">{_e(body_text)}</div>'
     else:
         body_render = '<p class="empty-body">（暂无原文正文）</p>'
 
@@ -1042,6 +1045,7 @@ def render_article_page(
     <div class="article-head" style="margin-bottom:4px;">
       <button type="button" class="read-toggle" data-id="{article_id}" title="标记为已读" aria-label="标记已读">□</button>
       <button type="button" class="star-toggle" data-id="{article_id}" title="收藏" aria-label="收藏">☆</button>
+      <button type="button" class="copy-article" title="复制原文">复制</button>
       <h1 class="page-title">{_e(title)}</h1>
     </div>
     <p class="article-meta">
@@ -1069,6 +1073,7 @@ def render_article_page(
 </div>
 
 <script>{_READER_JS}</script>
+<script>{COPY_ARTICLE_JS}</script>
 </body>
 </html>
 """
