@@ -433,3 +433,4 @@ class TestRenderArticleHtmlDirect:
         assert 'copy-article' in html_doc
         assert "复制全文" in html_doc
         assert 'data-copy-role="original"' in html_doc
+        assert "article.classList.add('copy-selected')" in html_doc

@@ -438,6 +438,8 @@ class TestBodyHtmlPriority:
         assert 'data-copy-role="original"' in html
         assert "复制全文" in html
         assert html.index("复制全文") < html.index('class="article-title"')
+        from news.article_copy import COPY_ARTICLE_JS
+        assert "article.classList.add('copy-selected')" in COPY_ARTICLE_JS
 
     def test_render_article_page_body_html_priority(self):
         """render_article_page 单篇页 body_html 优先。"""
