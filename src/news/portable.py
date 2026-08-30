@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .beijing import fmt_date as _bj_fmt_date, fmt_dt as _bj_fmt_dt
+from .article_copy import COPY_ARTICLE_JS
 from .news_archive import (
     _READER_CSS,
     _READER_JS,
@@ -456,6 +457,7 @@ def render_independent_html(
 </div>
 
 <script>{_READER_JS}</script>
+<script>{COPY_ARTICLE_JS}</script>
 </body>
 </html>
 """

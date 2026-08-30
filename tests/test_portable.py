@@ -280,6 +280,15 @@ class TestPortableReaderPackage:
         assert "localhost" not in body
         assert "127.0.0.1" not in body
 
+    def test_index_includes_article_copy_behavior(self, storage, tmp_path):
+        """便携阅读器的复制全文按钮必须实际绑定共享复制逻辑。"""
+        pkg = tmp_path / "Laxinwen-ECO-2026-08-10"
+        export_portable_reader_package(storage, pkg, source_id="eco", limit=100)
+        body = (pkg / "index.html").read_text(encoding="utf-8")
+        assert "document.querySelectorAll('.copy-selected')" in body
+        assert "navigator.clipboard" in body
+        assert "✓ 已复制" in body
+
     def test_bat_exists_and_no_api_key(self, storage, tmp_path):
         pkg = tmp_path / "Laxinwen-ECO-2026-08-10"
         export_portable_reader_package(storage, pkg, source_id="eco", limit=100)
