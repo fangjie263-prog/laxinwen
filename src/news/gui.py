@@ -1294,7 +1294,19 @@ class _NewsReaderApp:
             root_dir = Path(self._researchreader.output_root).resolve()
             relative_path = output_path.relative_to(root_dir)
             with self._server_lock:
-                if self._researchreader_http_server is None:
+                server = self._researchreader_http_server
+                server_root = (
+                    Path(server.root_dir).resolve()
+                    if server is not None and hasattr(server, "root_dir")
+                    else None
+                )
+                if server is not None and (not server.running or server_root != root_dir):
+                    try:
+                        server.stop()
+                    finally:
+                        self._researchreader_http_server = None
+                    server = None
+                if server is None:
                     server = self._server_factory(root_dir)
                     server.start()
                     self._researchreader_http_server = server
@@ -1302,7 +1314,7 @@ class _NewsReaderApp:
                         "ResearchReader 本地 HTTP 阅读模式已启动（仅供本机访问，127.0.0.1）：\n"
                         f"http://127.0.0.1:{server.port}/"
                     )
-                server = self._researchreader_http_server
+                assert server is not None
                 url = server.url_for(relative_path.as_posix())
             self._open_url(url)
             self.log(f"已在浏览器打开 ResearchReader 原文：{url}")

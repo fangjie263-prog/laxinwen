@@ -533,6 +533,33 @@ class TestAIResearchButton:
 
 
 class TestResearchReaderBrowserButton:
+    def test_replaces_stale_researchreader_server_with_wrong_root(self, root, tmp_path):
+        from news.reader_server import ReaderServer
+
+        output_root = tmp_path / "researchreader output"
+        book_dir = output_root / "the-wall-street-journal 29-08-2026 (Kobo)_Kobo"
+        html_path = book_dir / "daily.html"
+        book_dir.mkdir(parents=True)
+        html_path.write_text("WSJ output", encoding="utf-8")
+        adapter = SimpleNamespace(output_root=output_root, books_root=tmp_path / "books")
+        app, ctx = _make_app(
+            root, tmp_path, use_real_server=True, researchreader_adapter=adapter
+        )
+        stale = ReaderServer(tmp_path / "wrong-root", preferred_ports=(0,))
+        stale.root_dir.mkdir()
+        stale.start()
+        app._researchreader_http_server = stale
+        app._local_files = [LocalNewsFile(tmp_path / "wsj.epub", "EPUB", "已完成", html_path)]
+        app._render_local_files()
+        app.local_tree.selection_set("0")
+
+        app._on_local_open_browser()
+
+        assert len(ctx["opened_urls"]) == 1
+        import urllib.request
+        assert urllib.request.urlopen(ctx["opened_urls"][0], timeout=5).read() == b"WSJ output"
+        app._on_close()
+
     def test_opens_selected_researchreader_html_via_http_with_images(self, root, tmp_path):
         output_root = tmp_path / "researchreader output"
         book_dir = output_root / "WSJ 2026-08-26 (Kobo)"
