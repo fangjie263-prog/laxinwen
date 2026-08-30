@@ -12,7 +12,7 @@ COPY_ARTICLE_JS = r"""
       .trim();
   }
   function articleText(button) {
-    var article = button.closest('section.article, .page, article');
+    var article = button.closest('section.article, article, .reader, .page');
     if (!article) return '';
     var title = article.querySelector('.article-title, .page-title, h1, h2');
     var original = article.querySelector(
@@ -55,7 +55,7 @@ COPY_ARTICLE_JS = r"""
     event.preventDefault();
     var value = articleText(button);
     if (!value) return;
-    var article = button.closest('section.article, .page, article');
+    var article = button.closest('section.article, article, .reader, .page');
     document.querySelectorAll('.copy-selected').forEach(function (node) {
       node.classList.remove('copy-selected');
     });

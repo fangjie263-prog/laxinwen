@@ -365,6 +365,11 @@ section.article {
   border-color: #93c5fd;
   box-shadow: 0 0 0 2px #dbeafe;
 }
+.reader.copy-selected {
+  background: #eff6ff;
+  border-color: #93c5fd;
+  box-shadow: 0 0 0 2px #dbeafe;
+}
 .read-toggle, .star-toggle {
   flex: 0 0 auto;
   cursor: pointer;

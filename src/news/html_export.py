@@ -333,7 +333,8 @@ table.entities th { background: var(--code-bg); }
 .btn-original:hover { background: #0550ae; }
 .article-tools { margin-bottom: 8px; }
 .copy-article { cursor: pointer; border: 0; }
-.page.copy-selected { background: #eff6ff; border-radius: 10px; box-shadow: 0 0 0 3px #dbeafe; }
+.page.copy-selected { background: #eff6ff; }
+.page.copy-selected .card { background: #eff6ff; border-color: #93c5fd; }
 .original-body {
   margin-top: 16px;
   padding: 16px;

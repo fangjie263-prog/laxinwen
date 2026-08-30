@@ -455,6 +455,8 @@ class TestBodyHtmlPriority:
             ai_status="none",
             analysis={},
         )
+        assert ".reader.copy-selected" in html
+        assert "article.classList.add('copy-selected')" in html
         assert '<p>HTML <strong>正文</strong></p>' in html
         assert "fallback text" not in html
 
