@@ -55,6 +55,11 @@ COPY_ARTICLE_JS = r"""
     event.preventDefault();
     var value = articleText(button);
     if (!value) return;
+    var article = button.closest('section.article, .page, article');
+    document.querySelectorAll('.copy-selected').forEach(function (node) {
+      node.classList.remove('copy-selected');
+    });
+    if (article) article.classList.add('copy-selected');
     var result = window.navigator.clipboard && window.navigator.clipboard.writeText
       ? window.navigator.clipboard.writeText(value).then(function () { return true; })
       : Promise.resolve(fallbackCopy(value));

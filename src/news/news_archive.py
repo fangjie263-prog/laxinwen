@@ -345,6 +345,26 @@ section.article {
   gap: 10px;
   margin-bottom: 6px;
 }
+.article-tools {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.copy-article {
+  cursor: pointer;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  padding: 5px 12px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+.copy-article:hover { background: #dbeafe; }
+.article.copy-selected {
+  background: #eff6ff;
+  border-color: #93c5fd;
+  box-shadow: 0 0 0 2px #dbeafe;
+}
 .read-toggle, .star-toggle {
   flex: 0 0 auto;
   cursor: pointer;
@@ -723,10 +743,12 @@ def render_article_section(
     author_str = ", ".join(authors) if authors else ""
 
     head = (
+        f'<div class="article-tools">'
+        f'<button type="button" class="copy-article" title="复制全文">复制全文</button>'
+        f'</div>'
         f'<div class="article-head">'
         f'<button type="button" class="read-toggle" data-id="{n}" title="标记为已读" aria-label="标记已读">□</button>'
         f'<button type="button" class="star-toggle" data-id="{n}" title="收藏" aria-label="收藏">☆</button>'
-        f'<button type="button" class="copy-article" title="复制原文">复制</button>'
         f'<h2 class="article-title">{_e(title)}</h2>'
         f'</div>'
     )
@@ -1042,10 +1064,10 @@ def render_article_page(
   <div class="breadcrumb"><a href="{_e(index_rel)}">← 返回新闻列表</a></div>
 
   <header class="masthead">
+    <div class="article-tools"><button type="button" class="copy-article" title="复制全文">复制全文</button></div>
     <div class="article-head" style="margin-bottom:4px;">
       <button type="button" class="read-toggle" data-id="{article_id}" title="标记为已读" aria-label="标记已读">□</button>
       <button type="button" class="star-toggle" data-id="{article_id}" title="收藏" aria-label="收藏">☆</button>
-      <button type="button" class="copy-article" title="复制原文">复制</button>
       <h1 class="page-title">{_e(title)}</h1>
     </div>
     <p class="article-meta">

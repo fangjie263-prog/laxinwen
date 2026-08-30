@@ -331,6 +331,9 @@ table.entities th { background: var(--code-bg); }
   font-size: 14px;
 }
 .btn-original:hover { background: #0550ae; }
+.article-tools { margin-bottom: 8px; }
+.copy-article { cursor: pointer; border: 0; }
+.page.copy-selected { background: #eff6ff; border-radius: 10px; box-shadow: 0 0 0 3px #dbeafe; }
 .original-body {
   margin-top: 16px;
   padding: 16px;
@@ -569,7 +572,8 @@ def render_article_html(
 
   <div class="card">
     <span class="site-badge">{_e(source_name)}</span>
-    <h1>{_e(title)} <button type="button" class="btn-original copy-article">复制</button></h1>
+    <div class="article-tools"><button type="button" class="btn-original copy-article">复制全文</button></div>
+    <h1>{_e(title)}</h1>
     <div class="meta">
       <table>
         <tr><td>作者：</td><td>{_e(', '.join(authors)) if authors else '—'}</td></tr>

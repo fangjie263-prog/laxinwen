@@ -431,4 +431,5 @@ class TestRenderArticleHtmlDirect:
         assert "Cost" in html_doc
         assert "0.5" in html_doc
         assert 'copy-article' in html_doc
+        assert "复制全文" in html_doc
         assert 'data-copy-role="original"' in html_doc
