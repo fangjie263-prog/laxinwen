@@ -350,7 +350,8 @@ class _NewsReaderApp:
     def _build_ui(self) -> None:
         self.root.title(_APP_TITLE)
         self.root.geometry("760x640")
-        self.root.minsize(620, 520)
+        self.root.minsize(680, 560)
+        self.root.resizable(True, True)
         self.root.option_add("*tearOff", False)
 
         style = ttk.Style(self.root)
@@ -363,8 +364,65 @@ class _NewsReaderApp:
         style.configure("TLabel", font=("", 10))
         style.configure("TLabelframe.Label", font=("", 10, "bold"))
 
-        outer = ttk.Frame(self.root, padding=12)
-        outer.pack(fill="both", expand=True)
+        # ---- 可滚动主容器：Canvas + 垂直 Scrollbar + inner Frame ----
+        # 小屏幕也能通过滚动访问下方全部卡片（Scheduler / Notion / ResearchReader / 日志等）。
+        self._scroll_canvas = tk.Canvas(self.root, highlightthickness=0)
+        self._scroll_vbar = ttk.Scrollbar(
+            self.root, orient="vertical", command=self._scroll_canvas.yview
+        )
+        self._scroll_canvas.configure(yscrollcommand=self._scroll_vbar.set)
+
+        # 滚动条放右侧，Canvas 填充其余空间
+        self._scroll_vbar.pack(side="right", fill="y")
+        self._scroll_canvas.pack(side="left", fill="both", expand=True)
+
+        # 内层 Frame：所有现有卡片都 pack 到这里
+        outer = ttk.Frame(self._scroll_canvas, padding=12)
+        self._scroll_outer_id = self._scroll_canvas.create_window(
+            (0, 0), window=outer, anchor="nw"
+        )
+
+        # Canvas 尺寸变化时让内层 Frame 宽度跟随（避免横向滚动条）
+        def _on_canvas_configure(event):
+            self._scroll_canvas.itemconfigure(
+                self._scroll_outer_id, width=event.width
+            )
+            self._refresh_scrollregion()
+
+        # 内层 Frame 内容尺寸变化时刷新滚动区域
+        def _on_outer_configure(_event=None):
+            self._refresh_scrollregion()
+
+        self._scroll_canvas.bind("<Configure>", _on_canvas_configure)
+        outer.bind("<Configure>", _on_outer_configure)
+
+        # 鼠标滚轮：滚动整个主容器；但指针悬停在自带滚动的组件上时不抢事件
+        # （Treeview / Text / Combobox 保留各自的原生滚动）。
+        def _on_mousewheel(event):
+            w = self._scroll_canvas.winfo_containing(
+                event.x_root, event.y_root
+            )
+            if w is None:
+                return
+            cur = w
+            while cur is not None:
+                if isinstance(
+                    cur, (ttk.Treeview, tk.Text, ttk.Combobox, tk.Listbox)
+                ):
+                    return  # 让这些组件保留自己的滚动
+                cur = cur.master
+            if event.num == 4:  # Linux 向上
+                self._scroll_canvas.yview_scroll(-1, "units")
+            elif event.num == 5:  # Linux 向下
+                self._scroll_canvas.yview_scroll(1, "units")
+            else:  # Windows
+                self._scroll_canvas.yview_scroll(
+                    int(-event.delta / 120), "units"
+                )
+
+        self._scroll_canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        self._scroll_canvas.bind_all("<Button-4>", _on_mousewheel)
+        self._scroll_canvas.bind_all("<Button-5>", _on_mousewheel)
 
         # ---- 抓取设置卡片 ----
         card = ttk.LabelFrame(outer, text="抓取设置", padding=10)
@@ -623,7 +681,7 @@ class _NewsReaderApp:
 
         # ---- 日志区 ----------------
         log_card = ttk.LabelFrame(outer, text="运行日志", padding=8)
-        log_card.pack(fill="both", expand=True, pady=(10, 0))
+        log_card.pack(fill="x", pady=(10, 0))
 
         # 日志区标题栏（含“清空当前显示”，只清 GUI 显示，不删真实日志文件）
         log_head = ttk.Frame(log_card)
@@ -673,6 +731,13 @@ class _NewsReaderApp:
         )
         # 启动时读取最近一次后台 scheduled-fetch.log（若存在）
         self._load_recent_scheduled_log()
+
+    def _refresh_scrollregion(self) -> None:
+        """刷新 Canvas 滚动区域，使其包含内层 Frame 的全部内容。"""
+        self._scroll_canvas.update_idletasks()
+        self._scroll_canvas.configure(
+            scrollregion=self._scroll_canvas.bbox("all")
+        )
 
     # ------------------------------------------------------------------ 工具
 
