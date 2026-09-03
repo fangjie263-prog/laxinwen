@@ -408,6 +408,26 @@ class NotionClient:
     def retrieve_page(self, page_id: str) -> dict[str, Any]:
         return self._request("GET", f"/pages/{page_id}")
 
+    def retrieve_file_upload(self, upload_id: str) -> Optional[dict[str, Any]]:
+        """Retrieve a File Upload and return None when the object no longer exists.
+
+        File Upload IDs are lifecycle-bound Notion objects.  In particular, an
+        upload may later become ``expired`` or ``failed`` even when the local
+        file fingerprint has not changed.  Cached IDs therefore must be
+        validated before they are reused.
+        """
+        try:
+            return self._request("GET", f"/file_uploads/{upload_id}")
+        except NotionSyncError as exc:
+            # A deleted/expired upload may be returned as object_not_found by
+            # the API.  Treat that exactly like an unusable cached ID so the
+            # caller can create a fresh upload.  Other API errors should not
+            # be silently swallowed.
+            message = str(exc).lower()
+            if "http 404" in message or "object_not_found" in message:
+                return None
+            raise
+
     def child_pages(self, parent_id: str) -> list[dict[str, str]]:
         result: list[dict[str, str]] = []
         cursor: Optional[str] = None
@@ -977,8 +997,41 @@ class NotionSync:
                             })
                             if "block_appended" not in current:
                                 current["block_appended"] = bool(record.get("blocks_appended"))
-                            artifact_state[identity] = current
-                            resolved[identity] = current
+
+                            # IMPORTANT: a cached File Upload ID is not a
+                            # permanent object.  It can expire after the
+                            # previous run, so fingerprint equality alone is
+                            # insufficient to reuse it.  Once a block has
+                            # already been appended we do not need the upload
+                            # object at all; otherwise require status=uploaded.
+                            cached_upload_id = str(current.get("upload_id"))
+                            if current.get("block_appended"):
+                                artifact_state[identity] = current
+                                resolved[identity] = current
+                            else:
+                                assert self.client is not None
+                                upload_info = self.client.retrieve_file_upload(cached_upload_id)
+                                upload_status = (upload_info or {}).get("status") if upload_info else None
+                                if upload_status == "uploaded":
+                                    artifact_state[identity] = current
+                                    resolved[identity] = current
+                                    logger.debug(
+                                        "复用有效 Notion File Upload：%s (%s)",
+                                        cached_upload_id, artifact.label,
+                                    )
+                                else:
+                                    # Expired / failed / pending / missing
+                                    # uploads must be recreated from the local
+                                    # artifact.  Clear the stale ID so the new
+                                    # upload is persisted below.
+                                    current.pop("upload_id", None)
+                                    current["block_appended"] = False
+                                    artifact_state.pop(identity, None)
+                                    pending.append(artifact)
+                                    logger.info(
+                                        "Notion File Upload 已不可复用，重新上传：%s (status=%s)",
+                                        artifact.label, upload_status or "missing",
+                                    )
                         else:
                             pending.append(artifact)
 
