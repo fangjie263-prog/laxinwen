@@ -272,13 +272,23 @@ def test_real_recon_article_uses_production_article_paragraphs():
     url = NYT_FIXTURES["technology"][1]
     result = parse_nyt_article(path.read_text(encoding="utf-8"), url=url)
     paragraphs = [block.text for block in result.blocks if block.type == "paragraph"]
+    figures = [block for block in result.blocks if block.type == "figure"]
 
-    assert len(paragraphs) == 23
+    assert len(path.read_text(encoding="utf-8").split('class="article-paragraph"')) - 1 == 23
+    assert len(figures) == 1
+    assert figures[0].src == "https://static01.nyt.com/images/2026/09/05/business/00roose-hugging-face/00roose-hugging-face-jumbo.jpg"
     assert paragraphs[0].startswith("今年夏天，当我第一次听说一群由OpenAI创造的AI智能体")
     assert paragraphs[-1] == "下一次，我们可能不会这么幸运。"
     assert "免费下载 纽约时报中文网" not in result.body_text
     assert "中文  中" not in result.body_text
     assert len(result.body_text) > 2000
+    assert result.body_html.count("<figure class=\"content-image\">") == 1
+    assert result.body_html.count("<img ") == 1
+    assert figures[0].src in result.body_html
+
+    # The production page's lead figure precedes the first body paragraph;
+    # verify the generated HTML keeps that relative DOM order.
+    assert result.body_html.index("<figure") < result.body_html.index("<p>")
 
 
 def test_business_has_multiple_authors():

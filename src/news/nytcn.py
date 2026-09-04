@@ -569,14 +569,13 @@ def _find_body_container(tree: HTMLParser) -> Optional[object]:
     if not body:
         return None
 
-    # NYT Chinese's production article template has a dedicated body section
-    # inside the article.  Prefer it before the generic scoring fallback: the
-    # surrounding ``main`` contains language controls, navigation and footer
-    # chrome which can otherwise out-score the actual article node.
+    # NYT Chinese's production article template keeps the lead/inline figures
+    # in the article wrapper while the paragraphs live in article-body.  Use
+    # the article wrapper as the bounded content range so figures and text
+    # retain their original DOM order; the collector filters its furniture.
     for selector in (
-        "article.article-content.font-normal section.article-body",
-        "article.article-content section.article-body",
         "article.article-content.font-normal",
+        "article.article-content",
     ):
         node = tree.css_first(selector)
         if node:
@@ -644,6 +643,13 @@ def _collect_text_blocks(node, blocks: list[ContentBlock], *, max_depth: int = 1
         tag == "div"
         and "article-paragraph" in (_node_class(node) or "").split()
     )
+    if is_nyt_paragraph and node.css_first("figure"):
+        # Some production NYT pages wrap inline figures in a div.article-paragraph.
+        # Treat the figure as the block, rather than swallowing it as caption text.
+        for child in node.iter(include_text=False):
+            if getattr(child, "tag", "") == "figure":
+                _collect_text_blocks(child, blocks, max_depth=max_depth - 1, base_url=base_url)
+        return
     if tag in ("p", "blockquote", "pre") or is_nyt_paragraph:
         txt = _element_text(node)
         if txt and len(txt) >= 2:
