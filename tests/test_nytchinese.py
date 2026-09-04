@@ -264,6 +264,23 @@ def test_technology_has_multiple_paragraphs():
     assert len(headings) >= 3
 
 
+def test_real_recon_article_uses_production_article_paragraphs():
+    """The captured production NYT template must yield all 23 body paragraphs."""
+    path = Path(__file__).resolve().parent.parent / "nyt-recon" / "articles" / "001.html"
+    if not path.is_file():
+        pytest.skip(f"Missing reconnaissance article: {path}")
+    url = NYT_FIXTURES["technology"][1]
+    result = parse_nyt_article(path.read_text(encoding="utf-8"), url=url)
+    paragraphs = [block.text for block in result.blocks if block.type == "paragraph"]
+
+    assert len(paragraphs) == 23
+    assert paragraphs[0].startswith("今年夏天，当我第一次听说一群由OpenAI创造的AI智能体")
+    assert paragraphs[-1] == "下一次，我们可能不会这么幸运。"
+    assert "免费下载 纽约时报中文网" not in result.body_text
+    assert "中文  中" not in result.body_text
+    assert len(result.body_text) > 2000
+
+
 def test_business_has_multiple_authors():
     """Business article should have two authors."""
     html = _load_fixture("business")

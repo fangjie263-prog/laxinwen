@@ -569,6 +569,19 @@ def _find_body_container(tree: HTMLParser) -> Optional[object]:
     if not body:
         return None
 
+    # NYT Chinese's production article template has a dedicated body section
+    # inside the article.  Prefer it before the generic scoring fallback: the
+    # surrounding ``main`` contains language controls, navigation and footer
+    # chrome which can otherwise out-score the actual article node.
+    for selector in (
+        "article.article-content.font-normal section.article-body",
+        "article.article-content section.article-body",
+        "article.article-content.font-normal",
+    ):
+        node = tree.css_first(selector)
+        if node:
+            return node
+
     best_node = None
     best_score = float("-inf")
 
@@ -627,7 +640,11 @@ def _collect_text_blocks(node, blocks: list[ContentBlock], *, max_depth: int = 1
         return
 
     # Process by tag type -- each handler RETURNS so we don't double-process children
-    if tag in ("p", "blockquote", "pre"):
+    is_nyt_paragraph = (
+        tag == "div"
+        and "article-paragraph" in (_node_class(node) or "").split()
+    )
+    if tag in ("p", "blockquote", "pre") or is_nyt_paragraph:
         txt = _element_text(node)
         if txt and len(txt) >= 2:
             btype = "blockquote" if tag == "blockquote" else ("pre" if tag == "pre" else "paragraph")
