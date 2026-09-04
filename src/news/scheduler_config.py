@@ -44,7 +44,7 @@ EXPORT_BOTH = "both"
 EXPORT_TYPES = (EXPORT_PORTABLE, EXPORT_WORD, EXPORT_BOTH)
 
 # 支持的新闻来源（与 GUI _SOURCE_OPTIONS 中的实际站点 id 保持一致）
-SUPPORTED_SOURCES = ("rfi", "eco", "hkej")
+SUPPORTED_SOURCES = ("rfi", "eco", "hkej", "nytchinese")
 
 # 每小时模式的间隔选项（小时）
 HOURLY_INTERVALS = (1, 2, 3, 6)

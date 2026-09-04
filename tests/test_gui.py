@@ -371,7 +371,7 @@ class TestBasics:
     def test_site_combobox_has_all_sources(self, root, tmp_path):
         app, _ = _make_app(root, tmp_path)
         assert app.site_var.get() == "eco"
-        assert app.site_combo["values"] == ("eco", "hkej", "rfi", "all")
+        assert app.site_combo["values"] == ("eco", "hkej", "rfi", "nytchinese", "all")
 
     def test_source_switch_reflects_selection(self, root, tmp_path):
         app, _ = _make_app(root, tmp_path)
@@ -388,7 +388,7 @@ class TestBasics:
         # 切换到全部
         app.site_combo.set("all")
         app._on_source_changed()
-        assert app._selected_site_ids() == ("eco", "hkej", "rfi")
+        assert app._selected_site_ids() == ("eco", "hkej", "rfi", "nytchinese")
         assert "当前来源：全部" in app.status_labels["current_source"].cget("text")
 
     def test_invalid_limit_cannot_run(self, root, tmp_path):
@@ -764,6 +764,7 @@ class TestMultiSourceFetch:
             ("run_site", "eco"),
             ("run_site", "hkej"),
             ("run_site", "rfi"),
+            ("run_site", "nytchinese"),
         ]]
         pipe = ctx["pipeline_calls"][0]
         assert pipe.limit == 50
@@ -771,6 +772,7 @@ class TestMultiSourceFetch:
         assert "[ECO] 发现" in log
         assert "[HKEJ] 发现" in log
         assert "[RFI] 发现" in log
+        assert "[NYT 中文] 发现" in log
 
     def test_all_50_logs_all_sources(self, root, tmp_path):
         app, ctx = _make_app(

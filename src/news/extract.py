@@ -226,8 +226,20 @@ def apply_extracted(article: Article, extracted: ExtractedArticle) -> Article:
     return article
 
 
-def apply_extraction_to_article(article: Article, html: str, site_extract: dict | None = None) -> Article:
-    """用 Trafilatura 提取结果更新 Article 的正文相关字段。"""
+def apply_extraction_to_article(
+    article: Article,
+    html: str,
+    site_extract: dict | None = None,
+    source_id: str | None = None,
+) -> Article:
+    """用站点 adapter 或 Trafilatura 提取结果更新 Article。"""
+    if source_id == "nytchinese" or article.source_id == "nytchinese":
+        from .sources.nytchinese import NytChineseAdapter
+
+        if NytChineseAdapter("nytchinese", article.source_name, rss_url="").extract_article(
+            article, html, url=article.canonical_url
+        ):
+            return article
     extracted = extract_article(html, url=article.canonical_url, site_extract=site_extract)
     return apply_extracted(article, extracted)
 

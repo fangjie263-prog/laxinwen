@@ -10,6 +10,7 @@
   正文（article-content）解析逻辑。
 - ``rfi``：RFI（法广中文）—— 官方 RSS → RSSHub 回退 + HTML fallback
   （``.t-content__chapo`` + ``.t-content__body`` 正文提取）。
+- ``nytchinese``：纽约时报中文网——官方 RSS + 已验证 HTML parser。
 """
 
 from __future__ import annotations
@@ -42,9 +43,16 @@ def get_adapter(site_cfg: dict) -> Optional[SourceAdapter]:
         from .rfi import RfiAdapter
 
         return RfiAdapter(source_id, source_name, site_cfg=site_cfg)
+    if name == "nytchinese":
+        from .nytchinese import NytChineseAdapter
+
+        rss_url = site_cfg.get("rss")
+        if not rss_url:
+            raise ValueError("NYT Chinese adapter 需要配置 rss")
+        return NytChineseAdapter(source_id, source_name, rss_url=rss_url)
     raise ValueError(
         f"未知的 source adapter: {name!r}（站点 {source_id!r}）。"
-        f"可用 adapter：hkej、rfi"
+        f"可用 adapter：hkej、rfi、nytchinese"
     )
 
 

@@ -105,10 +105,12 @@ _SOURCE_OPTIONS = (
     ("eco", "ECO"),
     ("hkej", "HKEJ"),
     ("rfi", "RFI"),
+    ("nytchinese", "NYT 中文"),
     ("all", "全部"),
 )
-# 全部来源实际对应的站点 id（顺序保持：ECO 在前）
-_ALL_SOURCE_IDS = ("eco", "hkej", "rfi")
+# 全部来源实际对应的站点 id
+_ALL_SOURCE_IDS = ("eco", "hkej", "rfi", "nytchinese")
+_SUPPORTED_SOURCE_IDS = frozenset(_ALL_SOURCE_IDS)
 
 # 后台线程完成哨兵 → 恢复提示文案
 _DONE_SENTINELS = {
@@ -254,12 +256,12 @@ class _NewsReaderApp:
         # 当前定时任务列表（多任务 GUI 状态）
         self._scheduler_jobs = self._scheduler_load_jobs(self._scheduler_config_path)
         for job in self._scheduler_jobs:
-            if job.source not in ("rfi", "eco", "hkej"):
+            if job.source not in _SUPPORTED_SOURCE_IDS:
                 job.source = "rfi"
         # 兼容旧单任务配置：若 jobs 为空但旧配置存在，则回退到旧配置
         if not self._scheduler_jobs:
             legacy = self._scheduler_load(self._scheduler_config_path)
-            if legacy and legacy.source in ("rfi", "eco", "hkej"):
+            if legacy and legacy.source in _SUPPORTED_SOURCE_IDS:
                 legacy.auto_export = True
                 self._scheduler_jobs = [legacy]
         self._selected_job = None
@@ -328,14 +330,12 @@ class _NewsReaderApp:
         """来源值 → 站点 id 列表（不依赖 site_var，用于初始化阶段）。"""
         if selection == "all":
             return _ALL_SOURCE_IDS
-        if selection == "hkej":
-            return ("hkej",)
-        if selection == "rfi":
-            return ("rfi",)
+        if selection in _SUPPORTED_SOURCE_IDS:
+            return (selection,)
         return ("eco",)
 
     def _selected_site_ids(self) -> tuple[str, ...]:
-        """返回当前来源对应的站点 id 列表（全部 → (eco, hkej, rfi)）。"""
+        """返回当前来源对应的站点 id 列表。"""
         return self._site_ids_for(self.site_var.get())
 
     def _source_display(self, site_id: str) -> str:
@@ -664,7 +664,7 @@ class _NewsReaderApp:
         grid = ttk.Frame(self.status_card)
         grid.pack(fill="x")
         for i, key in enumerate(
-            ("db", "eco_count", "hkej_count", "rfi_count", "usable", "ai_ok", "ai_failed",
+            ("db", "eco_count", "hkej_count", "rfi_count", "nyt_count", "usable", "ai_ok", "ai_failed",
              "ai_status", "current_source", "last_action", "last_fetch")
         ):
             lbl = ttk.Label(grid, text="")
@@ -1538,6 +1538,7 @@ class _NewsReaderApp:
                 eco_count = storage.count(source_id="eco")
                 hkej_count = storage.count(source_id="hkej")
                 rfi_count = storage.count(source_id="rfi")
+                nyt_count = storage.count(source_id="nytchinese")
                 usable = sum(storage.count_usable(source_id=sid) for sid in site_ids)
                 self._last_fetch_at = self._read_last_fetch_at(storage, site_ids)
                 self._analysis_status = self._read_analysis_status(storage, site_ids)
@@ -1545,6 +1546,8 @@ class _NewsReaderApp:
             self.log(f"状态读取失败：{exc}")
             eco_count = 0
             hkej_count = 0
+            rfi_count = 0
+            nyt_count = 0
             usable = 0
 
         ai_ok, ai_failed = self._analysis_status
@@ -1554,6 +1557,7 @@ class _NewsReaderApp:
             "eco_count": f"ECO 新闻：{eco_count}",
             "hkej_count": f"HKEJ 新闻：{hkej_count}",
             "rfi_count": f"RFI 新闻：{rfi_count}",
+            "nyt_count": f"NYT 中文新闻：{nyt_count}",
             "usable": f"可读新闻：{usable}",
             "ai_ok": f"AI 已分析：{ai_ok}",
             "ai_failed": f"AI 失败：{ai_failed}",
@@ -2363,7 +2367,7 @@ class _NewsReaderApp:
         """
         site_ids = self._site_ids_for(self._active_source)
         source_display = self._source_display(self._active_source)
-        source_id = self._active_source if self._active_source in ("rfi", "eco", "hkej") else "rfi"
+        source_id = self._active_source if self._active_source in _SUPPORTED_SOURCE_IDS else "rfi"
         run_identity = new_run_identity(
             job_id=f"{source_id}-default",
             output_root=self.portable_dir,
@@ -2448,7 +2452,7 @@ class _NewsReaderApp:
         """
         try:
             self._bg_log("自动导出开始（便携阅读包）……")
-            source_id = self._active_source if self._active_source in ("rfi", "eco", "hkej") else "rfi"
+            source_id = self._active_source if self._active_source in _SUPPORTED_SOURCE_IDS else "rfi"
             run_identity = run_identity or new_run_identity(
                 job_id=f"{source_id}-default",
                 output_root=self.portable_dir,
@@ -2739,9 +2743,9 @@ class _JobsDialog:
 
         # 来源
         ttk.Label(body, text="新闻来源：").grid(row=3, column=0, sticky="e", pady=3)
-        self.source_var = tk.StringVar(value=job.source if job.source in ("rfi", "eco", "hkej") else "rfi")
+        self.source_var = tk.StringVar(value=job.source if job.source in _SUPPORTED_SOURCE_IDS else "rfi")
         ttk.Combobox(
-            body, textvariable=self.source_var, state="readonly", width=10, values=["rfi", "eco", "hkej"]
+            body, textvariable=self.source_var, state="readonly", width=12, values=list(_ALL_SOURCE_IDS)
         ).grid(row=3, column=1, sticky="w", padx=(6, 0), pady=3)
 
         # 频率

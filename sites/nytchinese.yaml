@@ -1,0 +1,39 @@
+# NYT 纽约时报中文网
+# 发现来源：官方 RSS
+# 正文解析：自定义 adapter（src/news/nytcn.py），不使用默认 Trafilatura
+
+id: nytchinese
+name: NYT 纽约时报中文网
+language: zh-CN
+
+# 官方 RSS / Atom
+rss: https://cn.nytimes.com/rss/news.xml
+
+# RSSHub 备用（如需启用请填写实际可用地址）
+rsshub: null
+
+# 补充发现（可选，不默认抓取全部栏目）
+# lists:
+#   - url: https://cn.nytimes.com/
+#     link_selector: "a[href*='/']"
+#     article_url_pattern: "https://cn\\.nytimes\\.com/(technology|business|china|world|opinion|sports|science|style|arts|culture|travel|health|magazine|food|book|podcasts|climate|education|investing|insider|military|lens|obituaries|economy|international|politics|asia|middleeast|africa|europe|americas)/20\\d{6}/"
+#     title_selector: "a[href*='/']"
+#     date_selector: "time"
+
+# 文章正文请求最小间隔（秒）
+article_interval: 5
+
+# 自定义 adapter 标识（pipeline 据此分派）
+adapter: nytchinese
+
+# Trafilatura 不适用于 NYT 中文（页面结构复杂）
+# extract:
+#   favor_recall: true
+
+# 标题指纹清洗时附加移除的站点后缀
+title_suffixes:
+  - " - NYT 纽约时报中文网"
+  - " - 纽约时报中文网"
+  - " - NYTimes 中文网"
+  - " - The New York Times"
+  - " - NYT"

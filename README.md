@@ -8,7 +8,7 @@ News Sources → Discovery → Fetch → Extraction
              → AI Processing（可选）→ HTML / Word Research Package
 ```
 
-当前代码支持 ECO、HKEJ、RFI 三个新闻源，提供 CLI、Windows Tkinter GUI，以及基于 Windows Task Scheduler 的多任务后台抓取。
+当前代码支持 ECO、HKEJ、RFI 和 NYT Chinese 四个新闻源，提供 CLI、Windows Tkinter GUI，以及基于 Windows Task Scheduler 的多任务后台抓取。
 
 ## 功能概览
 
@@ -55,6 +55,7 @@ uv run news fetch
 uv run news fetch --site eco
 uv run news fetch --site hkej
 uv run news fetch --site rfi
+uv run news fetch --site nytchinese
 uv run news list --limit 30
 uv run news status
 uv run news process --site eco --limit 3
