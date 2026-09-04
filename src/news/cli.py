@@ -92,6 +92,33 @@ def cmd_fetch(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_refresh(args: argparse.Namespace) -> int:
+    """重新抓取并更新已有文章（不创建 duplicate）。"""
+    storage = _open_storage(args.db)
+    fetcher = HttpxFetcher(
+        FetcherOptions(
+            timeout=args.timeout,
+            retries=args.retries,
+            min_interval=args.interval,
+            max_interval=args.interval * 2,
+        )
+    )
+    pipeline = Pipeline(storage, fetcher=fetcher, max_items=args.limit)
+    try:
+        stats = pipeline.refresh_source(args.site, limit=args.limit)
+        print(
+            f"[{args.site}] 刷新候选 {stats.discovered} | 成功 {stats.usable} | "
+            f"失败 {stats.failed}"
+        )
+        if stats.errors:
+            for error in stats.errors[:10]:
+                print(f"  - {error}")
+        return 0 if not stats.failed else 1
+    finally:
+        pipeline.close()
+        storage.close()
+
+
 def cmd_list(args: argparse.Namespace) -> int:
     storage = _open_storage(args.db)
     try:
@@ -624,6 +651,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_fetch.add_argument("--retry-failed", action="store_true", help="抓取后重试失败文章")
     _add_common_args(p_fetch)
     p_fetch.set_defaults(func=cmd_fetch)
+
+    p_refresh = sub.add_parser("refresh", help="重新抓取并更新已有文章，不创建重复文章")
+    p_refresh.add_argument("--site", required=True, help="要刷新的站点 id，例如 nytchinese")
+    p_refresh.add_argument("--limit", type=int, default=1000, help="最多刷新已有文章数")
+    p_refresh.add_argument("--timeout", type=float, default=20.0, help="HTTP 超时（秒）")
+    p_refresh.add_argument("--retries", type=int, default=3, help="HTTP 重试次数")
+    p_refresh.add_argument("--interval", type=float, default=2.0, help="同域请求最小间隔（秒）")
+    _add_common_args(p_refresh)
+    p_refresh.set_defaults(func=cmd_refresh)
 
     p_list = sub.add_parser("list", help="列出最近新闻")
     p_list.add_argument("--source", help="按站点过滤")

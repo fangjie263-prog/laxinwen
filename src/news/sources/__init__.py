@@ -49,7 +49,13 @@ def get_adapter(site_cfg: dict) -> Optional[SourceAdapter]:
         rss_url = site_cfg.get("rss")
         if not rss_url:
             raise ValueError("NYT Chinese adapter 需要配置 rss")
-        return NytChineseAdapter(source_id, source_name, rss_url=rss_url)
+        return NytChineseAdapter(
+            source_id,
+            source_name,
+            rss_url=rss_url,
+            sections=site_cfg.get("sections") or [],
+            allow_summary_as_content=bool(site_cfg.get("allow_summary_as_content", False)),
+        )
     raise ValueError(
         f"未知的 source adapter: {name!r}（站点 {source_id!r}）。"
         f"可用 adapter：hkej、rfi、nytchinese"

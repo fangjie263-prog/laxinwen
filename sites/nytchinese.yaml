@@ -9,6 +9,25 @@ language: zh-CN
 # 官方 RSS / Atom
 rss: https://cn.nytimes.com/rss/news.xml
 
+# NYT RSS 只有摘要；摘要只能用于 discovery，不能作为文章正文。
+allow_summary_as_content: false
+
+# 栏目页只用于发现 URL、标题和 URL 日期，不在 discovery 阶段抓取正文。
+sections:
+  - url: https://cn.nytimes.com/world/
+  - url: https://cn.nytimes.com/asia-pacific/
+  - url: https://cn.nytimes.com/china/
+  - url: https://cn.nytimes.com/business/
+  - url: https://cn.nytimes.com/technology/
+  - url: https://cn.nytimes.com/science/
+  - url: https://cn.nytimes.com/health/
+  - url: https://cn.nytimes.com/culture/
+  - url: https://cn.nytimes.com/sports/
+  - url: https://cn.nytimes.com/style/
+  - url: https://cn.nytimes.com/travel/
+  - url: https://cn.nytimes.com/real-estate/
+  - url: https://cn.nytimes.com/opinion/
+
 # RSSHub 备用（如需启用请填写实际可用地址）
 rsshub: null
 

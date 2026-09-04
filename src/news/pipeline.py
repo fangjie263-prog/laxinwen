@@ -320,6 +320,54 @@ class Pipeline:
 
         return ingest
 
+    def refresh_source(self, source_id: str, *, limit: int = 1000) -> FetchStats:
+        """重新抓取并更新已有文章，不插入新行。
+
+        这是给 source adapter 修复历史正文使用的安全入口：文章通过现有
+        ``source_id`` + canonical URL 已经存在于 SQLite，刷新只调用
+        ``update_article_body``，不会经过 discovery 或 ``insert_article``。
+        当前主要用于把 NYT 早期误存的 RSS summary 替换为文章页正文。
+        """
+        cfg = load_site_config(source_id)
+        from .sources import get_adapter
+
+        adapter = get_adapter(cfg)
+        if adapter is None:
+            raise ValueError(f"站点 {source_id!r} 没有可用于 refresh 的 source adapter")
+        articles = self.storage.list_articles(source_id=source_id, limit=limit)
+        stats = FetchStats(discovered=len(articles))
+        for article in articles:
+            if not article.id or not article.canonical_url:
+                continue
+            try:
+                html = self.fetcher.fetch_article(article.canonical_url)
+                refreshed = Article(
+                    source_id=article.source_id,
+                    source_name=article.source_name,
+                    canonical_url=article.canonical_url,
+                    title=article.title,
+                    authors=list(article.authors),
+                    published_at=article.published_at,
+                    discovered_at=article.discovered_at,
+                    id=article.id,
+                )
+                if not adapter.extract_article(refreshed, html, url=article.canonical_url):
+                    raise ValueError("adapter 未提取到可读正文")
+                if not _validate_extracted_body(refreshed):
+                    raise ValueError(_invalid_body_reason(refreshed))
+                refreshed.fetched_at = utcnow()
+                refreshed.status = "fetched"
+                self._update_body(article.id, refreshed, source_id, stats, logger)
+                stats.fetched_ok += 1
+                stats.extracted_ok += 1
+                stats.usable += 1
+                logger.info("[%s] 刷新成功 #%d  %s", source_id, article.id, refreshed.title[:60])
+            except Exception as exc:
+                stats.failed += 1
+                stats.errors.append(f"#{article.id} {article.canonical_url}: {exc}")
+                logger.error("[%s] 刷新失败 #%d: %s", source_id, article.id, exc)
+        return stats
+
     def _ingest_items(
         self,
         items: list,
