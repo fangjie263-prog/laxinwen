@@ -1,0 +1,175 @@
+{
+  "interval_seconds": {
+    "articles": 1.0,
+    "images": 0.5
+  },
+  "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36",
+  "requests": [
+    {
+      "kind": "channel",
+      "url": "https://www.huxiu.com/article/",
+      "status": 200,
+      "final_url": "https://www.huxiu.com/article/",
+      "length": 73168
+    },
+    {
+      "kind": "home",
+      "url": "https://www.huxiu.com/",
+      "status": 200,
+      "final_url": "https://www.huxiu.com/",
+      "length": 203649
+    },
+    {
+      "kind": "home",
+      "url": "https://m.huxiu.com/",
+      "status": 200,
+      "final_url": "https://m.huxiu.com/",
+      "length": 203770
+    },
+    {
+      "kind": "article",
+      "url": "https://www.huxiu.com/article/4890724.html",
+      "status": 200,
+      "final_url": "https://www.huxiu.com/article/4890724.html",
+      "length": 97871
+    },
+    {
+      "kind": "article",
+      "url": "https://www.huxiu.com/article/4890721.html",
+      "status": 200,
+      "final_url": "https://www.huxiu.com/article/4890721.html",
+      "length": 148246
+    },
+    {
+      "kind": "article",
+      "url": "https://www.huxiu.com/article/4890719.html",
+      "status": 200,
+      "final_url": "https://www.huxiu.com/article/4890719.html",
+      "length": 101299
+    },
+    {
+      "kind": "article",
+      "url": "https://www.huxiu.com/article/4890718.html",
+      "status": 200,
+      "final_url": "https://www.huxiu.com/article/4890718.html",
+      "length": 105509
+    },
+    {
+      "kind": "article",
+      "url": "https://www.huxiu.com/article/4890716.html",
+      "status": 200,
+      "final_url": "https://www.huxiu.com/article/4890716.html",
+      "length": 90264
+    },
+    {
+      "kind": "article",
+      "url": "https://www.huxiu.com/article/4890715.html",
+      "status": 200,
+      "final_url": "https://www.huxiu.com/article/4890715.html",
+      "length": 98687
+    },
+    {
+      "kind": "article",
+      "url": "https://www.huxiu.com/article/4890713.html",
+      "status": 200,
+      "final_url": "https://www.huxiu.com/article/4890713.html",
+      "length": 96067
+    },
+    {
+      "kind": "article",
+      "url": "https://www.huxiu.com/article/4890711.html",
+      "status": 200,
+      "final_url": "https://www.huxiu.com/article/4890711.html",
+      "length": 88199
+    },
+    {
+      "kind": "article",
+      "url": "https://www.huxiu.com/article/4890703.html",
+      "status": 200,
+      "final_url": "https://www.huxiu.com/article/4890703.html",
+      "length": 86152
+    },
+    {
+      "kind": "article",
+      "url": "https://www.huxiu.com/article/4890705.html",
+      "status": 200,
+      "final_url": "https://www.huxiu.com/article/4890705.html",
+      "length": 101826
+    },
+    {
+      "kind": "article",
+      "url": "https://www.huxiu.com/article/4890702.html",
+      "status": 200,
+      "final_url": "https://www.huxiu.com/article/4890702.html",
+      "length": 96942
+    },
+    {
+      "kind": "article",
+      "url": "https://www.huxiu.com/article/4890701.html",
+      "status": 200,
+      "final_url": "https://www.huxiu.com/article/4890701.html",
+      "length": 98607
+    },
+    {
+      "kind": "article",
+      "url": "https://www.huxiu.com/article/4890638.html",
+      "status": 200,
+      "final_url": "https://www.huxiu.com/article/4890638.html",
+      "length": 112152
+    },
+    {
+      "kind": "article",
+      "url": "https://www.huxiu.com/article/4889889.html",
+      "status": 200,
+      "final_url": "https://www.huxiu.com/article/4889889.html",
+      "length": 122825
+    },
+    {
+      "kind": "article",
+      "url": "https://www.huxiu.com/article/4890512.html",
+      "status": 200,
+      "final_url": "https://www.huxiu.com/article/4890512.html",
+      "length": 109260
+    },
+    {
+      "kind": "article",
+      "url": "https://www.huxiu.com/article/4885316.html",
+      "status": 200,
+      "final_url": "https://www.huxiu.com/article/4885316.html",
+      "length": 88235
+    },
+    {
+      "kind": "article",
+      "url": "https://www.huxiu.com/article/4888116.html",
+      "status": 200,
+      "final_url": "https://www.huxiu.com/article/4888116.html",
+      "length": 108418
+    },
+    {
+      "kind": "article",
+      "url": "https://www.huxiu.com/article/4890598.html",
+      "status": 200,
+      "final_url": "https://www.huxiu.com/article/4890598.html",
+      "length": 110474
+    },
+    {
+      "kind": "article",
+      "url": "https://www.huxiu.com/article/4890151.html",
+      "status": 200,
+      "final_url": "https://www.huxiu.com/article/4890151.html",
+      "length": 99188
+    },
+    {
+      "kind": "article",
+      "url": "https://www.huxiu.com/article/4890252.html",
+      "status": 200,
+      "final_url": "https://www.huxiu.com/article/4890252.html",
+      "length": 108532
+    }
+  ],
+  "counts": {
+    "200": 23
+  },
+  "article_success_count": 20,
+  "notes": "Sequential low-rate requests; no proxy, captcha bypass, or concurrency."
+}

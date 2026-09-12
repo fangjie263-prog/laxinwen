@@ -1,0 +1,44 @@
+{
+  "discovered": 3,
+  "deduplicated": 3,
+  "selected": 3,
+  "fetched_ok": 3,
+  "extracted_ok": 3,
+  "stored": 3,
+  "failed": 0,
+  "articles": [
+    {
+      "url": "https://www.huxiu.com/article/4890724.html",
+      "title": "虚线时刻，来临",
+      "authors": [
+        "秦朔朋友圈"
+      ],
+      "published_at": "2026-09-12T16:09:43+00:00",
+      "body_length": 5054,
+      "images": 1,
+      "status": "fetched"
+    },
+    {
+      "url": "https://www.huxiu.com/article/4890721.html",
+      "title": "中国大模型创始人在政治上很愚蠢",
+      "authors": [
+        "野生编辑部"
+      ],
+      "published_at": "2026-09-12T15:32:15+00:00",
+      "body_length": 12494,
+      "images": 0,
+      "status": "fetched"
+    },
+    {
+      "url": "https://www.huxiu.com/article/4890719.html",
+      "title": "打假的铁头，咋就变恶势力犯罪了？",
+      "authors": [
+        "不惑猪的频道"
+      ],
+      "published_at": "2026-09-12T14:58:32+00:00",
+      "body_length": 4548,
+      "images": 1,
+      "status": "fetched"
+    }
+  ]
+}

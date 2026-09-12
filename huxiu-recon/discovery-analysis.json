@@ -1,0 +1,55 @@
+{
+  "captured_at": "2026-09-12",
+  "access_constraints": {
+    "desktop": {
+      "status": 200
+    },
+    "mobile": {
+      "status": 200
+    },
+    "article_channel": {
+      "status": 200
+    },
+    "article_samples": {
+      "status": 200
+    }
+  },
+  "discovery_candidates": [
+    {
+      "url": "https://www.huxiu.com/article/",
+      "method": "SSR HTML cards",
+      "evidence": ".article-item-wrap anchors and #__NUXT_DATA__ in saved HTML",
+      "recommended": true
+    },
+    {
+      "url": "https://www.huxiu.com/",
+      "method": "SSR HTML plus embedded Nuxt state",
+      "evidence": "article URLs and Nuxt state in saved desktop home",
+      "recommended": false
+    },
+    {
+      "url": "https://m.huxiu.com/",
+      "method": "SSR HTML plus embedded Nuxt state",
+      "evidence": "article URLs in saved mobile home",
+      "recommended": false
+    }
+  ],
+  "recommended_method": "GET /article/ and parse .article-item-wrap cards; use canonical article URL as the dedup key",
+  "article_url_pattern": "^https?://(?:www\\\\.|m\\\\.)?huxiu\\\\.com/article/\\\\d+\\\\.html$",
+  "pagination": {
+    "observed": false,
+    "notes": "The captured channel page had 12 SSR cards and no visible page=2/load-more control; long-term pagination was not verified."
+  },
+  "embedded_json": [
+    "#__NUXT_DATA__",
+    "window.__NUXT__.config"
+  ],
+  "api_candidates": [
+    "API_MS_ARTICLE and API_ARTICLE hostnames are exposed in Nuxt config, but no endpoint path was inferred or called."
+  ],
+  "notes": [
+    "Desktop and mobile home were byte-different but both exposed article URLs.",
+    "No CAPTCHA/login wall appeared in the captured pages.",
+    "Only observed facts are recorded; API use remains unverified."
+  ]
+}

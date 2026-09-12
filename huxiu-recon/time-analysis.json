@@ -1,0 +1,208 @@
+{
+  "captured_at": "2026-09-12",
+  "articles": [
+    {
+      "url": "https://www.huxiu.com/article/4890724.html",
+      "raw": "2026-09-13T00:09:43+08:00",
+      "visible_time_raw": "2026-09-13 00:09",
+      "parsed": "2026-09-12T16:09:43+00:00",
+      "timezone": "UTC",
+      "timezone_aware": true,
+      "source": "article:published_time"
+    },
+    {
+      "url": "https://www.huxiu.com/article/4890721.html",
+      "raw": "2026-09-12T23:32:15+08:00",
+      "visible_time_raw": "2026-09-12 23:32",
+      "parsed": "2026-09-12T15:32:15+00:00",
+      "timezone": "UTC",
+      "timezone_aware": true,
+      "source": "article:published_time"
+    },
+    {
+      "url": "https://www.huxiu.com/article/4890719.html",
+      "raw": "2026-09-12T22:58:32+08:00",
+      "visible_time_raw": "2026-09-12 22:58",
+      "parsed": "2026-09-12T14:58:32+00:00",
+      "timezone": "UTC",
+      "timezone_aware": true,
+      "source": "article:published_time"
+    },
+    {
+      "url": "https://www.huxiu.com/article/4890718.html",
+      "raw": "2026-09-12T22:54:41+08:00",
+      "visible_time_raw": "2026-09-12 22:54",
+      "parsed": "2026-09-12T14:54:41+00:00",
+      "timezone": "UTC",
+      "timezone_aware": true,
+      "source": "article:published_time"
+    },
+    {
+      "url": "https://www.huxiu.com/article/4890716.html",
+      "raw": "2026-09-12T22:20:25+08:00",
+      "visible_time_raw": "2026-09-12 22:20",
+      "parsed": "2026-09-12T14:20:25+00:00",
+      "timezone": "UTC",
+      "timezone_aware": true,
+      "source": "article:published_time"
+    },
+    {
+      "url": "https://www.huxiu.com/article/4890715.html",
+      "raw": "2026-09-12T21:52:05+08:00",
+      "visible_time_raw": "2026-09-12 21:52",
+      "parsed": "2026-09-12T13:52:05+00:00",
+      "timezone": "UTC",
+      "timezone_aware": true,
+      "source": "article:published_time"
+    },
+    {
+      "url": "https://www.huxiu.com/article/4890713.html",
+      "raw": "2026-09-12T21:20:52+08:00",
+      "visible_time_raw": "2026-09-12 21:20",
+      "parsed": "2026-09-12T13:20:52+00:00",
+      "timezone": "UTC",
+      "timezone_aware": true,
+      "source": "article:published_time"
+    },
+    {
+      "url": "https://www.huxiu.com/article/4890711.html",
+      "raw": "2026-09-12T21:06:30+08:00",
+      "visible_time_raw": "2026-09-12 21:06",
+      "parsed": "2026-09-12T13:06:30+00:00",
+      "timezone": "UTC",
+      "timezone_aware": true,
+      "source": "article:published_time"
+    },
+    {
+      "url": "https://www.huxiu.com/article/4890703.html",
+      "raw": "2026-09-12T21:00:39+08:00",
+      "visible_time_raw": "2026-09-12 21:00",
+      "parsed": "2026-09-12T13:00:39+00:00",
+      "timezone": "UTC",
+      "timezone_aware": true,
+      "source": "article:published_time"
+    },
+    {
+      "url": "https://www.huxiu.com/article/4890705.html",
+      "raw": "2026-09-12T20:44:59+08:00",
+      "visible_time_raw": "2026-09-12 20:44",
+      "parsed": "2026-09-12T12:44:59+00:00",
+      "timezone": "UTC",
+      "timezone_aware": true,
+      "source": "article:published_time"
+    },
+    {
+      "url": "https://www.huxiu.com/article/4890702.html",
+      "raw": "2026-09-12T20:18:13+08:00",
+      "visible_time_raw": "2026-09-12 20:18",
+      "parsed": "2026-09-12T12:18:13+00:00",
+      "timezone": "UTC",
+      "timezone_aware": true,
+      "source": "article:published_time"
+    },
+    {
+      "url": "https://www.huxiu.com/article/4890701.html",
+      "raw": "2026-09-12T19:40:39+08:00",
+      "visible_time_raw": "2026-09-12 19:40",
+      "parsed": "2026-09-12T11:40:39+00:00",
+      "timezone": "UTC",
+      "timezone_aware": true,
+      "source": "article:published_time"
+    },
+    {
+      "url": "https://www.huxiu.com/article/4890638.html",
+      "raw": "2026-09-12T12:18:05+08:00",
+      "visible_time_raw": "2026-09-12 12:18",
+      "parsed": "2026-09-12T04:18:05+00:00",
+      "timezone": "UTC",
+      "timezone_aware": true,
+      "source": "article:published_time"
+    },
+    {
+      "url": "https://www.huxiu.com/article/4889889.html",
+      "raw": "2026-09-12T12:21:00+08:00",
+      "visible_time_raw": "2026-09-12 12:21",
+      "parsed": "2026-09-12T04:21:00+00:00",
+      "timezone": "UTC",
+      "timezone_aware": true,
+      "source": "article:published_time"
+    },
+    {
+      "url": "https://www.huxiu.com/article/4890512.html",
+      "raw": "2026-09-12T07:32:38+08:00",
+      "visible_time_raw": "2026-09-12 07:32",
+      "parsed": "2026-09-11T23:32:38+00:00",
+      "timezone": "UTC",
+      "timezone_aware": true,
+      "source": "article:published_time"
+    },
+    {
+      "url": "https://www.huxiu.com/article/4885316.html",
+      "raw": "2026-08-23T22:56:41+08:00",
+      "visible_time_raw": "2026-08-23 22:56",
+      "parsed": "2026-08-23T14:56:41+00:00",
+      "timezone": "UTC",
+      "timezone_aware": true,
+      "source": "article:published_time"
+    },
+    {
+      "url": "https://www.huxiu.com/article/4888116.html",
+      "raw": "2026-09-03T07:52:02+08:00",
+      "visible_time_raw": "2026-09-03 07:52",
+      "parsed": "2026-09-02T23:52:02+00:00",
+      "timezone": "UTC",
+      "timezone_aware": true,
+      "source": "article:published_time"
+    },
+    {
+      "url": "https://www.huxiu.com/article/4890598.html",
+      "raw": "2026-09-12T00:06:00+08:00",
+      "visible_time_raw": "2026-09-12 00:06",
+      "parsed": "2026-09-11T16:06:00+00:00",
+      "timezone": "UTC",
+      "timezone_aware": true,
+      "source": "article:published_time"
+    },
+    {
+      "url": "https://www.huxiu.com/article/4890151.html",
+      "raw": "2026-09-10T17:58:15+08:00",
+      "visible_time_raw": "2026-09-10 17:58",
+      "parsed": "2026-09-10T09:58:15+00:00",
+      "timezone": "UTC",
+      "timezone_aware": true,
+      "source": "article:published_time"
+    },
+    {
+      "url": "https://www.huxiu.com/article/4890252.html",
+      "raw": "2026-09-11T00:05:02+08:00",
+      "visible_time_raw": "2026-09-11 00:05",
+      "parsed": "2026-09-10T16:05:02+00:00",
+      "timezone": "UTC",
+      "timezone_aware": true,
+      "source": "article:published_time"
+    }
+  ],
+  "formats": [
+    "2026-08-23T22:56:41+08:00",
+    "2026-09-03T07:52:02+08:00",
+    "2026-09-10T17:58:15+08:00",
+    "2026-09-11T00:05:02+08:00",
+    "2026-09-12T00:06:00+08:00",
+    "2026-09-12T07:32:38+08:00",
+    "2026-09-12T12:18:05+08:00",
+    "2026-09-12T12:21:00+08:00",
+    "2026-09-12T19:40:39+08:00",
+    "2026-09-12T20:18:13+08:00",
+    "2026-09-12T20:44:59+08:00",
+    "2026-09-12T21:00:39+08:00",
+    "2026-09-12T21:06:30+08:00",
+    "2026-09-12T21:20:52+08:00",
+    "2026-09-12T21:52:05+08:00",
+    "2026-09-12T22:20:25+08:00",
+    "2026-09-12T22:54:41+08:00",
+    "2026-09-12T22:58:32+08:00",
+    "2026-09-12T23:32:15+08:00",
+    "2026-09-13T00:09:43+08:00"
+  ],
+  "all_timezone_aware": true
+}

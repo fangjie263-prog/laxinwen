@@ -11,6 +11,7 @@
 - ``rfi``：RFI（法广中文）—— 官方 RSS → RSSHub 回退 + HTML fallback
   （``.t-content__chapo`` + ``.t-content__body`` 正文提取）。
 - ``nytchinese``：纽约时报中文网——官方 RSS + 已验证 HTML parser。
+- ``huxiu``：虎嗅网——文章频道发现 + 专用正文/图片顺序解析。
 """
 
 from __future__ import annotations
@@ -56,9 +57,17 @@ def get_adapter(site_cfg: dict) -> Optional[SourceAdapter]:
             sections=site_cfg.get("sections") or [],
             allow_summary_as_content=bool(site_cfg.get("allow_summary_as_content", False)),
         )
+    if name == "huxiu":
+        from .huxiu import HuxiuAdapter
+
+        lists = site_cfg.get("lists") or []
+        discovery_url = ""
+        if lists and isinstance(lists[0], dict):
+            discovery_url = str(lists[0].get("url") or "")
+        return HuxiuAdapter(source_id, source_name, discovery_url=discovery_url or None)
     raise ValueError(
         f"未知的 source adapter: {name!r}（站点 {source_id!r}）。"
-        f"可用 adapter：hkej、rfi、nytchinese"
+        f"可用 adapter：hkej、rfi、nytchinese、huxiu"
     )
 
 

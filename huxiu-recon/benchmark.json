@@ -1,0 +1,194 @@
+[
+  {
+    "id": "001",
+    "huxiu_parser": {
+      "title": true,
+      "author": true,
+      "published_at": true,
+      "body_length": 2155,
+      "paragraph_count": 37,
+      "images": 0,
+      "captions": 0
+    },
+    "trafilatura": {
+      "title": true,
+      "body_length": 2050,
+      "paragraph_count": 35
+    },
+    "existing_extractor": {
+      "title": true,
+      "author": true,
+      "published_at": true,
+      "body_length": 2050,
+      "images": 1
+    }
+  },
+  {
+    "id": "002",
+    "huxiu_parser": {
+      "title": true,
+      "author": true,
+      "published_at": true,
+      "body_length": 5049,
+      "paragraph_count": 73,
+      "images": 5,
+      "captions": 5
+    },
+    "trafilatura": {
+      "title": true,
+      "body_length": 5101,
+      "paragraph_count": 82
+    },
+    "existing_extractor": {
+      "title": true,
+      "author": true,
+      "published_at": true,
+      "body_length": 5101,
+      "images": 1
+    }
+  },
+  {
+    "id": "003",
+    "huxiu_parser": {
+      "title": true,
+      "author": true,
+      "published_at": true,
+      "body_length": 4027,
+      "paragraph_count": 63,
+      "images": 0,
+      "captions": 0
+    },
+    "trafilatura": {
+      "title": true,
+      "body_length": 3959,
+      "paragraph_count": 69
+    },
+    "existing_extractor": {
+      "title": true,
+      "author": true,
+      "published_at": true,
+      "body_length": 3959,
+      "images": 1
+    }
+  },
+  {
+    "id": "004",
+    "huxiu_parser": {
+      "title": true,
+      "author": true,
+      "published_at": true,
+      "body_length": 6757,
+      "paragraph_count": 46,
+      "images": 2,
+      "captions": 2
+    },
+    "trafilatura": {
+      "title": true,
+      "body_length": 6706,
+      "paragraph_count": 52
+    },
+    "existing_extractor": {
+      "title": true,
+      "author": true,
+      "published_at": true,
+      "body_length": 6706,
+      "images": 1
+    }
+  },
+  {
+    "id": "005",
+    "huxiu_parser": {
+      "title": true,
+      "author": true,
+      "published_at": true,
+      "body_length": 2773,
+      "paragraph_count": 38,
+      "images": 1,
+      "captions": 1
+    },
+    "trafilatura": {
+      "title": true,
+      "body_length": 2738,
+      "paragraph_count": 45
+    },
+    "existing_extractor": {
+      "title": true,
+      "author": true,
+      "published_at": true,
+      "body_length": 2738,
+      "images": 1
+    }
+  },
+  {
+    "id": "006",
+    "huxiu_parser": {
+      "title": true,
+      "author": true,
+      "published_at": true,
+      "body_length": 3166,
+      "paragraph_count": 58,
+      "images": 1,
+      "captions": 1
+    },
+    "trafilatura": {
+      "title": true,
+      "body_length": 3127,
+      "paragraph_count": 70
+    },
+    "existing_extractor": {
+      "title": true,
+      "author": true,
+      "published_at": true,
+      "body_length": 3127,
+      "images": 1
+    }
+  },
+  {
+    "id": "007",
+    "huxiu_parser": {
+      "title": true,
+      "author": true,
+      "published_at": true,
+      "body_length": 5171,
+      "paragraph_count": 96,
+      "images": 9,
+      "captions": 8
+    },
+    "trafilatura": {
+      "title": true,
+      "body_length": 5077,
+      "paragraph_count": 105
+    },
+    "existing_extractor": {
+      "title": true,
+      "author": true,
+      "published_at": true,
+      "body_length": 5077,
+      "images": 1
+    }
+  },
+  {
+    "id": "008",
+    "huxiu_parser": {
+      "title": true,
+      "author": true,
+      "published_at": true,
+      "body_length": 5798,
+      "paragraph_count": 69,
+      "images": 2,
+      "captions": 0
+    },
+    "trafilatura": {
+      "title": true,
+      "body_length": 5501,
+      "paragraph_count": 71
+    },
+    "existing_extractor": {
+      "title": true,
+      "author": true,
+      "published_at": true,
+      "body_length": 5501,
+      "images": 1
+    }
+  }
+]
