@@ -23,11 +23,15 @@ extraction result metadata; no migration is required.
 ## Pipeline path
 
 `Pipeline.run_site("huxiu")` loads the site YAML, resolves `HuxiuAdapter`,
-discovers the server-rendered `/article/` cards, applies the existing storage
-URL/title deduplication, fetches article pages with the existing HTTPX fetcher,
+discovers the server-rendered `/article/` cards, then follows the verified
+Nuxt cursor API (`POST /v1/channel/pcArticleList`) only when the requested
+limit exceeds the SSR window. It applies the existing storage URL/title
+deduplication, fetches article pages with the existing HTTPX fetcher,
 extracts with the Huxiu parser, and persists through the existing
 `Storage.insert_article` / `update_article_body` methods. The configured
-three-second article interval is applied by the existing pipeline hook.
+three-second article interval is applied by the existing pipeline hook. API
+expansion is bounded by 10 cursor requests and 120 candidates; repeated
+cursors or two consecutive windows without new URLs stop discovery.
 
 The GUI source list and scheduler source validation include `huxiu`; selecting
 `all` therefore includes it. Existing sources keep their previous adapters and
@@ -45,6 +49,12 @@ extracted_ok=3, stored=3, failed=0
 
 The detailed live result is recorded in `huxiu-recon/formal-e2e.json`.
 
-The channel's observed `?page=2` and `?page=3` responses repeated the first
-window, so pagination is intentionally not invented or enabled. Future work
-should monitor for a documented stable cursor/load-more endpoint.
+The live cursor measurement produced 20/20, 50/50, and 100/100 unique
+discovery results for limits 20, 50, and 100 respectively. The first API
+window overlaps the SSR window, so the adapter deliberately permits one
+overlap before applying the no-new-window stop rule.
+
+The channel's observed `?page=2` and `?page=3` responses still repeat the
+first window and remain unused. The cursor API is used because its endpoint,
+form fields, and advancing `last_id` were confirmed in the current Nuxt code
+and live responses.

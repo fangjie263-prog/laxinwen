@@ -32,6 +32,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "load_more": None,    # “加载更多”分页接口配置（如 ECO admin-ajax load-more）
     "sections": [],       # 站点专用栏目 discovery（由 source adapter 解释）
     "discovery_url": None,  # 可选的 adapter 专用发现入口
+    "api_url": None,        # 可选的 adapter 专用 API 入口
+    "api_channel_id": 0,
+    "api_page_size": 12,
+    "api_max_pages": 10,
+    "api_max_candidates": 120,
     "allow_summary_as_content": True,  # RSS summary 是否可作为正文候选
     "requires_js": False,  # 是否需要 JS 渲染
     "extract": {},         # Trafilatura 等提取参数

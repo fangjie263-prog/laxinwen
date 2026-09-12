@@ -64,7 +64,16 @@ def get_adapter(site_cfg: dict) -> Optional[SourceAdapter]:
         discovery_url = ""
         if lists and isinstance(lists[0], dict):
             discovery_url = str(lists[0].get("url") or "")
-        return HuxiuAdapter(source_id, source_name, discovery_url=discovery_url or None)
+        return HuxiuAdapter(
+            source_id,
+            source_name,
+            discovery_url=discovery_url or None,
+            api_url=str(site_cfg.get("api_url") or "https://api-ms-article.huxiu.com/v1/channel/pcArticleList"),
+            channel_id=int(site_cfg.get("api_channel_id", 0)),
+            api_page_size=int(site_cfg.get("api_page_size", 12)),
+            api_max_pages=int(site_cfg.get("api_max_pages", 10)),
+            api_max_candidates=int(site_cfg.get("api_max_candidates", 120)),
+        )
     raise ValueError(
         f"未知的 source adapter: {name!r}（站点 {source_id!r}）。"
         f"可用 adapter：hkej、rfi、nytchinese、huxiu"

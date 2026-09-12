@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 from pathlib import Path
 
 from news.fetch import FetcherOptions, HttpxFetcher
@@ -17,6 +18,7 @@ REPORT_PATH = ROOT / "huxiu-recon" / "formal-e2e.json"
 
 
 def main() -> None:
+    sys.stdout.reconfigure(errors="replace")
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     DB_PATH.unlink(missing_ok=True)
     fetcher = HttpxFetcher(

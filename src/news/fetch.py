@@ -65,6 +65,10 @@ class BaseFetcher(ABC):
         """
         return self.fetch(url, **kwargs)
 
+    def post_form(self, url: str, data: dict[str, object], **kwargs) -> str:
+        """可选的表单 POST；需要站点 API 的 adapter 可安全探测此能力。"""
+        raise NotImplementedError("当前 fetcher 不支持表单 POST")
+
     @abstractmethod
     def close(self) -> None:  # pragma: no cover - 接口定义
         ...
@@ -149,6 +153,35 @@ class HttpxFetcher(BaseFetcher):
         都分别节流），与 discovery 的普通节流完全独立。
         """
         return self._fetch_with_throttle(url, self._article_throttle, **kwargs)
+
+    def post_form(self, url: str, data: dict[str, object], **kwargs) -> str:
+        """以现有 HTTPX client、节流和重试策略发送表单 POST。"""
+        last_exc: Optional[Exception] = None
+        last_status: Optional[int] = None
+        extra_headers = kwargs.get("headers") or {}
+        for attempt in range(1, self.options.retries + 1):
+            self._throttle(url)
+            try:
+                resp = self._client.post(url, data=data, headers=extra_headers or None)
+            except (httpx.TimeoutException, httpx.TransportError) as exc:
+                last_exc = exc
+                logger.warning("[%d/%d] %s POST 网络错误: %s", attempt, self.options.retries, url, exc)
+            else:
+                if resp.status_code == 200:
+                    return resp.text
+                if resp.status_code == 429 or resp.status_code >= 500:
+                    last_exc = FetchError(f"HTTP {resp.status_code}", status=resp.status_code)
+                    last_status = resp.status_code
+                    logger.warning("[%d/%d] %s POST HTTP %s，稍后重试", attempt, self.options.retries, url, resp.status_code)
+                else:
+                    raise FetchError(f"HTTP {resp.status_code} for {url}", status=resp.status_code)
+            if attempt < self.options.retries:
+                wait = self.options.retry_backoff * (2 ** (attempt - 1)) + random.uniform(0, 1)
+                time.sleep(wait)
+        raise FetchError(
+            f"POST 抓取失败（重试 {self.options.retries} 次后）: {url}"
+            + (f" 最后状态 {last_status}" if last_status else "")
+        ) from last_exc
 
     def _fetch_with_throttle(self, url: str, throttle_fn, **kwargs) -> str:
         last_exc: Optional[Exception] = None
