@@ -105,3 +105,42 @@ def test_adapter_extracts_into_existing_article_contract():
     assert adapter.extract_article(article, _html("003.html"), result.canonical_url)
     assert article.title == result.title
     assert len(article.body_text) > 1000
+
+
+def test_twenty_plus_real_fixtures_have_core_fields_and_clean_body():
+    paths = sorted(FIXTURES.glob("[0-9][0-9][0-9].html"))
+    assert len(paths) >= 20
+    results = [
+        extract_huxiu_article(
+            path.read_text(encoding="utf-8"),
+            url=f"https://www.huxiu.com/article/{path.stem}.html",
+        )
+        for path in paths
+    ]
+    assert all(result.title and result.canonical_url.startswith("https://www.huxiu.com/article/") for result in results)
+    assert all(result.body_text and len(result.body_text) >= 80 for result in results)
+    assert all(result.body_html for result in results)
+    assert all(result.published_at and result.published_at.tzinfo for result in results)
+    assert all("相关推荐" not in result.body_text and "热门文章" not in result.body_text for result in results)
+
+
+def test_real_fixture_structure_coverage_is_reported_not_invented():
+    results = [_result(path.name) for path in sorted(FIXTURES.glob("[0-9][0-9][0-9].html"))]
+    assert sum(bool(result.images) for result in results) >= 10
+    assert sum(any(block["type"] == "caption" for block in result.blocks) for result in results) >= 5
+    assert sum(any(block["type"] == "heading" for block in result.blocks) for result in results) >= 10
+    assert sum(any(block["type"] == "blockquote" for block in result.blocks) for result in results) >= 3
+    # No list block was observed in this real sample; do not manufacture one.
+    assert all(block["type"] != "list" for result in results for block in result.blocks)
+
+
+def test_real_fixture_reprint_detection_is_conservative():
+    results = [_result(path.name) for path in sorted(FIXTURES.glob("[0-9][0-9][0-9].html"))]
+    assert sum(bool(result.original_source) for result in results) >= 5
+    assert all(result.original_source == "网络来源（页面未给出媒体名）" for result in results if result.original_source)
+
+
+def test_empty_body_is_rejected_by_adapter():
+    article = Article(source_id="huxiu", source_name="虎嗅", canonical_url="https://www.huxiu.com/article/1.html", title="")
+    adapter = HuxiuAdapter("huxiu", "虎嗅")
+    assert not adapter.extract_article(article, "<html><head><title>empty</title></head><body></body></html>")

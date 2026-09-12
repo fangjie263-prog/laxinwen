@@ -1,0 +1,137 @@
+{
+  "method": "No stable pagination method confirmed",
+  "candidates": {
+    "page1": {
+      "url": "https://www.huxiu.com/article/",
+      "status": 200,
+      "final_url": "https://www.huxiu.com/article/",
+      "article_ids": [
+        "4890724",
+        "4890721",
+        "4890719",
+        "4890718",
+        "4890716",
+        "4890715",
+        "4890713",
+        "4890711",
+        "4890703",
+        "4890705",
+        "4890702",
+        "4890701"
+      ],
+      "length": 73168
+    },
+    "page_query_2": {
+      "url": "https://www.huxiu.com/article/?page=2",
+      "status": 200,
+      "final_url": "https://www.huxiu.com/article/?page=2",
+      "article_ids": [
+        "4890724",
+        "4890721",
+        "4890719",
+        "4890718",
+        "4890716",
+        "4890715",
+        "4890713",
+        "4890711",
+        "4890703",
+        "4890705",
+        "4890702",
+        "4890701"
+      ],
+      "length": 73175
+    },
+    "page_path_2": {
+      "url": "https://www.huxiu.com/article/page/2",
+      "status": 404,
+      "final_url": "https://www.huxiu.com/article/page/2",
+      "article_ids": [],
+      "length": 38930
+    },
+    "page_query_3": {
+      "url": "https://www.huxiu.com/article/?page=3",
+      "status": 200,
+      "final_url": "https://www.huxiu.com/article/?page=3",
+      "article_ids": [
+        "4890724",
+        "4890721",
+        "4890719",
+        "4890718",
+        "4890716",
+        "4890715",
+        "4890713",
+        "4890711",
+        "4890703",
+        "4890705",
+        "4890702",
+        "4890701"
+      ],
+      "length": 73175
+    },
+    "page_path_3": {
+      "url": "https://www.huxiu.com/article/page/3",
+      "status": 404,
+      "final_url": "https://www.huxiu.com/article/page/3",
+      "article_ids": [],
+      "length": 38930
+    }
+  },
+  "page1_ids": [
+    "4890724",
+    "4890721",
+    "4890719",
+    "4890718",
+    "4890716",
+    "4890715",
+    "4890713",
+    "4890711",
+    "4890703",
+    "4890705",
+    "4890702",
+    "4890701"
+  ],
+  "page2_ids": [
+    "4890724",
+    "4890721",
+    "4890719",
+    "4890718",
+    "4890716",
+    "4890715",
+    "4890713",
+    "4890711",
+    "4890703",
+    "4890705",
+    "4890702",
+    "4890701"
+  ],
+  "page3_ids": [
+    "4890724",
+    "4890721",
+    "4890719",
+    "4890718",
+    "4890716",
+    "4890715",
+    "4890713",
+    "4890711",
+    "4890703",
+    "4890705",
+    "4890702",
+    "4890701"
+  ],
+  "duplicates": [
+    "4890701",
+    "4890702",
+    "4890703",
+    "4890705",
+    "4890711",
+    "4890713",
+    "4890715",
+    "4890716",
+    "4890718",
+    "4890719",
+    "4890721",
+    "4890724"
+  ],
+  "stable": false,
+  "notes": "page 1 is the canonical /article/ page; page query/path candidates are recorded verbatim. Empty/duplicate/redirect results are not promoted to a production method."
+}

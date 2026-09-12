@@ -1,330 +1,162 @@
 [
   {
-    "id": "001",
-    "url": "https://www.huxiu.com/article/4890703.html",
-    "title": "智谱上市后募资，大模型战场变了",
-    "discovered_from": "https://www.huxiu.com/article/",
-    "article_type": "original",
-    "author": [
-      "宋思杭"
-    ],
-    "published_at": "2026-09-12T13:00:39+00:00",
-    "section": "前沿科技",
-    "body_length": 2155,
-    "paragraph_count": 37,
-    "image_count": 0,
-    "body_dom": {
-      "p": 74,
-      "div": 43,
-      "h2": 0,
-      "h3": 0,
-      "blockquote": 0,
-      "ul": 2,
-      "ol": 0,
-      "figure": 0,
-      "img": 4,
-      "figcaption": 0,
-      "video": 0,
-      "iframe": 0,
-      "has_json_ld": true,
-      "has_nuxt_data": true
-    },
-    "pollution_checks": {
-      "related_articles": false,
-      "popular_articles": false,
-      "advertising": false,
-      "footer": false,
-      "navigation": false,
-      "comments": false,
-      "app_download": false
-    },
-    "notes": "真实页面，下载于 2026-09-12；类型/转载以页面字段为准，未猜测。"
+    "id": "4890724",
+    "url": "https://www.huxiu.com/article/4890724.html",
+    "title": "虚线时刻，来临",
+    "discovered_from": "real Phase 2 channel/home discovery",
+    "article_type": "real_html",
+    "notes": "Downloaded 2026-09-12; see phase2-samples.json for structure metrics."
   },
   {
-    "id": "002",
-    "url": "https://www.huxiu.com/article/4890705.html",
-    "title": "骂完就走，谁为网暴负责？首部反网暴法开始追责，骂人的和平台都要管",
-    "discovered_from": "https://www.huxiu.com/article/",
-    "article_type": "unknown",
-    "author": [
-      "猛犸工作室"
-    ],
-    "published_at": "2026-09-12T12:44:59+00:00",
-    "section": "社会文化",
-    "body_length": 5049,
-    "paragraph_count": 73,
-    "image_count": 5,
-    "body_dom": {
-      "p": 165,
-      "div": 36,
-      "h2": 4,
-      "h3": 0,
-      "blockquote": 0,
-      "ul": 2,
-      "ol": 0,
-      "figure": 0,
-      "img": 6,
-      "figcaption": 0,
-      "video": 0,
-      "iframe": 0,
-      "has_json_ld": true,
-      "has_nuxt_data": true
-    },
-    "pollution_checks": {
-      "related_articles": false,
-      "popular_articles": false,
-      "advertising": false,
-      "footer": false,
-      "navigation": false,
-      "comments": false,
-      "app_download": false
-    },
-    "notes": "真实页面，下载于 2026-09-12；类型/转载以页面字段为准，未猜测。"
+    "id": "4890721",
+    "url": "https://www.huxiu.com/article/4890721.html",
+    "title": "中国大模型创始人在政治上很愚蠢",
+    "discovered_from": "real Phase 2 channel/home discovery",
+    "article_type": "real_html",
+    "notes": "Downloaded 2026-09-12; see phase2-samples.json for structure metrics."
   },
   {
-    "id": "003",
-    "url": "https://www.huxiu.com/article/4890702.html",
-    "title": "耐克的数字化转型为什么“失败”了？",
-    "discovered_from": "https://www.huxiu.com/article/",
-    "article_type": "original",
-    "author": [
-      "新眸"
-    ],
-    "published_at": "2026-09-12T12:18:13+00:00",
-    "section": "商业消费",
-    "body_length": 4027,
-    "paragraph_count": 63,
-    "image_count": 0,
-    "body_dom": {
-      "p": 137,
-      "div": 42,
-      "h2": 6,
-      "h3": 0,
-      "blockquote": 0,
-      "ul": 2,
-      "ol": 0,
-      "figure": 0,
-      "img": 4,
-      "figcaption": 0,
-      "video": 0,
-      "iframe": 0,
-      "has_json_ld": true,
-      "has_nuxt_data": true
-    },
-    "pollution_checks": {
-      "related_articles": false,
-      "popular_articles": false,
-      "advertising": false,
-      "footer": false,
-      "navigation": false,
-      "comments": false,
-      "app_download": false
-    },
-    "notes": "真实页面，下载于 2026-09-12；类型/转载以页面字段为准，未猜测。"
+    "id": "4890719",
+    "url": "https://www.huxiu.com/article/4890719.html",
+    "title": "打假的铁头，咋就变恶势力犯罪了？",
+    "discovered_from": "real Phase 2 channel/home discovery",
+    "article_type": "real_html",
+    "notes": "Downloaded 2026-09-12; see phase2-samples.json for structure metrics."
   },
   {
-    "id": "004",
-    "url": "https://www.huxiu.com/article/4890701.html",
-    "title": "全面排除中国？美国前经济高官：要重振工业，就无法将中国拒之门外",
-    "discovered_from": "https://www.huxiu.com/article/",
-    "article_type": "unknown",
-    "author": [
-      "IPP评论©"
-    ],
-    "published_at": "2026-09-12T11:40:39+00:00",
-    "section": "国际热点",
-    "body_length": 6757,
-    "paragraph_count": 46,
-    "image_count": 2,
-    "body_dom": {
-      "p": 102,
-      "div": 36,
-      "h2": 4,
-      "h3": 0,
-      "blockquote": 2,
-      "ul": 3,
-      "ol": 0,
-      "figure": 0,
-      "img": 4,
-      "figcaption": 0,
-      "video": 0,
-      "iframe": 0,
-      "has_json_ld": true,
-      "has_nuxt_data": true
-    },
-    "pollution_checks": {
-      "related_articles": false,
-      "popular_articles": false,
-      "advertising": false,
-      "footer": false,
-      "navigation": false,
-      "comments": false,
-      "app_download": false
-    },
-    "notes": "真实页面，下载于 2026-09-12；类型/转载以页面字段为准，未猜测。"
+    "id": "4890718",
+    "url": "https://www.huxiu.com/article/4890718.html",
+    "title": "腾讯可能要给WorkBuddy改名了？",
+    "discovered_from": "real Phase 2 channel/home discovery",
+    "article_type": "real_html",
+    "notes": "Downloaded 2026-09-12; see phase2-samples.json for structure metrics."
   },
   {
-    "id": "005",
+    "id": "4890716",
+    "url": "https://www.huxiu.com/article/4890716.html",
+    "title": "当一个时刻在线的打工人“瞬间消失”",
+    "discovered_from": "real Phase 2 channel/home discovery",
+    "article_type": "real_html",
+    "notes": "Downloaded 2026-09-12; see phase2-samples.json for structure metrics."
+  },
+  {
+    "id": "4890715",
+    "url": "https://www.huxiu.com/article/4890715.html",
+    "title": "韦世豪被罚启示：足球文化治理需要实事求是",
+    "discovered_from": "real Phase 2 channel/home discovery",
+    "article_type": "real_html",
+    "notes": "Downloaded 2026-09-12; see phase2-samples.json for structure metrics."
+  },
+  {
+    "id": "4890713",
+    "url": "https://www.huxiu.com/article/4890713.html",
+    "title": "“玩不起就别玩，”",
+    "discovered_from": "real Phase 2 channel/home discovery",
+    "article_type": "real_html",
+    "notes": "Downloaded 2026-09-12; see phase2-samples.json for structure metrics."
+  },
+  {
+    "id": "4890711",
     "url": "https://www.huxiu.com/article/4890711.html",
     "title": "估值狂飙至500亿美元，月之暗面突然遭遇暗剑",
-    "discovered_from": "https://www.huxiu.com/article/",
-    "article_type": "unknown",
-    "author": [
-      "凤凰网财经"
-    ],
-    "published_at": "2026-09-12T13:06:30+00:00",
-    "section": "金融财经",
-    "body_length": 2773,
-    "paragraph_count": 38,
-    "image_count": 1,
-    "body_dom": {
-      "p": 85,
-      "div": 36,
-      "h2": 6,
-      "h3": 0,
-      "blockquote": 0,
-      "ul": 2,
-      "ol": 0,
-      "figure": 0,
-      "img": 3,
-      "figcaption": 0,
-      "video": 0,
-      "iframe": 0,
-      "has_json_ld": true,
-      "has_nuxt_data": true
-    },
-    "pollution_checks": {
-      "related_articles": false,
-      "popular_articles": false,
-      "advertising": false,
-      "footer": false,
-      "navigation": false,
-      "comments": false,
-      "app_download": false
-    },
-    "notes": "真实页面，下载于 2026-09-12；类型/转载以页面字段为准，未猜测。"
+    "discovered_from": "real Phase 2 channel/home discovery",
+    "article_type": "real_html",
+    "notes": "Downloaded 2026-09-12; see phase2-samples.json for structure metrics."
   },
   {
-    "id": "006",
-    "url": "https://www.huxiu.com/article/4890693.html",
-    "title": "武大教授“9亿退休金”风波：一个国家最该拿高退休金的，本来就该是教授",
-    "discovered_from": "https://www.huxiu.com/article/",
-    "article_type": "unknown",
-    "author": [
-      "瞰见Lab"
-    ],
-    "published_at": "2026-09-12T10:03:02+00:00",
-    "section": "社会文化",
-    "body_length": 3166,
-    "paragraph_count": 58,
-    "image_count": 1,
-    "body_dom": {
-      "p": 135,
-      "div": 42,
-      "h2": 11,
-      "h3": 0,
-      "blockquote": 0,
-      "ul": 2,
-      "ol": 0,
-      "figure": 0,
-      "img": 5,
-      "figcaption": 0,
-      "video": 0,
-      "iframe": 0,
-      "has_json_ld": true,
-      "has_nuxt_data": true
-    },
-    "pollution_checks": {
-      "related_articles": false,
-      "popular_articles": false,
-      "advertising": false,
-      "footer": false,
-      "navigation": false,
-      "comments": false,
-      "app_download": false
-    },
-    "notes": "真实页面，下载于 2026-09-12；类型/转载以页面字段为准，未猜测。"
+    "id": "4890703",
+    "url": "https://www.huxiu.com/article/4890703.html",
+    "title": "智谱上市后募资，大模型战场变了",
+    "discovered_from": "real Phase 2 channel/home discovery",
+    "article_type": "real_html",
+    "notes": "Downloaded 2026-09-12; see phase2-samples.json for structure metrics."
   },
   {
-    "id": "007",
+    "id": "4890705",
+    "url": "https://www.huxiu.com/article/4890705.html",
+    "title": "骂完就走，谁为网暴负责？首部反网暴法开始追责，骂人的和平台都要管",
+    "discovered_from": "real Phase 2 channel/home discovery",
+    "article_type": "real_html",
+    "notes": "Downloaded 2026-09-12; see phase2-samples.json for structure metrics."
+  },
+  {
+    "id": "4890702",
+    "url": "https://www.huxiu.com/article/4890702.html",
+    "title": "耐克的数字化转型为什么“失败”了？",
+    "discovered_from": "real Phase 2 channel/home discovery",
+    "article_type": "real_html",
+    "notes": "Downloaded 2026-09-12; see phase2-samples.json for structure metrics."
+  },
+  {
+    "id": "4890701",
+    "url": "https://www.huxiu.com/article/4890701.html",
+    "title": "全面排除中国？美国前经济高官：要重振工业，就无法将中国拒之门外",
+    "discovered_from": "real Phase 2 channel/home discovery",
+    "article_type": "real_html",
+    "notes": "Downloaded 2026-09-12; see phase2-samples.json for structure metrics."
+  },
+  {
+    "id": "4890638",
     "url": "https://www.huxiu.com/article/4890638.html",
     "title": "燧原的命，攥在腾讯手里",
-    "discovered_from": "https://www.huxiu.com/article/",
-    "article_type": "original",
-    "author": [
-      "张贝贝"
-    ],
-    "published_at": "2026-09-12T04:18:05+00:00",
-    "section": "金融财经",
-    "body_length": 5171,
-    "paragraph_count": 96,
-    "image_count": 9,
-    "body_dom": {
-      "p": 221,
-      "div": 43,
-      "h2": 3,
-      "h3": 0,
-      "blockquote": 0,
-      "ul": 2,
-      "ol": 0,
-      "figure": 0,
-      "img": 13,
-      "figcaption": 0,
-      "video": 0,
-      "iframe": 0,
-      "has_json_ld": true,
-      "has_nuxt_data": true
-    },
-    "pollution_checks": {
-      "related_articles": false,
-      "popular_articles": false,
-      "advertising": true,
-      "footer": false,
-      "navigation": false,
-      "comments": false,
-      "app_download": false
-    },
-    "notes": "真实页面，下载于 2026-09-12；类型/转载以页面字段为准，未猜测。"
+    "discovered_from": "real Phase 2 channel/home discovery",
+    "article_type": "real_html",
+    "notes": "Downloaded 2026-09-12; see phase2-samples.json for structure metrics."
   },
   {
-    "id": "008",
-    "url": "https://www.huxiu.com/article/4890510.html",
-    "title": "浦发银行，困境反转了吗？",
-    "discovered_from": "https://www.huxiu.com/article/",
-    "article_type": "original",
-    "author": [
-      "刘国辉"
-    ],
-    "published_at": "2026-09-11T12:03:30+00:00",
-    "section": "金融财经",
-    "body_length": 5798,
-    "paragraph_count": 69,
-    "image_count": 2,
-    "body_dom": {
-      "p": 143,
-      "div": 43,
-      "h2": 4,
-      "h3": 0,
-      "blockquote": 1,
-      "ul": 2,
-      "ol": 0,
-      "figure": 0,
-      "img": 6,
-      "figcaption": 0,
-      "video": 0,
-      "iframe": 0,
-      "has_json_ld": true,
-      "has_nuxt_data": true
-    },
-    "pollution_checks": {
-      "related_articles": false,
-      "popular_articles": false,
-      "advertising": false,
-      "footer": false,
-      "navigation": false,
-      "comments": false,
-      "app_download": false
-    },
-    "notes": "真实页面，下载于 2026-09-12；类型/转载以页面字段为准，未猜测。"
+    "id": "4889889",
+    "url": "https://www.huxiu.com/article/4889889.html",
+    "title": "东亚女生又开始抢着当“好嫁女”了",
+    "discovered_from": "real Phase 2 channel/home discovery",
+    "article_type": "real_html",
+    "notes": "Downloaded 2026-09-12; see phase2-samples.json for structure metrics."
+  },
+  {
+    "id": "4890512",
+    "url": "https://www.huxiu.com/article/4890512.html",
+    "title": "90万一集的AI长剧，凭什么让芒果市值五天暴涨 133 亿",
+    "discovered_from": "real Phase 2 channel/home discovery",
+    "article_type": "real_html",
+    "notes": "Downloaded 2026-09-12; see phase2-samples.json for structure metrics."
+  },
+  {
+    "id": "4885316",
+    "url": "https://www.huxiu.com/article/4885316.html",
+    "title": "DeepSeek、智谱与Kimi，竞争前沿生存空间",
+    "discovered_from": "real Phase 2 channel/home discovery",
+    "article_type": "real_html",
+    "notes": "Downloaded 2026-09-12; see phase2-samples.json for structure metrics."
+  },
+  {
+    "id": "4888116",
+    "url": "https://www.huxiu.com/article/4888116.html",
+    "title": "Kimi启动IPO，赶在市场不再按梦想定价之前",
+    "discovered_from": "real Phase 2 channel/home discovery",
+    "article_type": "real_html",
+    "notes": "Downloaded 2026-09-12; see phase2-samples.json for structure metrics."
+  },
+  {
+    "id": "4890598",
+    "url": "https://www.huxiu.com/article/4890598.html",
+    "title": "AI 正把文化变成黑暗森林：谁先暴露想法，谁先被狩猎",
+    "discovered_from": "real Phase 2 channel/home discovery",
+    "article_type": "real_html",
+    "notes": "Downloaded 2026-09-12; see phase2-samples.json for structure metrics."
+  },
+  {
+    "id": "4890151",
+    "url": "https://www.huxiu.com/article/4890151.html",
+    "title": "Anthropic研究员辞职刷屏，4天7位AI大牛警告，AI或灭绝人类？",
+    "discovered_from": "real Phase 2 channel/home discovery",
+    "article_type": "real_html",
+    "notes": "Downloaded 2026-09-12; see phase2-samples.json for structure metrics."
+  },
+  {
+    "id": "4890252",
+    "url": "https://www.huxiu.com/article/4890252.html",
+    "title": "迎接被深度“去权”的未来：你已不再是地球上最聪明的存在了",
+    "discovered_from": "real Phase 2 channel/home discovery",
+    "article_type": "real_html",
+    "notes": "Downloaded 2026-09-12; see phase2-samples.json for structure metrics."
   }
 ]

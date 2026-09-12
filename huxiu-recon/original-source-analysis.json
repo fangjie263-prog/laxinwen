@@ -1,0 +1,187 @@
+{
+  "articles": [
+    {
+      "url": "https://www.huxiu.com/article/4890724.html",
+      "parser_original_source": "网络来源（页面未给出媒体名）",
+      "raw_reprinted_explain": "本内容来源于网络 原文链接 ，观点仅代表作者本人，不代表虎嗅立场。 如涉及版权问题请联系 hezuo@huxiu.com，我们将及时核实并处理。",
+      "source_links": [
+        "https://mp.weixin.qq.com/s?__biz=MzA3ODI5NDg0Mw==&mid=2654260507&idx=1&sn=cb3b6b628ff64f9dc12cc5c615247926&chksm=858d2d98a20707670f61e6dad8c5b2a4e8eb3f56675b25f22bf84c3fc0415af23f2ef344294b#rd"
+      ],
+      "nuxt_has_source_url": true,
+      "nuxt_has_reprinted": true
+    },
+    {
+      "url": "https://www.huxiu.com/article/4890721.html",
+      "parser_original_source": null,
+      "raw_reprinted_explain": "本内容由作者授权发布，观点仅代表作者本人，不代表虎嗅立场。 如对本稿件有异议或投诉，请联系 tougao@huxiu.com。",
+      "source_links": [],
+      "nuxt_has_source_url": true,
+      "nuxt_has_reprinted": true
+    },
+    {
+      "url": "https://www.huxiu.com/article/4890719.html",
+      "parser_original_source": null,
+      "raw_reprinted_explain": "本内容由作者授权发布，观点仅代表作者本人，不代表虎嗅立场。 如对本稿件有异议或投诉，请联系 tougao@huxiu.com。",
+      "source_links": [],
+      "nuxt_has_source_url": true,
+      "nuxt_has_reprinted": true
+    },
+    {
+      "url": "https://www.huxiu.com/article/4890718.html",
+      "parser_original_source": null,
+      "raw_reprinted_explain": "本内容由作者授权发布，观点仅代表作者本人，不代表虎嗅立场。 如对本稿件有异议或投诉，请联系 tougao@huxiu.com。",
+      "source_links": [],
+      "nuxt_has_source_url": true,
+      "nuxt_has_reprinted": true
+    },
+    {
+      "url": "https://www.huxiu.com/article/4890716.html",
+      "parser_original_source": "网络来源（页面未给出媒体名）",
+      "raw_reprinted_explain": "本内容来源于网络 原文链接 ，观点仅代表作者本人，不代表虎嗅立场。 如涉及版权问题请联系 hezuo@huxiu.com，我们将及时核实并处理。",
+      "source_links": [
+        "https://mp.weixin.qq.com/s?__biz=Mzk0MTYwMTA3MA==&mid=2247487955&idx=1&sn=55c70e5dc1189139cabc25ec6cde0948&chksm=c36718a1bfbcae00ac36d3c7cd8ea43048d06be77e3b95f34cc8a9568271506b95c1c186f42c#rd"
+      ],
+      "nuxt_has_source_url": true,
+      "nuxt_has_reprinted": true
+    },
+    {
+      "url": "https://www.huxiu.com/article/4890715.html",
+      "parser_original_source": "网络来源（页面未给出媒体名）",
+      "raw_reprinted_explain": "本内容来源于网络 原文链接 ，观点仅代表作者本人，不代表虎嗅立场。 如涉及版权问题请联系 hezuo@huxiu.com，我们将及时核实并处理。",
+      "source_links": [
+        "https://mp.weixin.qq.com/s?__biz=Mzg5NjE3MzI5NQ==&mid=2247569615&idx=2&sn=1a0e5bde8e4e3ab0015802e1d4219adf&chksm=c1a06839a6e1552bfe696ea37347b03c4e4e8cf6afbb2c8f8b92eb231bebac85af3db97795be#rd"
+      ],
+      "nuxt_has_source_url": true,
+      "nuxt_has_reprinted": true
+    },
+    {
+      "url": "https://www.huxiu.com/article/4890713.html",
+      "parser_original_source": "网络来源（页面未给出媒体名）",
+      "raw_reprinted_explain": "本内容来源于网络 原文链接 ，观点仅代表作者本人，不代表虎嗅立场。 如涉及版权问题请联系 hezuo@huxiu.com，我们将及时核实并处理。",
+      "source_links": [
+        "https://mp.weixin.qq.com/s?__biz=MzU2NTEwODMwMA==&mid=2247547078&idx=1&sn=8afb272affd3bf0a18f2df20f6d279ad&chksm=fd899f4a5e9c533844f6ac81df94cb2b7d29a7e0a50902f1162de08c0d25256b2bab42299094#rd"
+      ],
+      "nuxt_has_source_url": true,
+      "nuxt_has_reprinted": true
+    },
+    {
+      "url": "https://www.huxiu.com/article/4890711.html",
+      "parser_original_source": "网络来源（页面未给出媒体名）",
+      "raw_reprinted_explain": "本内容来源于网络 原文链接 ，观点仅代表作者本人，不代表虎嗅立场。 如涉及版权问题请联系 hezuo@huxiu.com，我们将及时核实并处理。",
+      "source_links": [
+        "https://mp.weixin.qq.com/s?__biz=MzU5ODU1Mjg5Nw==&mid=2247833931&idx=1&sn=03516781283a4c247550fb3d12b6684b&chksm=ff1d1c2604cda404bbddba46a70d1f04107545490bfd0a1050883752e98bdcc89cba0b00d925#rd"
+      ],
+      "nuxt_has_source_url": true,
+      "nuxt_has_reprinted": true
+    },
+    {
+      "url": "https://www.huxiu.com/article/4890703.html",
+      "parser_original_source": null,
+      "raw_reprinted_explain": "本内容未经允许不得转载。授权事宜请联系 hezuo@huxiu.com。",
+      "source_links": [],
+      "nuxt_has_source_url": true,
+      "nuxt_has_reprinted": true
+    },
+    {
+      "url": "https://www.huxiu.com/article/4890705.html",
+      "parser_original_source": "网络来源（页面未给出媒体名）",
+      "raw_reprinted_explain": "本内容来源于网络 原文链接 ，观点仅代表作者本人，不代表虎嗅立场。 如涉及版权问题请联系 hezuo@huxiu.com，我们将及时核实并处理。",
+      "source_links": [
+        "https://mp.weixin.qq.com/s?__biz=MzAxNzU0NDk5NQ==&mid=2455843239&idx=1&sn=908fd13c98b501b4ce293d586345523a&chksm=8dc79109157ee1b13b6c1f81889322bfd943bb6adb3b34f432482525fc3d1bc4a7785d5be6c8#rd"
+      ],
+      "nuxt_has_source_url": true,
+      "nuxt_has_reprinted": true
+    },
+    {
+      "url": "https://www.huxiu.com/article/4890702.html",
+      "parser_original_source": null,
+      "raw_reprinted_explain": "本内容由作者授权发布，观点仅代表作者本人，不代表虎嗅立场。 如对本稿件有异议或投诉，请联系 tougao@huxiu.com。",
+      "source_links": [],
+      "nuxt_has_source_url": true,
+      "nuxt_has_reprinted": true
+    },
+    {
+      "url": "https://www.huxiu.com/article/4890701.html",
+      "parser_original_source": "网络来源（页面未给出媒体名）",
+      "raw_reprinted_explain": "本内容来源于网络 原文链接 ，观点仅代表作者本人，不代表虎嗅立场。 如涉及版权问题请联系 hezuo@huxiu.com，我们将及时核实并处理。",
+      "source_links": [
+        "https://mp.weixin.qq.com/s?__biz=MzA4Nzk2NzEwNA==&mid=2651941593&idx=2&sn=0a5c353f2b9a3242c392b0c06579014d&chksm=8a5e3edd6b048f1a80e9961a28f4db3ed076a1b6e6b6dc4bf2de3719fa6aa83e4e5dec8675f9#rd"
+      ],
+      "nuxt_has_source_url": true,
+      "nuxt_has_reprinted": true
+    },
+    {
+      "url": "https://www.huxiu.com/article/4890638.html",
+      "parser_original_source": null,
+      "raw_reprinted_explain": "本内容未经允许不得转载。授权事宜请联系 hezuo@huxiu.com。",
+      "source_links": [],
+      "nuxt_has_source_url": true,
+      "nuxt_has_reprinted": true
+    },
+    {
+      "url": "https://www.huxiu.com/article/4889889.html",
+      "parser_original_source": null,
+      "raw_reprinted_explain": "本内容未经允许不得转载。授权事宜请联系 hezuo@huxiu.com。",
+      "source_links": [],
+      "nuxt_has_source_url": true,
+      "nuxt_has_reprinted": true
+    },
+    {
+      "url": "https://www.huxiu.com/article/4890512.html",
+      "parser_original_source": null,
+      "raw_reprinted_explain": "本内容未经允许不得转载。授权事宜请联系 hezuo@huxiu.com。",
+      "source_links": [],
+      "nuxt_has_source_url": true,
+      "nuxt_has_reprinted": true
+    },
+    {
+      "url": "https://www.huxiu.com/article/4885316.html",
+      "parser_original_source": "网络来源（页面未给出媒体名）",
+      "raw_reprinted_explain": "本内容来源于网络 原文链接 ，观点仅代表作者本人，不代表虎嗅立场。 如涉及版权问题请联系 hezuo@huxiu.com，我们将及时核实并处理。",
+      "source_links": [
+        "https://mp.weixin.qq.com/s?__biz=MzkzMzI2ODAyNQ==&mid=2247493930&idx=1&sn=6d7080451ee406d2fbb751d261639c4b&chksm=c351ad0a2d75b8044e9ee699fe6a31399e9c121bf37a563222c647367d5cbed8dd8ced33054f#rd"
+      ],
+      "nuxt_has_source_url": true,
+      "nuxt_has_reprinted": true
+    },
+    {
+      "url": "https://www.huxiu.com/article/4888116.html",
+      "parser_original_source": null,
+      "raw_reprinted_explain": "本内容由作者授权发布，观点仅代表作者本人，不代表虎嗅立场。 如对本稿件有异议或投诉，请联系 tougao@huxiu.com。",
+      "source_links": [],
+      "nuxt_has_source_url": true,
+      "nuxt_has_reprinted": true
+    },
+    {
+      "url": "https://www.huxiu.com/article/4890598.html",
+      "parser_original_source": "网络来源（页面未给出媒体名）",
+      "raw_reprinted_explain": "本内容来源于网络 原文链接 ，观点仅代表作者本人，不代表虎嗅立场。 如涉及版权问题请联系 hezuo@huxiu.com，我们将及时核实并处理。",
+      "source_links": [
+        "https://mp.weixin.qq.com/s?__biz=MzU4NDQwMTc3MQ==&mid=2247493501&idx=1&sn=aeed54d2f92101af8a7f442911386cea&chksm=fc1186968c126a2ed98511d7b036f32173ac05c6d6144af9ac92648fd1ddb024a7cfb8aa4cdb#rd"
+      ],
+      "nuxt_has_source_url": true,
+      "nuxt_has_reprinted": true
+    },
+    {
+      "url": "https://www.huxiu.com/article/4890151.html",
+      "parser_original_source": null,
+      "raw_reprinted_explain": "本内容由作者授权发布，观点仅代表作者本人，不代表虎嗅立场。 如对本稿件有异议或投诉，请联系 tougao@huxiu.com。",
+      "source_links": [],
+      "nuxt_has_source_url": true,
+      "nuxt_has_reprinted": true
+    },
+    {
+      "url": "https://www.huxiu.com/article/4890252.html",
+      "parser_original_source": "网络来源（页面未给出媒体名）",
+      "raw_reprinted_explain": "本内容来源于网络 原文链接 ，观点仅代表作者本人，不代表虎嗅立场。 如涉及版权问题请联系 hezuo@huxiu.com，我们将及时核实并处理。",
+      "source_links": [
+        "https://mp.weixin.qq.com/s?__biz=MzU4NDQwMTc3MQ==&mid=2247493495&idx=1&sn=5423e36e7f44d43a12aa50dd645137b6&chksm=fc6d459db4a996130b00a1dbe11f51a0d7cdac2e8a943cb3eedcba71693ea0f5b5035184cfbc#rd"
+      ],
+      "nuxt_has_source_url": true,
+      "nuxt_has_reprinted": true
+    }
+  ],
+  "parser_detected": 10,
+  "named_publishers": [],
+  "notes": "The observed reprint notices identify network-origin content but do not consistently name an external publisher; no publisher name was invented."
+}

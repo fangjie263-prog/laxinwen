@@ -8,14 +8,13 @@ remain in ``HuxiuExtractionResult.metadata`` until the core schema grows.
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from html import unescape
-from typing import Any, Iterable
-from urllib.parse import urljoin, urlsplit, urlunsplit
+from typing import Any
+from urllib.parse import urljoin, urlsplit
 
 from selectolax.parser import HTMLParser, Node
 
@@ -177,8 +176,10 @@ def extract_huxiu_article(html: str, *, url: str = "") -> HuxiuExtractionResult:
     authors = list(dict.fromkeys(_node_text(n) for n in author_nodes if _node_text(n)))
     if not authors and _meta(tree, "author"):
         authors = [_meta(tree, "author")]
-    published = _parse_dt(_meta(tree, "article:published_time"))
+    published_meta = _meta(tree, "article:published_time")
+    published = _parse_dt(published_meta)
     time_node = tree.css_first(".article__time")
+    published_raw = published_meta or _node_text(time_node)
     if published is None and time_node:
         published = _parse_dt(_node_text(time_node))
     section = _node_text(tree.css_first(".article-type-channel"))
@@ -219,7 +220,7 @@ def extract_huxiu_article(html: str, *, url: str = "") -> HuxiuExtractionResult:
         images=images,
         cover_image=cover,
         original_source=original_source,
-        metadata={"section": section, "tags": tags, "original_source": original_source, "blocks": blocks, "embedded_tag_data_present": "tag_name" in html},
+        metadata={"section": section, "tags": tags, "original_source": original_source, "blocks": blocks, "embedded_tag_data_present": "tag_name" in html, "published_raw": published_raw, "visible_time_raw": _node_text(time_node), "time_source": "article:published_time" if published_meta else (".article__time" if time_node else None)},
     )
 
 
@@ -254,7 +255,23 @@ class HuxiuAdapter(SourceAdapter):
     def extract_article(self, article: Article, html: str, url: str = "") -> bool:
         result = extract_huxiu_article(html, url=url or article.canonical_url)
         if not result.title or len(result.body_text) < 80:
-            return False
+            # Keep the Huxiu parser authoritative whenever it has a healthy
+            # body.  Only abnormal/empty Huxiu pages use the existing generic
+            # Trafilatura path; this fallback cannot overwrite ordered blocks
+            # because it is entered only when no usable Huxiu result exists.
+            from ..extract import extract_article as generic_extract
+
+            generic = generic_extract(html, url=url or article.canonical_url)
+            if not generic.title or len(generic.text) < 80:
+                return False
+            result.title = generic.title
+            result.authors = generic.authors
+            result.published_at = generic.published_at
+            result.canonical_url = generic.canonical_url or url or article.canonical_url
+            result.body_text = generic.text
+            result.images = [urljoin(result.canonical_url, image) for image in generic.images]
+            result.cover_image = generic.lead_image
+            result.metadata["fallback"] = "trafilatura-existing-generic-extractor"
         mapped = result.to_article(source_id=article.source_id, source_name=article.source_name, language=article.language or "zh-CN")
         article.title = mapped.title
         article.authors = mapped.authors
