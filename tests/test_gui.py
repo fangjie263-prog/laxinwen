@@ -371,7 +371,7 @@ class TestBasics:
     def test_site_combobox_has_all_sources(self, root, tmp_path):
         app, _ = _make_app(root, tmp_path)
         assert app.site_var.get() == "eco"
-        assert app.site_combo["values"] == ("eco", "hkej", "rfi", "nytchinese", "all")
+        assert app.site_combo["values"] == ("eco", "hkej", "rfi", "nytchinese", "huxiu", "all")
 
     def test_source_switch_reflects_selection(self, root, tmp_path):
         app, _ = _make_app(root, tmp_path)
@@ -388,7 +388,7 @@ class TestBasics:
         # 切换到全部
         app.site_combo.set("all")
         app._on_source_changed()
-        assert app._selected_site_ids() == ("eco", "hkej", "rfi", "nytchinese")
+        assert app._selected_site_ids() == ("eco", "hkej", "rfi", "nytchinese", "huxiu")
         assert "当前来源：全部" in app.status_labels["current_source"].cget("text")
 
     def test_invalid_limit_cannot_run(self, root, tmp_path):
@@ -756,7 +756,7 @@ class TestMultiSourceFetch:
         assert pipe.limit == 50
 
     def test_all_50_calls_all_sites(self, root, tmp_path):
-        """全部 → (eco, hkej, rfi)；RFI 与 ECO/HKEJ 一样调用 pipeline.run_site。"""
+        """全部来源都通过现有 pipeline.run_site 调度。"""
         app, ctx = _make_app(root, tmp_path)
         calls = self._run_fetch_for_source(app, ctx, "all", 50)
         # RFI 也触发 pipeline.run_site
@@ -765,6 +765,7 @@ class TestMultiSourceFetch:
             ("run_site", "hkej"),
             ("run_site", "rfi"),
             ("run_site", "nytchinese"),
+            ("run_site", "huxiu"),
         ]]
         pipe = ctx["pipeline_calls"][0]
         assert pipe.limit == 50
@@ -773,6 +774,7 @@ class TestMultiSourceFetch:
         assert "[HKEJ] 发现" in log
         assert "[RFI] 发现" in log
         assert "[NYT 中文] 发现" in log
+        assert "[虎嗅] 发现" in log
 
     def test_all_50_logs_all_sources(self, root, tmp_path):
         app, ctx = _make_app(
@@ -849,10 +851,12 @@ class TestMultiSourceNewsArchive:
     def test_all_opens_all_archives(self, root, tmp_path):
         app, ctx = _make_app(root, tmp_path)
         urls = self._open_archive(app, ctx, "all")
-        assert len(urls) == 3
+        assert len(urls) == 5
         assert any("news-html/eco/index.html" in u for u in urls)
         assert any("news-html/hkej/index.html" in u for u in urls)
         assert any("news-html/rfi/index.html" in u for u in urls)
+        assert any("news-html/nytchinese/index.html" in u for u in urls)
+        assert any("news-html/huxiu/index.html" in u for u in urls)
 
     def test_rfi_opens_rfi_archive(self, root, tmp_path):
         """RFI 来源：News Archive 从 SQLite 读取并导出。"""
@@ -892,6 +896,8 @@ class TestMultiSourceAI:
             {"source_id": "eco", "limit": 3},
             {"source_id": "hkej", "limit": 3},
             {"source_id": "rfi", "limit": 3},
+            {"source_id": "nytchinese", "limit": 3},
+            {"source_id": "huxiu", "limit": 3},
         ]]
 
     def test_rfi_ai_calls_rfi_processor(self, root, tmp_path):
@@ -963,6 +969,8 @@ class TestPortableExportButtons:
             ("reader", "eco", 100),
             ("reader", "hkej", 100),
             ("reader", "rfi", 100),
+            ("reader", "nytchinese", 100),
+            ("reader", "huxiu", 100),
         ]
 
     def test_export_rfi_source(self, root, tmp_path):

@@ -1,0 +1,26 @@
+# 虎嗅网
+# 发现：真实侦察验证过的文章频道 HTML；不使用未经证实的 API。
+# 正文：src/news/sources/huxiu.py 的专用解析器，失败时才回退现有通用 extractor。
+
+id: huxiu
+name: 虎嗅
+language: zh-CN
+
+lists:
+  - url: https://www.huxiu.com/article/
+
+rss: null
+rsshub: null
+requires_js: false
+
+# 文章请求低频节流；发现请求仍复用现有 Fetcher。
+article_interval: 3
+
+adapter: huxiu
+
+extract:
+  favor_recall: true
+
+title_suffixes:
+  - " - 虎嗅网"
+  - " - 虎嗅"

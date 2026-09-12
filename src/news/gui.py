@@ -106,10 +106,11 @@ _SOURCE_OPTIONS = (
     ("hkej", "HKEJ"),
     ("rfi", "RFI"),
     ("nytchinese", "NYT 中文"),
+    ("huxiu", "虎嗅"),
     ("all", "全部"),
 )
 # 全部来源实际对应的站点 id
-_ALL_SOURCE_IDS = ("eco", "hkej", "rfi", "nytchinese")
+_ALL_SOURCE_IDS = ("eco", "hkej", "rfi", "nytchinese", "huxiu")
 _SUPPORTED_SOURCE_IDS = frozenset(_ALL_SOURCE_IDS)
 
 # 后台线程完成哨兵 → 恢复提示文案

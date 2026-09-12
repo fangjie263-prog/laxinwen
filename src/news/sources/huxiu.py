@@ -245,10 +245,19 @@ def parse_channel_page(html: str, *, base_url: str = BASE_URL) -> list[Discovere
 
 
 class HuxiuAdapter(SourceAdapter):
-    """Huxiu prototype adapter; not registered in the production site list yet."""
+    """虎嗅网正式 SourceAdapter。
+
+    发现入口来自 ``sites/huxiu.yaml`` 的 ``lists[0].url``；没有配置时
+    回退到侦察阶段验证过的虎嗅文章频道。其余抓取、去重和入库继续复用
+    Laxinwen 现有 Pipeline。
+    """
+
+    def __init__(self, source_id: str, source_name: str, *, discovery_url: str | None = None) -> None:
+        super().__init__(source_id, source_name)
+        self.discovery_url = discovery_url or (BASE_URL + "article/")
 
     def discover(self, *, fetcher: BaseFetcher, max_items: int, existing_urls: set[str] | None = None) -> list[DiscoveredItem]:
-        html = fetcher.fetch(BASE_URL + "article/")
+        html = fetcher.fetch(self.discovery_url)
         existing = {normalize_huxiu_url(u) for u in (existing_urls or set())}
         return [item for item in parse_channel_page(html) if item.url not in existing][:max_items]
 

@@ -2,8 +2,8 @@
 
 Captured and validated against real Huxiu pages on 2026-09-12. The raw HTML is
 under `huxiu-recon/`; the copied fixtures under `tests/fixtures/huxiu/` retain
-the original page bytes. No production site YAML, database schema, GUI,
-scheduler, or existing source was changed.
+the original page bytes. This document records the pre-integration prototype
+boundary; formal wiring is documented in `docs/huxiu-formal-integration.md`.
 
 ## Discovery report
 
