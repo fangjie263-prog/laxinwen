@@ -137,7 +137,8 @@ def run_research_archive(
         """
         result.messages.append(message)
         if on_message is not None:
-            logger.debug("%s", message)
+            # 有回调时**只**走回调：调用方（CLI）负责打印 + 落盘，
+            # 这里绝不再 logger，否则同一条信息会出现两遍。
             try:
                 on_message(message)
             except Exception:  # pragma: no cover - 回调不应影响主流程
