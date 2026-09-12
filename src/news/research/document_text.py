@@ -27,6 +27,10 @@ from typing import Iterable
 
 logger = logging.getLogger(__name__)
 
+CONTENT_OK = "OK"
+CONTENT_PARTIAL = "PARTIAL"
+CONTENT_UNREADABLE = "UNREADABLE"
+
 # ``.doc`` 字节兜底：连续可读片段（CJK / 拉丁字母 / 数字 / 常见标点）
 _READABLE_RUN_RE = re.compile(
     r"[\w\u3400-\u4dbf\u4e00-\u9fff\u3040-\u30ff\uff00-\uffef"
@@ -74,14 +78,17 @@ class DocumentText:
     text: str = ""
     metadata: dict[str, str] = field(default_factory=dict)
     error: str = ""
+    content_status: str = CONTENT_OK
 
     @property
     def ok(self) -> bool:
-        return not self.error
+        return self.content_status in {CONTENT_OK, CONTENT_PARTIAL} and not self.error
 
     @property
     def snippets(self) -> tuple[str, ...]:
         """供 AI 来源识别的候选文本片段（标题优先）。"""
+        if self.content_status == CONTENT_UNREADABLE:
+            return ()
         parts = [self.title, self.text]
         for value in self.metadata.values():
             if value:
@@ -109,6 +116,7 @@ def read_pdf_text(path: str | Path, *, max_pages: int = 12) -> DocumentText:
         return DocumentText(
             path=file_path, kind=".pdf",
             error="未安装可选依赖 pypdf，无法读取 PDF 内容（AI 来源将回退为 Unknown）",
+            content_status=CONTENT_UNREADABLE,
         )
     try:
         reader = PdfReader(str(file_path))
@@ -137,12 +145,14 @@ def read_pdf_text(path: str | Path, *, max_pages: int = 12) -> DocumentText:
             if total >= PDF_MAX_CHARS:
                 break
         title = metadata.get("title", "")
+        text = _truncate("\n\n".join(chunks), PDF_MAX_CHARS)
         return DocumentText(
             path=file_path, kind=".pdf", title=title,
-            text=_truncate("\n\n".join(chunks), PDF_MAX_CHARS), metadata=metadata,
+            text=text, metadata=metadata,
+            content_status=CONTENT_OK if len(text.strip()) >= 8 else CONTENT_UNREADABLE,
         )
     except Exception as exc:
-        return DocumentText(path=file_path, kind=".pdf", error=f"PDF 读取失败：{exc}")
+        return DocumentText(path=file_path, kind=".pdf", error=f"PDF 读取失败：{exc}", content_status=CONTENT_UNREADABLE)
 
 
 def read_docx_text(path: str | Path) -> DocumentText:
@@ -152,6 +162,7 @@ def read_docx_text(path: str | Path) -> DocumentText:
         return DocumentText(
             path=file_path, kind=".docx",
             error="未安装可选依赖 python-docx，无法读取 DOCX 内容",
+            content_status=CONTENT_UNREADABLE,
         )
     try:
         document = Document(str(file_path))
@@ -169,9 +180,10 @@ def read_docx_text(path: str | Path) -> DocumentText:
         return DocumentText(
             path=file_path, kind=".docx", title=title,
             text=_truncate("\n\n".join(paragraphs), DOCX_MAX_CHARS), metadata=metadata,
+            content_status=CONTENT_OK if paragraphs or metadata else CONTENT_PARTIAL,
         )
     except Exception as exc:
-        return DocumentText(path=file_path, kind=".docx", error=f"DOCX 读取失败：{exc}")
+        return DocumentText(path=file_path, kind=".docx", error=f"DOCX 读取失败：{exc}", content_status=CONTENT_UNREADABLE)
 
 
 DOC_MAX_CHARS = 60_000
@@ -206,20 +218,20 @@ def read_doc_text(path: str | Path) -> DocumentText:
             continue
         if completed.returncode == 0:
             text = completed.stdout.decode("utf-8", errors="replace").strip()
-            if text:
+            if len(text) >= 8:
                 first_line = text.splitlines()[0].strip()
                 return DocumentText(
                     path=file_path, kind=".doc",
                     title=_truncate(first_line, 200),
                     text=_truncate(text, DOC_MAX_CHARS),
-                    metadata={"reader": tool},
+                    metadata={"reader": tool}, content_status=CONTENT_OK,
                 )
 
     # 2) 字节层兜底：抽取可读片段
     try:
         raw = file_path.read_bytes()
     except OSError as exc:
-        return DocumentText(path=file_path, kind=".doc", error=f"DOC 读取失败：{exc}")
+        return DocumentText(path=file_path, kind=".doc", error=f"DOC 读取失败：{exc}", content_status=CONTENT_UNREADABLE)
 
     chunks: list[str] = []
     for encoding in ("utf-16-le", "gbk", "latin-1"):
@@ -239,9 +251,12 @@ def read_doc_text(path: str | Path) -> DocumentText:
         return DocumentText(
             path=file_path, kind=".doc",
             error=".doc 为二进制格式，未提取到文本（不影响扫描 / 归档 / 上传）",
+            content_status=CONTENT_UNREADABLE,
         )
     return DocumentText(
         path=file_path, kind=".doc", text=text, metadata={"reader": "bytes-fallback"},
+        error=".doc 仅提取到字节层片段，内容不可靠（仅用于诊断）",
+        content_status=CONTENT_UNREADABLE,
     )
 
 
@@ -251,7 +266,7 @@ def read_html_text(path: str | Path) -> DocumentText:
     try:
         raw = file_path.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
-        return DocumentText(path=file_path, kind=".html", error=f"HTML 读取失败：{exc}")
+        return DocumentText(path=file_path, kind=".html", error=f"HTML 读取失败：{exc}", content_status=CONTENT_UNREADABLE)
 
     if not SELECTOLAX_AVAILABLE:
         # 没有 selectolax 时用正则兜底，保证 AI 识别仍可用
@@ -283,7 +298,7 @@ def read_html_text(path: str | Path) -> DocumentText:
             text=_truncate(body_text or "", HTML_MAX_CHARS), metadata=metadata,
         )
     except Exception as exc:
-        return DocumentText(path=file_path, kind=".html", error=f"HTML 解析失败：{exc}")
+        return DocumentText(path=file_path, kind=".html", error=f"HTML 解析失败：{exc}", content_status=CONTENT_UNREADABLE)
 
 
 def read_document_text(path: str | Path) -> DocumentText:
@@ -298,7 +313,7 @@ def read_document_text(path: str | Path) -> DocumentText:
         return read_doc_text(file_path)
     if kind == ".html":
         return read_html_text(file_path)
-    return DocumentText(path=file_path, kind=kind, error=f"不支持的扩展名：{kind or '(none)'}")
+    return DocumentText(path=file_path, kind=kind, error=f"不支持的扩展名：{kind or '(none)'}", content_status=CONTENT_UNREADABLE)
 
 
 def read_documents_text(paths: Iterable[str | Path]) -> list[DocumentText]:

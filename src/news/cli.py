@@ -578,6 +578,15 @@ def cmd_research_archive(args: argparse.Namespace) -> int:
     from .research.config import load_research_config
     from .research.pipeline import run_research_archive
 
+    if args.audit:
+        from .research.audit import audit_archive
+        from .research.company import CompanyDirectory
+        archive_path = args.archive or load_research_config(archive_dir=None).archive_dir
+        companies = CompanyDirectory.from_file(args.companies) if args.companies else CompanyDirectory()
+        for line in audit_archive(archive_path, companies):
+            print(line)
+        return 0
+
     log_path = Path(__file__).resolve().parents[2] / "data" / "logs" / "research-archive.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -859,6 +868,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_research.add_argument("--recursive", action="store_true", help="递归扫描 Inbox 子目录")
     p_research.add_argument("--apply", action="store_true", help="真正执行归档（移动/切割/上传）；不加则 dry-run")
     p_research.add_argument("--dry-run", action="store_true", help="强制 dry-run（即使同时传了 --apply）")
+    p_research.add_argument("--audit", action="store_true", help="只读审计历史归档目录的公司身份拆分")
     p_research.add_argument("--retry-failed", action="store_true", help="重试上次失败的 Notion 上传")
     p_research.add_argument("--keep-inbox", action="store_true", help="归档成功后仍保留 Inbox 原文件（默认清理）")
     p_research.add_argument("--root-page-id", default=None, help="临时覆盖 NOTION_ROOT_PAGE_ID")
