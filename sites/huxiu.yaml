@@ -9,6 +9,13 @@ language: zh-CN
 lists:
   - url: https://www.huxiu.com/article/
 
+# 真实 Nuxt 页面调用的历史文章 cursor API；last_id 由响应返回。
+api_url: https://api-ms-article.huxiu.com/v1/channel/pcArticleList
+api_channel_id: 0
+api_page_size: 12
+api_max_pages: 10
+api_max_candidates: 120
+
 rss: null
 rsshub: null
 requires_js: false

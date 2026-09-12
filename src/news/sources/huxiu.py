@@ -9,6 +9,7 @@ remain in ``HuxiuExtractionResult.metadata`` until the core schema grows.
 from __future__ import annotations
 
 import logging
+import json
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -27,6 +28,11 @@ from .base import SourceAdapter
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://www.huxiu.com/"
+API_URL = "https://api-ms-article.huxiu.com/v1/channel/pcArticleList"
+API_CHANNEL_ID = 0
+API_PAGE_SIZE = 12
+API_MAX_PAGES = 10
+API_MAX_CANDIDATES = 120
 ARTICLE_URL_RE = re.compile(r"^https?://(?:www\.|m\.)?huxiu\.com/article/(\d+)\.html(?:[?#].*)?$")
 _NOISE_SELECTORS = (
     "script", "style", "nav", "header", "footer", "aside",
@@ -244,6 +250,42 @@ def parse_channel_page(html: str, *, base_url: str = BASE_URL) -> list[Discovere
     return items
 
 
+def _parse_api_items(payload: str, *, existing: set[str], seen: set[str]) -> tuple[list[DiscoveredItem], str, bool]:
+    """Parse the verified Huxiu cursor response without assuming a page number."""
+    try:
+        parsed = json.loads(payload)
+    except (TypeError, ValueError):
+        return [], "", False
+    data = parsed.get("data") if isinstance(parsed, dict) else None
+    if not isinstance(data, dict) or parsed.get("success") is not True:
+        return [], "", False
+    rows = data.get("datalist") or []
+    if not isinstance(rows, list):
+        return [], "", False
+    items: list[DiscoveredItem] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        url = normalize_huxiu_url(str(row.get("url") or ""))
+        if not url or url in seen or url in existing:
+            continue
+        seen.add(url)
+        user = row.get("user_info") or {}
+        author = str(user.get("username") or "").strip() if isinstance(user, dict) else ""
+        published = _parse_dt(row.get("dateline"))
+        items.append(
+            DiscoveredItem(
+                url=url,
+                title=str(row.get("title") or "").strip(),
+                authors=[author] if author else [],
+                published_at=published,
+                image=_absolute(str(row.get("pic_path") or ""), url) if row.get("pic_path") else None,
+            )
+        )
+    cursor = str(data.get("last_id") or "")
+    return items, cursor, bool(rows)
+
+
 class HuxiuAdapter(SourceAdapter):
     """虎嗅网正式 SourceAdapter。
 
@@ -252,14 +294,81 @@ class HuxiuAdapter(SourceAdapter):
     Laxinwen 现有 Pipeline。
     """
 
-    def __init__(self, source_id: str, source_name: str, *, discovery_url: str | None = None) -> None:
+    def __init__(
+        self,
+        source_id: str,
+        source_name: str,
+        *,
+        discovery_url: str | None = None,
+        api_url: str = API_URL,
+        channel_id: int = API_CHANNEL_ID,
+        api_page_size: int = API_PAGE_SIZE,
+        api_max_pages: int = API_MAX_PAGES,
+        api_max_candidates: int = API_MAX_CANDIDATES,
+    ) -> None:
         super().__init__(source_id, source_name)
         self.discovery_url = discovery_url or (BASE_URL + "article/")
+        self.api_url = api_url
+        self.channel_id = channel_id
+        self.api_page_size = api_page_size
+        self.api_max_pages = api_max_pages
+        self.api_max_candidates = api_max_candidates
 
     def discover(self, *, fetcher: BaseFetcher, max_items: int, existing_urls: set[str] | None = None) -> list[DiscoveredItem]:
         html = fetcher.fetch(self.discovery_url)
         existing = {normalize_huxiu_url(u) for u in (existing_urls or set())}
-        return [item for item in parse_channel_page(html) if item.url not in existing][:max_items]
+        seen = set(existing)
+        items: list[DiscoveredItem] = []
+        for item in parse_channel_page(html):
+            if item.url not in seen:
+                seen.add(item.url)
+                items.append(item)
+        if len(items) >= max_items:
+            return items[:max_items]
+
+        post_form = getattr(fetcher, "post_form", None)
+        if not callable(post_form) or max_items <= 0:
+            return items[:max_items]
+
+        target = min(max_items, self.api_max_candidates)
+        cursor = "0"
+        cursors: set[str] = set()
+        empty_windows = 0
+        for _ in range(max(0, self.api_max_pages)):
+            if len(items) >= target or not cursor or cursor in cursors:
+                break
+            cursors.add(cursor)
+            try:
+                payload = post_form(
+                    self.api_url,
+                    {
+                        "platform": "www",
+                        "channel_id": self.channel_id,
+                        "last_id": cursor,
+                        "pagesize": self.api_page_size,
+                    },
+                    headers={
+                        "Origin": "https://www.huxiu.com",
+                        "Referer": self.discovery_url,
+                        "Content-Type": "application/x-www-form-urlencoded",
+                    },
+                )
+            except Exception as exc:
+                logger.info("[huxiu] cursor discovery unavailable; keep HTML window: %s", exc)
+                break
+            page_items, next_cursor, had_rows = _parse_api_items(payload, existing=existing, seen=seen)
+            items.extend(page_items)
+            logger.debug("[huxiu] cursor window=%d new=%d total=%d", len(cursors), len(page_items), len(items))
+            if not page_items:
+                # The first API window normally overlaps the SSR HTML window;
+                # allow that one overlap before treating it as exhaustion.
+                empty_windows += 1
+            else:
+                empty_windows = 0
+            if not had_rows or empty_windows >= 2 or not next_cursor or next_cursor == cursor:
+                break
+            cursor = next_cursor
+        return items[:target]
 
     def extract_article(self, article: Article, html: str, url: str = "") -> bool:
         result = extract_huxiu_article(html, url=url or article.canonical_url)
