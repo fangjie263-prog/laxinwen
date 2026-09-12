@@ -10,6 +10,11 @@ build/
 data/
 exports/
 
+# AI Research Archive 的运行数据（Inbox / Archive / Failed / 状态库）
+# 但 companies.json 与 README 是配置与文档，必须入库
+!data/research/companies.json
+!data/research/README.md
+
 # 密钥配置（API Key 等，绝不能进入 Git）
 .env
 .env.*

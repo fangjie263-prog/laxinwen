@@ -379,8 +379,12 @@ laxinwen/
 │   ├── scheduled_fetch.py, scheduler_config.py, task_scheduler.py
 │   ├── run_identity.py, notion_sync.py
 │   ├── sources/{base.py,hkej.py,rfi.py}
+│   ├── research/{config.py,sanitize.py,ai_source.py,company.py,
+│   │            dates.py,document_text.py,splitter.py,
+│   │            archive_store.py,scanner.py,notion_archive.py,pipeline.py}
 │   └── ai/{config_store.py,provider.py,openai_compatible.py,
 │           processor.py,prompts.py,schema.py}
+├── data/research/{companies.json,README.md}
 └── tests/
 ```
 
@@ -445,6 +449,16 @@ uv run news notion-sync
 uv run news notion-sync --dry-run
 ```
 
+研究成果归档：
+
+```powershell
+uv run news research-archive              # dry-run（默认）
+uv run news research-archive --apply      # 真正归档 + 上传 Notion
+uv run news research-archive --limit 10   # 本次最多处理 10 个文件
+uv run news research-archive --recursive  # 递归扫描 Inbox 子目录
+uv run news research-archive --retry-failed  # 重试上次失败的 Notion 上传
+```
+
 同步状态保存在 `data/notion-sync.json`。新状态 identity 使用 origin、source、date、run_id、artifact_type、artifact_variant 和 part；每个 artifact 记录 fingerprint、文件大小和 Notion upload ID，因此失败重试只补传缺失 part。旧 package/artifact key 和旧 Date Page ID 继续兼容，已同步的历史包不会重新上传。全部 artifact 和归档 block 成功后才标记包完成；同一个 run 重复扫描会跳过，不会重复创建 Run Page、上传文件或添加归档 block。同步期间会锁定状态文件，避免手工运行与 Scheduler 并发写入。
 
 同步输出区分 `SYNC SUCCESS`、`SYNC SKIP` 和 `SYNC FAILED`。文件上传或 Notion API 在中途失败时，已完成的页面和文件 ID 会保存在状态文件，下一次运行可以继续。
@@ -460,6 +474,93 @@ scripts/windows/delete-notion-sync.bat
 ```
 
 真实 Notion API 上传需要有效的 Token、根页面授权和网络连接；没有这些条件时只能运行 `--dry-run` 或离线测试，不能宣称完成真实 Notion 验证。
+
+## AI Research Archive（研究成果自动归档）
+
+`news research-archive` 把你与 Claude / ChatGPT / Gemini 对话后生成的**最终研究成果**自动归档到
+「日期 → 公司」目录结构，并复用现有 `NotionClient` 上传到 Notion。它不抓取新闻、不重跑 AI、
+不改动已有 Portable / News Archive / Word 导出。
+
+```text
+AI Research Inbox
+  ↓ 扫描（只认 .pdf / .docx / .html / .htm）
+  ↓ 识别（日期 / 股票代码 / 公司 / AI 来源 / 研究主题）
+  ↓ 去重（SHA-256）
+  ↓ 整理目录 + 规范文件名
+  ↓ 超过 4.5 MiB 时按类型切割（PDF 按页 / DOCX 按段落 / HTML 按 section）
+  ↓ 上传 Notion（按 SHA-256 跳过重复）
+ResearchArchive/YYYY-MM-DD/Ticker_Company/YYYYMMDDX_AI来源_股票代码_公司名称_研究主题.ext
+```
+
+### 快速开始
+
+```bash
+# 1) 默认就是 dry-run：只扫描、只识别、只输出计划，不移动文件、不上传
+uv run news research-archive
+
+# 2) 确认计划无误后再真正执行
+uv run news research-archive --apply
+```
+
+也可以在 `.env` 里指定投递目录（例如 `D:\AIResearchInbox`）：
+
+```dotenv
+RESEARCH_INBOX_DIR=D:\AIResearchInbox
+RESEARCH_ARCHIVE_DIR=D:\AIResearchArchive
+RESEARCH_DRY_RUN=true
+```
+
+### 规则
+
+| 项目 | 规则 |
+| --- | --- |
+| 处理范围 | `.pdf` `.docx` `.html` `.htm`；`.txt` `.md` 截图 / 草稿 / 临时文件一律忽略 |
+| 目录结构 | `YYYY-MM-DD/Ticker_Company/`，例如 `2026-09-12/09696.HK_天齐锂业/` |
+| 文件名 | `YYYYMMDD序号_AI来源_股票代码_公司名称_研究主题.ext`，字段只用 `_` 分隔 |
+| 序号 | 每个「日期 + 公司」目录**独立**编号：`A`…`Z`、`AA`、`AB` |
+| AI 来源 | 文件名优先 → 文件内容 → `Unknown`（不猜）；容错 `Cluade` / `Gemni` / `ChatGTP` 等 |
+| 公司 | 文件名里的代码 / 名称优先，其次 `data/research/companies.json`；不确定即 `Unknown` |
+| 日期 | 文件名 → 创建时间 → 修改时间 |
+| 去重 | `SHA-256`；同内容不同文件名不会重复归档、不会重复上传 |
+| 大小限制 | 单片 ≤ 4.5 MiB（`RESEARCH_MAX_UPLOAD_MB` 可调） |
+| 非法字符 | `\ / : |` → `_`；`* ? " < >` 删除；合并连续 `_`；保留扩展名 |
+| 安全顺序 | 复制归档 → 校验 → 写库 → 切割 → 上传成功 → 最后才清理 Inbox |
+| 失败处理 | 不删除原文件，移入 `data/research/failed/` 并记录错误原因 |
+
+### 状态与去重库
+
+`data/research/research_archive.db` 独立于 `data/news.db`，表 `research_files` 记录
+`sha256`、`original_filename`、`normalized_filename`、`archive_path`、`date`、`ticker`、
+`company`、`ai_source`、`file_type`、`part`、`total_parts`、`notion_page_id`、
+`status`（`NEW` / `ARCHIVED` / `SPLIT` / `UPLOADED` / `FAILED`）等字段。
+`sha256` 是核心去重依据，文件名 / 路径 / 大小都不作为判据。
+
+### 与现有 Scheduler 配合
+
+不新增第二套调度。两种方式任选：
+
+```bash
+# 方式一：CLI 直接执行（可放进任何现有计划任务 / BAT）
+uv run news research-archive --apply
+
+# 方式二：让现有 Laxinwen-Notion-Sync 任务顺带执行（默认关闭，需显式开启）
+# .env: RESEARCH_ARCHIVE_IN_SCHEDULER=1
+uv run news notion-sync
+```
+
+开启方式二后，`news notion-sync` 会复用同一个 `NOTION_TOKEN` / `NOTION_ROOT_PAGE_ID`，
+在同步阅读包之前先归档研究成果；归档失败不会影响阅读包同步。
+
+### 可选依赖
+
+PDF 内容读取与按页切割需要 `pypdf`：
+
+```bash
+uv add pypdf
+```
+
+未安装时不会崩溃：PDF 仍能归档，但 AI 来源识别会退化为读文件名，且 PDF 无法按页切割
+（会明确报错并保留原文件在 Inbox），不会生成损坏的 PDF。
 
 ## License
 

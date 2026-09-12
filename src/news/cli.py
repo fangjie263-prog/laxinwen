@@ -569,6 +569,98 @@ def cmd_scheduler(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_research_archive(args: argparse.Namespace) -> int:
+    """扫描 AI Research Inbox，识别 / 去重 / 归档 / 切割 / 上传 Notion。
+
+    默认 **dry-run**：只扫描、只识别、只输出计划，不移动文件、不上传。
+    需要真正归档时必须显式传 ``--apply``（或 ``--no-dry-run`` 会失败，避免误用）。
+    """
+    from .research.config import load_research_config
+    from .research.pipeline import run_research_archive
+
+    log_path = Path(__file__).resolve().parents[2] / "data" / "logs" / "research-archive.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def emit(message: str) -> None:
+        print(message)
+        try:
+            with log_path.open("a", encoding="utf-8") as handle:
+                handle.write(message + "\n")
+        except OSError:
+            logger.warning("无法写入 Research Archive 日志：%s", log_path)
+
+    dry_run = not args.apply if args.apply else True
+    if args.dry_run:
+        dry_run = True
+
+    config = load_research_config(
+        inbox_dir=args.inbox,
+        archive_dir=args.archive,
+        failed_dir=args.failed,
+        db_path=args.state_db,
+        companies_file=args.companies,
+        dry_run=dry_run,
+        max_files=args.limit if args.limit else None,
+        recursive=args.recursive,
+    )
+    config.ensure_dirs()
+
+    emit("RESEARCH ARCHIVE START")
+    emit(f"模式：{'DRY-RUN（只扫描，不移动/不上传）' if config.dry_run else 'APPLY'}")
+
+    store = None
+    client = None
+    try:
+        from .research.archive_store import ResearchArchiveStore
+
+        store = ResearchArchiveStore(config.db_path)
+        client = None
+        root_page_id = ""
+        if not config.dry_run:
+            from .notion_sync import NotionClient, load_notion_config
+
+            notion = load_notion_config()
+            root_page_id = args.root_page_id or notion["root_page_id"]
+            if not notion["token"]:
+                print("ERROR: 缺少 NOTION_TOKEN，无法执行 APPLY（请先配置 .env）")
+                return 1
+            if not root_page_id:
+                print("ERROR: 缺少 NOTION_ROOT_PAGE_ID，无法执行 APPLY")
+                return 1
+            client = NotionClient(notion["token"], timeout=args.timeout)
+
+        result = run_research_archive(
+            config=config,
+            store=store,
+            client=client,
+            root_page_id=root_page_id,
+            retry_failed=args.retry_failed,
+            move_on_success=not args.keep_inbox,
+            on_message=emit,
+        )
+        summary = result.as_dict()
+        emit(
+            "RESEARCH ARCHIVE SUMMARY · "
+            f"扫描 {summary['scanned']} · 新增 {summary['new']} · 重复 {summary['duplicates']} · "
+            f"归档 {summary['archived']} · 切割 {summary['split']} · 上传 {summary['uploaded']} · "
+            f"上传跳过 {summary['upload_skipped']} · 失败 {summary['failed']}"
+        )
+        emit("RESEARCH ARCHIVE END")
+        return 0 if result.ok else 1
+    except Exception as exc:  # noqa: BLE001 - CLI 层统一转成退出码
+        logger.error("Research Archive 运行失败：%s", exc, exc_info=True)
+        print(f"ERROR: {exc}")
+        return 1
+    finally:
+        if client is not None:
+            try:
+                client.close()
+            except Exception:
+                pass
+        if store is not None:
+            store.close()
+
+
 def cmd_notion_sync(args: argparse.Namespace) -> int:
     """扫描 Portable Reader 包并同步到 Notion。"""
     from .notion_sync import NotionSyncError, run_sync
@@ -754,6 +846,26 @@ def build_parser() -> argparse.ArgumentParser:
     p_notion.add_argument("--researchreader-output", default=None, help="ResearchReader HTML 输出目录")
     p_notion.add_argument("--researchreader-books", default=None, help="ResearchReader EPUB/PDF 目录")
     p_notion.set_defaults(func=cmd_notion_sync, verbose=False)
+
+    p_research = sub.add_parser(
+        "research-archive",
+        help="扫描 AI Research Inbox 并归档研究成果（默认 dry-run）",
+    )
+    p_research.add_argument("--inbox", default=None, help="研究投递目录（默认 RESEARCH_INBOX_DIR 或 data/research/inbox）")
+    p_research.add_argument("--archive", default=None, help="归档目录（默认 RESEARCH_ARCHIVE_DIR 或 data/research/archive）")
+    p_research.add_argument("--failed", default=None, help="异常文件目录（默认 RESEARCH_FAILED_DIR 或 data/research/failed）")
+    p_research.add_argument("--state-db", default=None, help="状态/去重库（默认 data/research/research_archive.db）")
+    p_research.add_argument("--companies", default=None, help="公司映射表 JSON（默认 data/research/companies.json）")
+    p_research.add_argument("--limit", type=int, default=0, help="本次最多处理文件数（0=不限制）")
+    p_research.add_argument("--recursive", action="store_true", help="递归扫描 Inbox 子目录")
+    p_research.add_argument("--apply", action="store_true", help="真正执行归档（移动/切割/上传）；不加则 dry-run")
+    p_research.add_argument("--dry-run", action="store_true", help="强制 dry-run（即使同时传了 --apply）")
+    p_research.add_argument("--retry-failed", action="store_true", help="重试上次失败的 Notion 上传")
+    p_research.add_argument("--keep-inbox", action="store_true", help="归档成功后仍保留 Inbox 原文件（默认清理）")
+    p_research.add_argument("--root-page-id", default=None, help="临时覆盖 NOTION_ROOT_PAGE_ID")
+    p_research.add_argument("--timeout", type=float, default=60.0, help="Notion API 请求超时（秒）")
+    p_research.add_argument("-v", "--verbose", action="store_true", help="调试日志")
+    p_research.set_defaults(func=cmd_research_archive)
 
     p_export = sub.add_parser(
         "export",
