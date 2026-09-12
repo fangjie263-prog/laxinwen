@@ -19,6 +19,16 @@ from news.sources.huxiu import extract_huxiu_article, parse_channel_page
 
 ROOT = Path(__file__).resolve().parents[1]
 RECON = ROOT / "huxiu-recon"
+SAMPLE_URLS = {
+    "001": "https://www.huxiu.com/article/4890703.html",
+    "002": "https://www.huxiu.com/article/4890705.html",
+    "003": "https://www.huxiu.com/article/4890702.html",
+    "004": "https://www.huxiu.com/article/4890701.html",
+    "005": "https://www.huxiu.com/article/4890711.html",
+    "006": "https://www.huxiu.com/article/4890693.html",
+    "007": "https://www.huxiu.com/article/4890638.html",
+    "008": "https://www.huxiu.com/article/4890510.html",
+}
 
 
 def _stats(html: str) -> dict[str, int | bool]:
@@ -49,7 +59,7 @@ def main() -> None:
     benchmark_rows = []
     for path in article_files:
         html = path.read_text(encoding="utf-8")
-        url = f"https://www.huxiu.com/article/{path.stem}.html"
+        url = SAMPLE_URLS.get(path.stem, f"https://www.huxiu.com/article/{path.stem}.html")
         parsed = extract_huxiu_article(html, url=url)
         existing = extract_article(html, url=url)
         tra_text = trafilatura.extract(html, url=url, include_comments=False, include_tables=False, favor_recall=True) or ""
