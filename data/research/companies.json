@@ -1,35 +1,74 @@
 {
-  "_comment": "AI Research Archive 公司映射表。ticker 是未来检索的主键，必须单独保留；aliases 用于文件名识别（可继续追加，不需要改代码）。",
+  "_comment": "AI Research Archive 公司映射表。ticker 是未来检索的主键，必须单独保留；aliases 用于文件名识别（可继续追加，不需要改代码）。注意：ticker 识别本身不依赖本文件——文件名里出现 000660.KS / 09696.HK 这类代码时一定被识别，本文件只用于补充「规范公司名」与别名。",
   "companies": [
     {
       "ticker": "09696.HK",
       "company_name": "天齐锂业",
-      "aliases": ["Tianqi Lithium", "天齐", "Tianqi", "TianqiLithium", "09696", "9696.HK"],
+      "aliases": [
+        "Tianqi Lithium",
+        "天齐",
+        "Tianqi",
+        "TianqiLithium",
+        "09696",
+        "9696.HK"
+      ],
       "market": "HK"
     },
     {
       "ticker": "002466",
       "company_name": "天齐锂业",
-      "aliases": ["Tianqi Lithium", "天齐", "Tianqi"],
+      "aliases": [
+        "Tianqi Lithium",
+        "天齐",
+        "Tianqi"
+      ],
       "market": "SZ"
     },
     {
       "ticker": "600519",
       "company_name": "贵州茅台",
-      "aliases": ["Kweichow Moutai", "茅台", "Moutai", "Guizhou Moutai"],
+      "aliases": [
+        "Kweichow Moutai",
+        "茅台",
+        "Moutai",
+        "Guizhou Moutai"
+      ],
       "market": "SH"
     },
     {
       "ticker": "NVDA",
       "company_name": "NVIDIA",
-      "aliases": ["英伟达", "Nvidia", "NVIDIA Corporation", "NVDA.US"],
+      "aliases": [
+        "英伟达",
+        "Nvidia",
+        "NVIDIA Corporation",
+        "NVDA.US"
+      ],
       "market": "US"
     },
     {
       "ticker": "KAP",
       "company_name": "Kazatomprom",
-      "aliases": ["哈萨克原子能", "Kazatomprom JSC", "KAP.IL", "Kazakhstan"],
+      "aliases": [
+        "哈萨克原子能",
+        "Kazatomprom JSC",
+        "KAP.IL",
+        "Kazakhstan"
+      ],
       "market": "LSE"
+    },
+    {
+      "ticker": "000660.KS",
+      "company_name": "SK海力士",
+      "aliases": [
+        "SK Hynix",
+        "SK海力士",
+        "Hynix",
+        "海力士",
+        "000660",
+        "SK하이닉스"
+      ],
+      "market": "KRX"
     }
   ]
 }

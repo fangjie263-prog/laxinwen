@@ -150,7 +150,12 @@ def test_illegal_chars_in_filename_are_cleaned(config, store):
     candidate = ResearchArchiveScanner(config, store=store, read_content=False).scan()[0]
     for char in ':*?"<>|':
         assert char not in candidate.normalized_name
-    assert candidate.normalized_name.startswith(f"{date.today():%Y%m%d}A_Claude_09696.HK_天齐锂业_")
+    # 文件名里没有 ticker 时，公司名仍必须命中（别名层）
+    assert candidate.ticker == "09696.HK"
+    assert candidate.company == "天齐锂业"
+    assert candidate.normalized_name.startswith(
+        f"{date.today():%Y%m%d}A_Claude_09696.HK_天齐锂业_"
+    )
 
 
 # ---------- 主题提取 ----------

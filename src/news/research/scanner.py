@@ -22,7 +22,7 @@ from .ai_source import UNKNOWN_AI_SOURCE, detect_ai_source
 from .archive_store import ResearchArchiveStore, ResearchFileRecord, sha256_file
 from .company import UNKNOWN_COMPANY, UNKNOWN_TICKER, CompanyDirectory
 from .config import IGNORED_EXTENSIONS, SUPPORTED_EXTENSIONS, ResearchArchiveConfig
-from .dates import detect_date
+from .dates import DateMatch, detect_date
 from .document_text import read_document_text
 from .sanitize import (
     index_to_letters,
@@ -60,6 +60,7 @@ class ResearchCandidate:
     company: str
     ai_source: str
     ai_matched_by: str
+    date_source: str
     topic: str
     letter: str
     normalized_name: str
@@ -96,8 +97,8 @@ class ResearchCandidate:
         return (
             f"{index:>3}. [{flag}] {self.path.name}\n"
             f"      sha256={self.sha256[:16]}… size={self.size}\n"
-            f"      date={self.date} ticker={self.ticker} company={self.company} "
-            f"ai={self.ai_source}({self.ai_matched_by})\n"
+            f"      date={self.date}(source={self.date_source}) ticker={self.ticker} "
+            f"company={self.company} ai={self.ai_source}({self.ai_matched_by})\n"
             f"      → {self.archive_path}"
         )
 
@@ -228,7 +229,10 @@ class ResearchArchiveScanner:
         digest = sha256_file(path)
 
         date_match = detect_date(path)
-        company_match = self.companies.detect(path.name)
+        if date_match.matched_by == "created":
+            # 需求：不要把 ctime 当正常日期来源，必须显式降级并标注
+            warnings.append("日期来自 created(ctime)，已按需求降级为 modified")
+            date_match = DateMatch(date_match.date, "modified")
 
         content_texts: tuple[str, ...] = ()
         if self.read_content:
@@ -236,6 +240,12 @@ class ResearchArchiveScanner:
             if document.error:
                 warnings.append(document.error)
             content_texts = document.snippets
+
+        # 公司识别优先级：ticker 独立识别 → 映射表 → aliases → 文件名公司名 → 内容
+        company_match = self.companies.detect(
+            path.name,
+            content_text="\n".join(content_texts) if content_texts else "",
+        )
         ai_match = detect_ai_source(path.name, content_texts=content_texts)
 
         aliases: list[str] = []
@@ -279,7 +289,8 @@ class ResearchArchiveScanner:
 
         return ResearchCandidate(
             path=path, sha256=digest, size=size, extension=extension,
-            date=date_dir, date_prefix=date_match.prefix, ticker=ticker,
+            date=date_dir, date_prefix=date_match.prefix,
+            date_source=date_match.matched_by, ticker=ticker,
             company=company, ai_source=ai_source, ai_matched_by=ai_match.matched_by,
             topic=topic, letter=letter, normalized_name=normalized,
             archive_dir=archive_dir, archive_path=archive_path,

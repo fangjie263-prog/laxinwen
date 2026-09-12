@@ -36,7 +36,8 @@ def test_ticker_from_filename(directory, filename, ticker, company):
     match = directory.detect(filename)
     assert match.ticker == ticker
     assert match.company == company
-    assert match.matched_by == "filename_ticker"
+    # 阶段二：ticker 由「独立识别」得到，再经映射表拿到规范公司名
+    assert match.matched_by in {"filename_ticker", "ticker_mapping"}
 
 
 @pytest.mark.parametrize(
@@ -52,7 +53,8 @@ def test_company_name_from_filename(directory, filename, ticker, company):
     match = directory.detect(filename)
     assert match.ticker == ticker
     assert match.company == company
-    assert match.matched_by == "filename_name"
+    # 阶段二优先级：ticker 标准映射 → 映射表 aliases → 文件名公司名称
+    assert match.matched_by in {"filename_alias", "filename_name", "filename_ticker"}
 
 
 @pytest.mark.parametrize("filename", ["锂行业研究.pdf", "GPU研究.html", "研究报告.pdf"])
@@ -120,8 +122,11 @@ def test_mapping_is_data_driven_from_json(tmp_path):
     assert match.ticker == "TSLA"
     assert match.company == "特斯拉"
     assert match.directory_name == "TSLA_特斯拉"
-    # 未在文件里声明的公司不再命中（确认没有被内置默认污染）
-    assert directory.detect("NVDA NVIDIA.pdf").ticker == UNKNOWN_TICKER
+    # 未在文件里声明的公司不再命中「公司映射」（确认没有被内置默认污染）；
+    # 但 ticker 必须仍然被**独立识别**出来（阶段二需求）
+    unmapped = directory.detect("NVDA NVIDIA.pdf")
+    assert unmapped.ticker == "NVDA"
+    assert unmapped.company == UNKNOWN_COMPANY
 
 
 def test_missing_or_broken_mapping_file_falls_back_to_defaults(tmp_path):
