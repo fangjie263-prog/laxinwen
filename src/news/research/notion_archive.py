@@ -36,6 +36,8 @@ from pathlib import Path
 from typing import Any, Optional, Sequence
 
 from .archive_store import ResearchFileRecord, ResearchArchiveStore, STATUS_UPLOADED
+from .company import UNKNOWN_COMPANY, UNKNOWN_TICKER
+from .company import directory_name as company_directory_name
 from .config import ResearchArchiveConfig
 from .scanner import ResearchCandidate
 
@@ -95,10 +97,26 @@ def _file_block(label: str, upload_id: str) -> list[dict[str, Any]]:
 
 
 def company_page_title(ticker: str, company: str) -> str:
-    """公司页面标题：``Ticker｜Company``（需求四）。"""
-    ticker = (ticker or "Unknown").strip()
-    company = (company or "Unknown").strip()
-    return f"{ticker}{COMPANY_TITLE_SEPARATOR}{company}"
+    """公司页面标题：``Ticker｜Company``（需求四）。
+
+    **不生成无意义的 Unknown 占位**（需求五），与本地归档目录命名保持一致：
+
+    - ticker + company 都有 → ``09696.HK｜天齐锂业``
+    - 只有 company          → ``哈尔滨电气``（不再是 ``Unknown｜哈尔滨电气``）
+    - 只有 ticker           → ``09696.HK``（不再是 ``09696.HK｜Unknown``）
+    - 都 Unknown            → ``Unknown``
+    """
+    ticker = (ticker or "").strip()
+    company = (company or "").strip()
+    ticker_known = bool(ticker) and ticker != UNKNOWN_TICKER
+    company_known = bool(company) and company != UNKNOWN_COMPANY
+    if ticker_known and company_known:
+        return f"{ticker}{COMPANY_TITLE_SEPARATOR}{company}"
+    if company_known:
+        return company
+    if ticker_known:
+        return ticker
+    return UNKNOWN_COMPANY
 
 
 def report_letter(letter: str) -> str:
@@ -132,7 +150,12 @@ def report_page_body(record: ResearchFileRecord) -> list[dict[str, Any]]:
     （SHA256 / File Size / Part / Total Parts / 原始文件名 / 规范化文件名 /
     命中方式）都不再出现在 Notion 页面上。
     """
-    meta_line = f"{record.date}{COMPANY_TITLE_SEPARATOR}{record.ticker}"
+    ticker = (record.ticker or "").strip()
+    if ticker and ticker != UNKNOWN_TICKER:
+        meta_line = f"{record.date}{COMPANY_TITLE_SEPARATOR}{ticker}"
+    else:
+        # 需求五：不展示无意义的 Unknown 占位
+        meta_line = record.date
     return [_text_block(meta_line), _text_block("📎 研究报告")]
 
 
@@ -269,7 +292,7 @@ class ResearchNotionArchiver:
                 message=(
                     f"DRY-RUN：将上传 {len(files)} 个文件 → "
                     f"Root/{RESEARCH_CATEGORY_TITLE}/{candidate.date}/"
-                    f"{company_page_title(candidate.ticker, candidate.company)}"
+                    f"{company_directory_name(candidate.ticker, candidate.company)}"
                 ),
             )
 

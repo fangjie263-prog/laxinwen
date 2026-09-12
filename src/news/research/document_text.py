@@ -3,6 +3,9 @@
 依赖策略（不破坏已有功能、不强制新增依赖）：
 
 - ``.docx``：复用项目已有的 ``python-docx``（``word_export`` 已依赖）；
+- ``.doc``（旧版 Word 二进制）：尽力而为地抽取文本（可选 antiword / catdoc，
+  否则用字节层兜底）。**任何情况下都不抛异常**——读不到内容只记 warning，
+  绝不能让文件因此被忽略（需求八：``.doc`` 全流程支持）；
 - ``.html`` / ``.htm``：复用项目已有的 ``selectolax``（``notion_sync`` 已依赖），
   读取 ``<title>`` / ``<meta>`` / 正文；
 - ``.pdf``：**可选** ``pypdf``。未安装时不报错、不崩溃，只是返回空内容，
@@ -16,11 +19,19 @@ from __future__ import annotations
 
 import logging
 import re
+import shutil as _shutil
+import subprocess as _subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
 
 logger = logging.getLogger(__name__)
+
+# ``.doc`` 字节兜底：连续可读片段（CJK / 拉丁字母 / 数字 / 常见标点）
+_READABLE_RUN_RE = re.compile(
+    r"[\w\u3400-\u4dbf\u4e00-\u9fff\u3040-\u30ff\uff00-\uffef"
+    r" :：,，.。/\-]{2,}"
+)
 
 # 内容识别最多读取的字符数（PDF 尽量多，HTML/DOCX 取头部足够）
 PDF_MAX_CHARS = 60_000
@@ -163,6 +174,77 @@ def read_docx_text(path: str | Path) -> DocumentText:
         return DocumentText(path=file_path, kind=".docx", error=f"DOCX 读取失败：{exc}")
 
 
+DOC_MAX_CHARS = 60_000
+
+
+def read_doc_text(path: str | Path) -> DocumentText:
+    """读取旧版 ``.doc``（OLE2 复合文档）的可见文本。
+
+    ``.doc`` 是二进制格式，纯 Python 精确解析成本很高，因此这里采取
+    **尽力而为 + 绝不失败** 的策略：
+
+    1. 若系统装了 ``antiword`` / ``catdoc``，优先用它们；
+    2. 否则从原始字节里抽取 UTF-16LE 与 GBK 可读文本片段（够用于
+       AI 来源 / 主题识别）；
+    3. 任何情况下都返回 ``DocumentText``，**不抛异常** ——
+       文本提取失败绝不能导致文件被忽略（需求八）。
+    """
+    file_path = Path(path)
+
+    # 1) 可选外部转换器
+    for tool in ("antiword", "catdoc"):
+        executable = _shutil.which(tool)
+        if not executable:
+            continue
+        try:
+            completed = _subprocess.run(
+                [executable, str(file_path)],
+                capture_output=True, timeout=30, check=False,
+            )
+        except Exception as exc:  # pragma: no cover - 外部工具异常
+            logger.debug("%s 读取 .doc 失败 %s: %s", tool, file_path, exc)
+            continue
+        if completed.returncode == 0:
+            text = completed.stdout.decode("utf-8", errors="replace").strip()
+            if text:
+                first_line = text.splitlines()[0].strip()
+                return DocumentText(
+                    path=file_path, kind=".doc",
+                    title=_truncate(first_line, 200),
+                    text=_truncate(text, DOC_MAX_CHARS),
+                    metadata={"reader": tool},
+                )
+
+    # 2) 字节层兜底：抽取可读片段
+    try:
+        raw = file_path.read_bytes()
+    except OSError as exc:
+        return DocumentText(path=file_path, kind=".doc", error=f"DOC 读取失败：{exc}")
+
+    chunks: list[str] = []
+    for encoding in ("utf-16-le", "gbk", "latin-1"):
+        try:
+            chunks.append(raw.decode(encoding, errors="ignore"))
+        except Exception:  # pragma: no cover - 解码兜底
+            continue
+
+    runs: list[str] = []
+    for blob in chunks:
+        for run in _READABLE_RUN_RE.findall(blob):
+            cleaned = run.strip()
+            if len(cleaned) >= 2:
+                runs.append(cleaned)
+    text = _truncate(" ".join(runs), DOC_MAX_CHARS)
+    if not text:
+        return DocumentText(
+            path=file_path, kind=".doc",
+            error=".doc 为二进制格式，未提取到文本（不影响扫描 / 归档 / 上传）",
+        )
+    return DocumentText(
+        path=file_path, kind=".doc", text=text, metadata={"reader": "bytes-fallback"},
+    )
+
+
 def read_html_text(path: str | Path) -> DocumentText:
     """读取 HTML 的 ``<title>`` / ``<meta>`` 与正文文本。"""
     file_path = Path(path)
@@ -212,6 +294,8 @@ def read_document_text(path: str | Path) -> DocumentText:
         return read_pdf_text(file_path)
     if kind == ".docx":
         return read_docx_text(file_path)
+    if kind == ".doc":
+        return read_doc_text(file_path)
     if kind == ".html":
         return read_html_text(file_path)
     return DocumentText(path=file_path, kind=kind, error=f"不支持的扩展名：{kind or '(none)'}")

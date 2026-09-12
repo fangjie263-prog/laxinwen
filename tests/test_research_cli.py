@@ -126,7 +126,8 @@ def test_explicit_dry_run_wins_over_env(monkeypatch, tmp_path):
 
 
 def test_supported_and_ignored_extensions_do_not_overlap():
-    assert set(SUPPORTED_EXTENSIONS) == {".pdf", ".docx", ".html", ".htm"}
+    # 需求八：.doc（旧版 Word）必须一起支持
+    assert set(SUPPORTED_EXTENSIONS) == {".pdf", ".docx", ".doc", ".html", ".htm"}
     assert not set(SUPPORTED_EXTENSIONS) & set(IGNORED_EXTENSIONS)
     for ignored in (".txt", ".md", ".png", ".jpg"):
         assert ignored in IGNORED_EXTENSIONS
@@ -190,3 +191,58 @@ def test_notion_sync_hook_does_not_break_existing_run_sync(monkeypatch):
     # dry-run 且导出目录为空 → 没有消息，说明钩子没有额外输出
     messages = run_sync(export_root=Path("/nonexistent-portable-root"), dry_run=True)
     assert messages == []
+
+
+def test_cli_dry_run_logs_each_line_once(tmp_path, capsys):
+    """需求九：单遍 CLI 日志 —— 每条信息只输出一次（无 logger + print 重复）。"""
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    make_html(inbox / "20260912 GENIMI 09696.HK 天齐锂业.html", title="天齐锂业研究")
+    make_html(
+        inbox / "20260912A CLAUDE 000660.KS SK海力士.html",
+        title="SK海力士研究",
+        body="由 Claude 生成的 SK海力士 半导体周期研究正文",
+    )
+
+    exit_code = main([
+        "research-archive",
+        "--inbox", str(inbox),
+        "--archive", str(tmp_path / "archive"),
+        "--failed", str(tmp_path / "failed"),
+        "--state-db", str(tmp_path / "db.sqlite"),
+        "--companies", str(tmp_path / "missing.json"),
+    ])
+    assert exit_code == 0
+
+    out = [line for line in capsys.readouterr().out.splitlines() if line.strip()]
+    # 关键行恰好出现一次
+    assert sum(1 for line in out if "发现文件：2" in line) == 1
+    assert sum(1 for line in out if "模式：DRY-RUN" in line) == 1
+    assert sum(1 for line in out if line.startswith("RESEARCH ARCHIVE START")) == 1
+    assert sum(1 for line in out if line.startswith("RESEARCH ARCHIVE END")) == 1
+    assert sum(1 for line in out if line.startswith("RESEARCH ARCHIVE SUMMARY")) == 1
+    # 每个文件只列一次，且每个文件只有一条 sha256 行
+    for name in ("天齐锂业", "SK海力士"):
+        assert sum(1 for line in out if name in line and "[新增]" in line) == 1
+    assert sum(1 for line in out if "sha256=" in line) == 2
+    # 没有任何整行重复
+    duplicates = {line for line in out if out.count(line) > 1}
+    assert not duplicates, f"重复日志行：{duplicates}"
+
+
+def test_cli_dry_run_shows_date_source(tmp_path, capsys):
+    """需求七：dry-run 计划里必须显示 ``date=YYYY-MM-DD(source=filename)``。"""
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    make_html(inbox / "20260912 GENIMI 09696.HK 天齐锂业.html")
+
+    main([
+        "research-archive",
+        "--inbox", str(inbox),
+        "--archive", str(tmp_path / "archive"),
+        "--failed", str(tmp_path / "failed"),
+        "--state-db", str(tmp_path / "db.sqlite"),
+        "--companies", str(tmp_path / "missing.json"),
+    ])
+    out = capsys.readouterr().out
+    assert "date=2026-09-12(source=filename)" in out

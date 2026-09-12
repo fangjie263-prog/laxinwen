@@ -202,9 +202,10 @@ def test_unknown_ai_and_company_land_in_unknown_dir(config, store):
     make_html(config.inbox_dir / "行业研究.html", body="普通研究正文", title="行业研究")
     fake = FakeNotion()
     run_research_archive(config=config, store=store, archiver=make_archiver(config, store, fake))
-    assert (config.archive_dir / "2026-09-12" / "Unknown_Unknown").exists() or list(
-        (config.archive_dir).rglob("Unknown_Unknown")
-    )
+    # 需求五：公司未识别时不生成 Unknown_公司 / Unknown_Unknown 占位目录
+    assert list(config.archive_dir.rglob("Unknown"))
+    assert not list(config.archive_dir.rglob("Unknown_Unknown"))
+    assert not list(config.archive_dir.rglob("Unknown_*"))
     record = store.list_records()[0]
     assert record.ai_source == "Unknown"
     assert record.notion_page_id  # 仍然上传，AI Source = Unknown 可检索

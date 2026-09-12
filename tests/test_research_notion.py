@@ -22,6 +22,7 @@ from news.research.notion_archive import (
     ResearchNotionArchiver,
     _has_forbidden_labels,
     build_archiver,
+    company_page_title,
     report_page_body,
     report_page_title,
 )
@@ -509,3 +510,50 @@ def test_dry_run_message_uses_new_structure(config, store):
     outcome = archiver.upload_candidate(candidate, dry_run=True)
     assert RESEARCH_CATEGORY_TITLE in outcome.message
     assert "PRIVATE" not in outcome.message
+
+
+# 需求五 / 十：保留「研究报告」一级分类，且不生成 Unknown 占位页标题
+
+def test_company_page_title_has_no_unknown_placeholder():
+    """公司页标题不出现无意义的 Unknown 占位。"""
+    assert company_page_title("09696.HK", "天齐锂业") == "09696.HK｜天齐锂业"
+    assert company_page_title("Unknown", "天齐锂业") == "天齐锂业"
+    assert company_page_title("09696.HK", "Unknown") == "09696.HK"
+    assert company_page_title("Unknown", "Unknown") == "Unknown"
+    assert company_page_title("", "") == "Unknown"
+
+
+def test_report_body_hides_unknown_ticker(config, store):
+    """ticker 未识别时正文只显示日期，不再出现 ``2026-09-12｜Unknown``。"""
+    from news.research.archive_store import ResearchFileRecord
+    from news.research.notion_archive import report_page_body
+
+    record = ResearchFileRecord(
+        sha256="a" * 64, original_filename="a.pdf", normalized_filename="a.pdf",
+        original_path="/a.pdf", archive_path="/a.pdf", date="2026-09-12",
+        ticker="Unknown", company="哈尔滨电气", ai_source="Claude",
+        ai_matched_by="filename", file_type="pdf", file_size=1,
+    )
+    paragraphs = [
+        block["paragraph"]["rich_text"][0]["text"]["content"]
+        for block in report_page_body(record)
+        if block.get("type") == "paragraph"
+    ]
+    assert paragraphs[0] == "2026-09-12"
+    assert "Unknown" not in paragraphs[0]
+    assert paragraphs[1] == "📎 研究报告"
+
+
+def test_company_directory_name_used_for_archive_structure():
+    """Notion / 本地归档共用同一套目录命名（需求五、十）。"""
+    from news.research.company import directory_name
+
+    assert directory_name("09696.HK", "天齐锂业") == "09696.HK_天齐锂业"
+    assert directory_name("Unknown", "哈尔滨电气") == "哈尔滨电气"
+    assert directory_name("09696.HK", "Unknown") == "09696.HK"
+    assert directory_name("Unknown", "Unknown") == "Unknown"
+
+
+def test_research_category_title_unchanged():
+    """需求十：Notion 一级分类固定为「研究报告」，不得改名。"""
+    assert RESEARCH_CATEGORY_TITLE == "研究报告"

@@ -9,8 +9,11 @@
   ``Laxinwen-Notion-Sync`` 计划任务；
 - 默认 **dry-run**：只扫描 / 只识别 / 只输出计划，不移动、不重命名、不上传。
 
-处理范围只有最终研究成果：``.pdf`` / ``.docx`` / ``.html`` / ``.htm``。
+处理范围只有最终研究成果：``.pdf`` / ``.docx`` / ``.doc`` / ``.html`` / ``.htm``。
 ``.txt`` / ``.md`` / ``.png`` / 截图 / 草稿等一律跳过。
+
+识别原则（顺序无关）：文件名里的 date / ticker / AI / company / 序号各自独立
+扫描后再组合，不依赖固定顺序的正则整串匹配。
 """
 
 from .config import ResearchArchiveConfig, load_research_config

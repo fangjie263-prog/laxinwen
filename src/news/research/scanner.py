@@ -21,6 +21,7 @@ from typing import Iterable, Optional
 from .ai_source import UNKNOWN_AI_SOURCE, detect_ai_source
 from .archive_store import ResearchArchiveStore, ResearchFileRecord, sha256_file
 from .company import UNKNOWN_COMPANY, UNKNOWN_TICKER, CompanyDirectory
+from .company import directory_name as company_directory_name
 from .config import IGNORED_EXTENSIONS, SUPPORTED_EXTENSIONS, ResearchArchiveConfig
 from .dates import detect_date
 from .document_text import read_document_text
@@ -164,10 +165,25 @@ def build_normalized_name(
     *, date_prefix: str, letter: str, ai_source: str, ticker: str,
     company: str, topic: str, extension: str,
 ) -> str:
-    """``YYYYMMDD序号_AI来源_股票代码_公司名称_研究主题.扩展名``（需求九）。"""
+    """``YYYYMMDD序号_AI来源_股票代码_公司名称_研究主题.扩展名``（需求九）。
+
+    不生成无意义的 ``Unknown`` 占位（需求五）：
+
+    - 公司已识别但 ticker 未识别 → ``20260831A_Claude_哈尔滨电气_研究.doc``
+      （不再出现 ``Unknown_哈尔滨电气``）
+    - ticker / 公司都未识别 → 对应字段整体省略，不会出现 ``Unknown_Unknown``
+    - AI 来源仍保留 ``Unknown``（Notion 侧需要按 AI Source = Unknown 检索）
+    """
+    parts = [f"{date_prefix}{letter}", ai_source]
+    ticker_known = bool(ticker) and ticker != UNKNOWN_TICKER
+    company_known = bool(company) and company != UNKNOWN_COMPANY
+    if ticker_known:
+        parts.append(ticker)
+    if company_known:
+        parts.append(company)
+    parts.append(topic)
     stem = "_".join(
-        sanitize_filename(part, fallback="Unknown")
-        for part in (f"{date_prefix}{letter}", ai_source, ticker, company, topic)
+        sanitize_filename(part, fallback=UNKNOWN_AI_SOURCE) for part in parts
     )
     stem = re.sub(r"_{2,}", "_", stem).strip("_")
     return join_filename(stem, extension)
@@ -271,7 +287,12 @@ class ResearchArchiveScanner:
         company = company_match.company or UNKNOWN_COMPANY
         ai_source = ai_match.source or UNKNOWN_AI_SOURCE
 
-        company_dir = f"{sanitize_filename(ticker, fallback='Unknown')}_{sanitize_filename(company, fallback='Unknown')}"
+        # 目录名统一由 company.directory_name 决定（需求五）：
+        # 公司已识别但 ticker 未识别时 → ``盐湖股份``，绝不生成 ``Unknown_盐湖股份``。
+        company_dir = sanitize_filename(
+            company_directory_name(company_match.ticker, company_match.company),
+            fallback=UNKNOWN_COMPANY,
+        )
         date_dir = date_match.directory
         archive_dir = self.config.archive_dir / date_dir / company_dir
 

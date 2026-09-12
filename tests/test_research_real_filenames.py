@@ -338,3 +338,91 @@ def test_filename_sanitize_keeps_ticker_dots():
     assert sanitize_filename("「天齐锂业｜09696.HK｜锂价周期研究」") == (
         "天齐锂业_09696.HK_锂价周期研究"
     )
+
+
+# ------------------------------------------- 8. .doc 全流程与 Unknown 占位
+
+def _write_doc(path, text: str = "SK海力士 深度研究 by Gemini"):
+    """写一个最小可被字节兜底解析的 ``.doc``（OLE2 头 + UTF-16LE 文本）。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + text.encode("utf-16-le"))
+    return path
+
+
+@pytest.mark.parametrize(
+    ("filename", "ticker", "company", "ai"),
+    [
+        ("20260831 SK海力士 深度研究.doc", "000660.KS", "SK海力士", "Gemini"),
+        ("20260831A CLAUDE 000660.KS SK海力士.doc", "000660.KS", "SK海力士", "Claude"),
+        ("20260831 GENIMI 09696.HK 天齐锂业.doc", "09696.HK", "天齐锂业", "Gemini"),
+    ],
+)
+def test_doc_files_are_scanned_and_recognised(config, filename, ticker, company, ai):
+    """需求八：``.doc`` 必须与 pdf/docx 一样进入全流程（扫描 → 识别 → 归档）。"""
+    from news.research.config import SUPPORTED_EXTENSIONS
+
+    assert ".doc" in SUPPORTED_EXTENSIONS
+    _write_doc(config.inbox_dir / filename)
+    candidate = _scan(config)[filename]
+
+    assert candidate.ticker == ticker
+    assert candidate.company == company
+    assert candidate.ai_source == ai
+    assert candidate.date == "2026-08-31"
+    assert candidate.normalized_name.endswith(".doc")
+
+
+def test_doc_extraction_failure_never_drops_the_file(config):
+    """文本提取失败也不能让文件消失（需求五 / 八）：仍要出现在扫描结果里。"""
+    path = config.inbox_dir / "20260831 哈尔滨电气 研究.doc"
+    # 全是不可读字节，字节兜底也拿不到文本
+    path.write_bytes(b"\x00\x01\x02\x03" * 40)
+    candidate = _scan(config)[path.name]
+
+    assert candidate.extension == ".doc"
+    assert candidate.company == "哈尔滨电气"  # 来自文件名
+    assert candidate.ticker == UNKNOWN_TICKER or candidate.ticker == "Unknown"
+    # 仍然归档，不因为「读不到内容」被丢弃
+    assert candidate.normalized_name.endswith(".doc")
+    assert candidate.archive_dir.name != "Unknown_哈尔滨电气"
+
+
+def test_company_without_ticker_does_not_produce_unknown_placeholder(config):
+    """需求五：公司已识别但 ticker 未识别时正常归档，不生成 ``Unknown_公司``。"""
+    _write_doc(config.inbox_dir / "20260831 哈尔滨电气 深度研究.doc")
+    candidate = _scan(config)["20260831 哈尔滨电气 深度研究.doc"]
+
+    assert candidate.company == "哈尔滨电气"
+    assert candidate.ticker == UNKNOWN_TICKER
+    assert candidate.archive_dir.name == "哈尔滨电气"
+    assert "Unknown_" not in candidate.archive_dir.name
+    assert "Unknown_" not in candidate.normalized_name
+
+
+def test_brand_prefix_is_not_a_ticker(config):
+    """``SK海力士`` / ``TCL科技`` 这类「品牌前缀 + 中文」不是股票代码。"""
+    _write_doc(config.inbox_dir / "20260831 SK海力士 半年报.doc")
+    _write_doc(config.inbox_dir / "20260831 TCL科技 面板研究.doc")
+
+    candidates = _scan(config)
+    # SK海力士 有映射表 → 拿到标准 ticker
+    assert candidates["20260831 SK海力士 半年报.doc"].ticker == "000660.KS"
+    # TCL科技 没有映射表，也绝不能被识别成假 ticker "TCL"
+    tcl = candidates["20260831 TCL科技 面板研究.doc"]
+    assert tcl.company == "TCL科技"
+    assert tcl.ticker == UNKNOWN_TICKER
+    assert tcl.archive_dir.name == "TCL科技"
+
+
+def test_unknown_everything_uses_plain_unknown_directory(config):
+    """需求五：字段全部 Unknown 时目录名就是 ``Unknown``，不叠加 ``Unknown_Unknown``。"""
+    from research_helpers import make_html
+
+    make_html(config.inbox_dir / "行业研究.html", body="普通研究正文", title="行业研究")
+    candidate = _scan(config)["行业研究.html"]
+
+    assert candidate.ticker == UNKNOWN_TICKER
+    assert candidate.company == UNKNOWN_COMPANY
+    assert candidate.ai_source == "Unknown"
+    assert candidate.company_dir == "Unknown"
+    assert "Unknown_Unknown" not in str(candidate.archive_path)

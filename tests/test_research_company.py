@@ -64,7 +64,8 @@ def test_no_company_is_unknown_not_guessed(directory, filename):
     assert match.ticker == UNKNOWN_TICKER
     assert match.company == UNKNOWN_COMPANY
     assert not match.known
-    assert match.directory_name == "Unknown_Unknown"
+    # 需求五：两者都 Unknown 时目录名就是 Unknown，不生成 Unknown_Unknown 占位
+    assert match.directory_name == "Unknown"
 
 
 def test_directory_name_format(directory):

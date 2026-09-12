@@ -7,6 +7,8 @@
   不生成损坏 PDF（返回 ``oversized_page``，交由上层标记 FAILED 并保留在 Inbox）；
 - DOCX 按**段落**切，每片仍是**合法 DOCX**（用 python-docx 重新写文件）；
 - HTML 按 ``<section>`` / 顶层块切，每片仍是合法 HTML（含 ``<html><body>``）；
+- ``.doc``（OLE2 二进制）**无法安全按内容切割**：只有在文件本身不超限时才
+  整文件透传为唯一下载件，超限时明确报错（绝不按字节硬切、绝不丢文件）；
 - 分片名统一 ``_Part01`` / ``_Part02``（两位数字，保证机器排序）。
 
 每片都会**再验证一次**：大小 ≤ 限制、且能被对应解析器重新打开。
@@ -585,7 +587,36 @@ def split_file(
         return split_docx(source, target_dir, stem=base_stem, max_bytes=max_bytes)
     if extension in {".html", ".htm"}:
         return split_html(source, target_dir, stem=base_stem, max_bytes=max_bytes)
+    if extension == ".doc":
+        return _pass_through_binary(source, target_dir, stem=base_stem, max_bytes=max_bytes)
     return SplitResult(kind=extension, error=f"不支持切割的文件类型：{extension or '(none)'}")
+
+
+def _pass_through_binary(
+    source: Path, target_dir: str | Path, *, stem: str, max_bytes: int
+) -> SplitResult:
+    """二进制且不可安全切割的格式（``.doc``）：整文件作为唯一分片。
+
+    这是「不丢文件」的兜底，而不是「假装切成功」：仅当文件本身在大小限制
+    之内时才产出分片；否则返回明确错误，由上层保留原文件并记录 FAILED。
+    """
+    import shutil
+
+    out_dir = Path(target_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    size = source.stat().st_size
+    if size > max_bytes:
+        return SplitResult(
+            kind=source.suffix.lower(),
+            error=(
+                f"{source.suffix.lower()} 为二进制格式，无法安全切割，"
+                f"且文件大小 {size} 已超过限制 {int(max_bytes)}"
+            ),
+        )
+    destination = out_dir / f"{stem}{source.suffix.lower()}"
+    if destination.resolve() != source.resolve():
+        shutil.copy2(source, destination)
+    return SplitResult(parts=[destination], kind=source.suffix.lower(), reason="二进制整文件")
 
 
 def verify_part(path: str | Path, kind: str) -> bool:
@@ -608,6 +639,10 @@ def verify_part(path: str | Path, kind: str) -> bool:
         if suffix in {".html", ".htm"}:
             text = file_path.read_text(encoding="utf-8", errors="replace")
             return "<html" in text.lower() or "<section" in text.lower() or "<body" in text.lower()
+        if suffix == ".doc":
+            # 二进制容器无法解析内容：非空即视为「原文件可用」，
+            # 避免因无法解析而误判失败、导致文件被丢弃。
+            return file_path.stat().st_size > 0
     except Exception as exc:
         logger.warning("分片校验失败 %s: %s", file_path, exc)
         return False

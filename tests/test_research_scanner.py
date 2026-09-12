@@ -139,7 +139,8 @@ def test_unknown_ai_and_company_are_marked(config, store):
     assert candidate.ai_source == "Unknown"
     assert candidate.ticker == "Unknown"
     assert candidate.company == "Unknown"
-    assert candidate.company_dir == "Unknown_Unknown"
+    # 需求五：都识别不出时目录名是 Unknown（不生成 Unknown_Unknown 占位）
+    assert candidate.company_dir == "Unknown"
 
 
 def test_illegal_chars_in_filename_are_cleaned(config, store):

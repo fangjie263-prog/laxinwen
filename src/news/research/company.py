@@ -89,6 +89,38 @@ def _is_date_like(token: str) -> bool:
 # 例如 KAP；2 位以上放宽）。避免把 "a"/"of" 这类小写词当代码。
 _MIN_ALPHA_TICKER_LENGTH = 2
 
+# 紧贴 CJK 公司名的「品牌前缀」：SK海力士 / ST华微 / TCL科技 / SK하이닉스。
+# 这些前缀**不是股票代码**，识别 ticker 时必须排除（需求四：不制造假 ticker），
+# 但它们属于公司名的一部分，由 _han_name 保留。
+_CJK_NAME_PREFIXES = frozenset(
+    {"SK", "ST", "TCL", "SH", "SZ", "CN", "HK", "US", "JP", "KR", "TW", "PT", "PTT", "AL", "MT"}
+)
+
+# 「紧贴 CJK 的短字母前缀」候选（``SK海力士`` / ``ST华微`` / ``TCL科技``）。
+# 只作为**候选**：是否真的是品牌前缀由 ``brand_prefix_spans`` 结合
+# ``_CJK_NAME_PREFIXES`` 白名单判定 —— 这样 ``NVDA研究``（真实股票代码
+# 紧贴中文）不会被误伤，而 ``SK海力士`` 会被正确识别为公司名。
+_BRAND_PREFIX_RE = re.compile(
+    r"(?<![A-Za-z0-9])([A-Z]{1,4})(?=[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff])"
+)
+
+
+def brand_prefix_spans(text: str) -> list[tuple[int, int]]:
+    """返回「紧贴 CJK 的品牌前缀」在原文中的位置区间。
+
+    这些位置上是公司名的一部分（``SK海力士``），不是股票代码，
+    因此 ticker 扫描必须跳过它们。
+    """
+    spans: list[tuple[int, int]] = []
+    for match in _BRAND_PREFIX_RE.finditer(str(text or "")):
+        prefix = match.group(1)
+        # 只认已知品牌前缀（SK / ST / TCL …）；``NVDA研究`` 这类真实代码不受影响
+        if prefix not in _CJK_NAME_PREFIXES:
+            continue
+        spans.append((match.start(1), match.end(1)))
+    return spans
+
+
 # 「像公司名的 CJK 片段」过滤词（避免把研究标题当成公司名）
 _NAME_NOISE = {
     "研究", "研究报告", "报告", "分析", "深度", "深度研究", "行业研究",
@@ -234,9 +266,11 @@ def looks_like_ticker(token: str) -> bool:
     for length in range(2, len(upper) + 1):
         if upper[:length] in _TICKER_STOPWORD_EXACT:
             return False
-    if not match:
-        return False
     head, suffix = match.group(1), match.group(2)
+    if suffix is None and len(head) < _MIN_ALPHA_TICKER_LENGTH:
+        # 1 位字母（A / K / F）在文件名里多半是「A股」「K线」这类词的一部分，
+        # 不足以作为 ticker 信号 —— 不猜（需求四）。
+        return False
     if suffix and suffix.upper() in _TICKER_STOPWORD_EXACT:
         return False
     if raw.isupper() and len(head) >= 1:
@@ -272,7 +306,7 @@ class CompanyMatch:
 
     @property
     def directory_name(self) -> str:
-        return f"{self.ticker or UNKNOWN_TICKER}_{self.company or UNKNOWN_COMPANY}"
+        return directory_name(self.ticker, self.company)
 
 
 class CompanyDirectory:
@@ -376,8 +410,16 @@ class CompanyDirectory:
         ``000660.KS SK海力士.pdf`` → ``["000660.KS"]``
         """
         normalized = unicodedata.normalize("NFKC", str(text or ""))
+        spans = brand_prefix_spans(normalized)
         found: list[str] = []
-        for raw in _TICKER_RE.findall(normalized):
+        for match in _TICKER_RE.finditer(normalized):
+            start, end = match.span(1)
+            # 紧贴 CJK 的字母词是公司名品牌前缀（SK海力士 / TCL科技），不是代码：
+            # 仅当该 token 与扩展后的品牌前缀区间**精确重合**时跳过，
+            # 不能影响「独立大写代码」（NVDA / KAP）的识别（需求四）。
+            if any(start == span_start and end == span_end for span_start, span_end in spans):
+                continue
+            raw = match.group(1)
             if not looks_like_ticker(raw):
                 continue
             # 日期 / 年份不是 ticker：2026、20260912、2026-09
@@ -404,8 +446,8 @@ class CompanyDirectory:
         for priority in (
             r"^\d{4,6}\.[A-Za-z]{1,3}$",
             r"^\d{4,6}$",
-            r"^[A-Za-z]{1,5}\.[A-Za-z]{1,3}$",
-            r"^[A-Za-z]{1,5}$",
+            r"^[A-Za-z]{2,5}\.[A-Za-z]{1,3}$",
+            r"^[A-Za-z]{2,5}$",
         ):
             for candidate in candidates:
                 if re.fullmatch(priority, candidate):
@@ -580,6 +622,30 @@ class CompanyDirectory:
         return CompanyDirectory(records)
 
 
+def directory_name(ticker: str, company: str) -> str:
+    """归档目录名：``Ticker_Company``，**不生成无意义的 Unknown 占位**（需求五）。
+
+    - ticker + company 都有 → ``09696.HK_天齐锂业``
+    - 只有 company          → ``盐湖股份``（不再是 ``Unknown_盐湖股份``）
+    - 只有 ticker           → ``09696.HK``（不再是 ``09696.HK_Unknown``）
+    - 两者都 Unknown        → ``Unknown``
+
+    公司已识别但 ticker 未识别时，目录里不会出现 ``Unknown_公司``，
+    文件也会正常归档（需求五）。
+    """
+    ticker = (ticker or "").strip()
+    company = (company or "").strip()
+    ticker_known = bool(ticker) and ticker != UNKNOWN_TICKER
+    company_known = bool(company) and company != UNKNOWN_COMPANY
+    if ticker_known and company_known:
+        return f"{ticker}_{company}"
+    if company_known:
+        return company
+    if ticker_known:
+        return ticker
+    return UNKNOWN_COMPANY
+
+
 def company_directory(path: str | Path | None = None) -> CompanyDirectory:
     """便捷工厂：从文件路径载入映射表（缺省用内置默认）。"""
     return CompanyDirectory.from_file(path)
@@ -612,6 +678,7 @@ __all__ = [
     "UNKNOWN_TICKER",
     "company_directory",
     "detect_ticker",
+    "directory_name",
     "looks_like_ticker",
     "parse_ticker",
 ]

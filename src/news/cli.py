@@ -606,7 +606,6 @@ def cmd_research_archive(args: argparse.Namespace) -> int:
     config.ensure_dirs()
 
     emit("RESEARCH ARCHIVE START")
-    emit(f"模式：{'DRY-RUN（只扫描，不移动/不上传）' if config.dry_run else 'APPLY'}")
 
     store = None
     client = None
@@ -622,10 +621,10 @@ def cmd_research_archive(args: argparse.Namespace) -> int:
             notion = load_notion_config()
             root_page_id = args.root_page_id or notion["root_page_id"]
             if not notion["token"]:
-                print("ERROR: 缺少 NOTION_TOKEN，无法执行 APPLY（请先配置 .env）")
+                emit("ERROR · 缺少 NOTION_TOKEN，无法执行 APPLY（请先配置 .env）")
                 return 1
             if not root_page_id:
-                print("ERROR: 缺少 NOTION_ROOT_PAGE_ID，无法执行 APPLY")
+                emit("ERROR · 缺少 NOTION_ROOT_PAGE_ID，无法执行 APPLY")
                 return 1
             client = NotionClient(notion["token"], timeout=args.timeout)
 
@@ -649,7 +648,7 @@ def cmd_research_archive(args: argparse.Namespace) -> int:
         return 0 if result.ok else 1
     except Exception as exc:  # noqa: BLE001 - CLI 层统一转成退出码
         logger.error("Research Archive 运行失败：%s", exc, exc_info=True)
-        print(f"ERROR: {exc}")
+        emit(f"ERROR · {exc}")
         return 1
     finally:
         if client is not None:
