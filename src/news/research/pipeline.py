@@ -126,13 +126,24 @@ def run_research_archive(
     result = ResearchArchiveResult(dry_run=config.dry_run)
 
     def emit(message: str) -> None:
-        logger.info("%s", message)
+        """输出一条消息 **且只输出一次**。
+
+        之前 ``logger.info`` + CLI ``print`` 会让同一条信息出现两遍
+        （如「发现文件：5」）。现在统一策略：
+
+        - 有 ``on_message`` 回调时，**只调用回调**（CLI 自己负责落盘 / 打印），
+          logger 只记 DEBUG，保证终端不重复；
+        - 没有回调时（库 / 测试场景）走 logger.info，行为保持不变。
+        """
         result.messages.append(message)
         if on_message is not None:
+            logger.debug("%s", message)
             try:
                 on_message(message)
             except Exception:  # pragma: no cover - 回调不应影响主流程
                 logger.debug("on_message 回调异常", exc_info=True)
+        else:
+            logger.info("%s", message)
 
     own_store = store is None
     store = store or ResearchArchiveStore(config.db_path)
@@ -173,7 +184,7 @@ def run_research_archive(
                 and existing.status == STATUS_FAILED
             )
             if candidate.duplicate and not retryable:
-                result.messages.append(
+                emit(
                     f"SKIP DUPLICATE · {candidate.path.name} · sha256={candidate.sha256[:16]}…"
                     f"（已存在：{candidate.duplicate_of}）"
                 )
@@ -189,7 +200,7 @@ def run_research_archive(
                         store.upsert(candidate.record(status=STATUS_DUPLICATE))
                 continue
             if candidate.duplicate and retryable:
-                result.messages.append(
+                emit(
                     f"RETRY FAILED · {candidate.path.name} · sha256={candidate.sha256[:16]}…"
                 )
                 result.duplicates += 1

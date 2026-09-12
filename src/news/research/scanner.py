@@ -22,7 +22,7 @@ from .ai_source import UNKNOWN_AI_SOURCE, detect_ai_source
 from .archive_store import ResearchArchiveStore, ResearchFileRecord, sha256_file
 from .company import UNKNOWN_COMPANY, UNKNOWN_TICKER, CompanyDirectory
 from .config import IGNORED_EXTENSIONS, SUPPORTED_EXTENSIONS, ResearchArchiveConfig
-from .dates import DateMatch, detect_date
+from .dates import detect_date
 from .document_text import read_document_text
 from .sanitize import (
     index_to_letters,
@@ -228,18 +228,21 @@ class ResearchArchiveScanner:
         size = path.stat().st_size
         digest = sha256_file(path)
 
-        date_match = detect_date(path)
-        if date_match.matched_by == "created":
-            # 需求：不要把 ctime 当正常日期来源，必须显式降级并标注
-            warnings.append("日期来自 created(ctime)，已按需求降级为 modified")
-            date_match = DateMatch(date_match.date, "modified")
-
         content_texts: tuple[str, ...] = ()
+        document = None
         if self.read_content:
             document = read_document_text(path)
             if document.error:
                 warnings.append(document.error)
             content_texts = document.snippets
+
+        # 日期固定顺序：filename → metadata → mtime → Unknown（ctime 不参与）
+        date_match = detect_date(
+            path,
+            metadata=(document.metadata if document is not None else None),
+        )
+        if date_match.matched_by == "unknown":
+            warnings.append("无法从文件名/元数据/mtime 识别日期，已标记 source=unknown")
 
         # 公司识别优先级：ticker 独立识别 → 映射表 → aliases → 文件名公司名 → 内容
         company_match = self.companies.detect(

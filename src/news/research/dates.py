@@ -1,17 +1,21 @@
-"""日期识别（文件名 > 创建时间 > 修改时间）与格式化。
+"""日期识别（**文件名 > metadata > mtime > Unknown**）与格式化。
 
-需求二十一：
+需求（第三阶段，固定顺序）::
 
-1. 第一优先级：文件名里的明确日期（``20260912`` / ``2026-09-12`` / ``2026_09_12``）；
-2. 第二优先级：文件创建时间（``st_ctime``）；
-3. 第三优先级：文件修改时间（``st_mtime``）。
+    1. filename   文件名里的明确日期（20260912 / 2026-09-12 / 2026_09_12）
+    2. metadata   内嵌元数据（PDF / DOCX / EXIF；由调用方读取后传入）
+    3. modified   文件修改时间（st_mtime）
+    4. Unknown    全部失败 —— 不再回退到今天，避免产生假日期
+
+**``ctime``（``st_ctime``）不是正常日期来源**：POSIX 上它是 inode 变更时间，
+与文档时间无关。这里彻底不再把它当作日期来源。
 
 目录统一 ``YYYY-MM-DD``；文件名前缀统一 ``YYYYMMDD``。
+日志必须能显示 ``date=2026-09-12(source=filename)`` 形式。
 """
 
 from __future__ import annotations
 
-import os
 import re
 import time
 from dataclasses import dataclass
@@ -32,10 +36,13 @@ _FALSE_POSITIVE_8 = re.compile(r"^(?:19|20)\d{6}$")
 
 @dataclass(frozen=True)
 class DateMatch:
-    """日期识别结果。"""
+    """日期识别结果。
+
+    ``matched_by`` 取值：``filename`` / ``metadata`` / ``modified`` / ``unknown``。
+    """
 
     date: date
-    matched_by: str  # "filename" / "created" / "modified"
+    matched_by: str  # "filename" / "metadata" / "modified" / "unknown"
 
     @property
     def directory(self) -> str:
@@ -79,35 +86,65 @@ def _from_timestamp(value: float) -> Optional[date]:
         return None
 
 
-def detect_date(path: str | Path, *, filename: str | None = None) -> DateMatch:
-    """按 文件名 → 创建时间 → 修改时间 的顺序识别日期。"""
+def detect_date_from_metadata(metadata: dict | None) -> Optional[date]:
+    """从内嵌元数据里取日期（``metadata`` 由调用方读取）。
+
+    支持的键（按可信度）：``date`` / ``creation_date`` / ``created`` /
+    ``modified`` / ``modification_date``。值可以是 ``date`` / ``datetime``
+    / ``YYYY-MM-DD`` / ``YYYYMMDD`` 字符串。
+    """
+    if not metadata:
+        return None
+    keys = ("date", "creation_date", "created", "modified", "modification_date", "mtime")
+    for key in keys:
+        value = metadata.get(key)
+        if value is None:
+            continue
+        if isinstance(value, datetime):
+            return value.date()
+        if isinstance(value, date):
+            return value
+        parsed = detect_date_from_filename(str(value))
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def detect_date(
+    path: str | Path,
+    *,
+    filename: str | None = None,
+    metadata: dict | None = None,
+) -> DateMatch:
+    """按固定顺序识别日期：``filename → metadata → mtime → Unknown``。
+
+    ``ctime`` 明确**不作为**日期来源。
+    """
     file_path = Path(path)
     text = filename if filename is not None else file_path.name
 
+    # 1) 文件名
     from_name = detect_date_from_filename(text)
     if from_name is not None:
         return DateMatch(from_name, "filename")
 
+    # 2) 内嵌元数据（PDF / DOCX / EXIF）
+    from_metadata = detect_date_from_metadata(metadata)
+    if from_metadata is not None:
+        return DateMatch(from_metadata, "metadata")
+
+    # 3) 修改时间（st_mtime）
     try:
         stat = file_path.stat()
     except OSError:
-        return DateMatch(date.today(), "modified")
+        return DateMatch(date.today(), "unknown")
 
-    # st_ctime 在 Windows 上是创建时间；在 POSIX 上是 inode 变更时间，
-    # 这里仍按需求作为「第二优先级」使用，但只在明显更早 / 更晚时优先。
-    created = _from_timestamp(stat.st_ctime)
     modified = _from_timestamp(stat.st_mtime)
-    if created is not None and modified is not None:
-        # Windows 真实创建时间语义：优先创建时间
-        if os.name == "nt":
-            return DateMatch(created, "created")
-        # POSIX：mtime 才是「真正的文件时间」，ctime 仅作兜底
-        return DateMatch(modified, "modified")
-    if created is not None:
-        return DateMatch(created, "created")
     if modified is not None:
         return DateMatch(modified, "modified")
-    return DateMatch(date.today(), "modified")
+
+    # 4) Unknown（不再用 ctime 兜底，也不假造「今天」）
+    return DateMatch(date.today(), "unknown")
 
 
 def today() -> date:
