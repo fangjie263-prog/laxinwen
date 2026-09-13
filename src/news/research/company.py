@@ -327,7 +327,9 @@ class CompanyDirectory:
     """公司映射表（可扩展；可从 JSON 文件覆盖内置默认）。"""
 
     def __init__(self, records: Iterable[CompanyRecord] | None = None):
-        self._records: list[CompanyRecord] = list(records or self._default_records())
+        self._records: list[CompanyRecord] = list(
+            self._default_records() if records is None else records
+        )
         # 别名 → 记录（精确归一化）
         self._alias_index: dict[str, CompanyRecord] = {}
         # ticker 归一化 → 记录
@@ -411,9 +413,17 @@ class CompanyDirectory:
     def by_ticker(self, ticker: str) -> Optional[CompanyRecord]:
         if not ticker:
             return None
-        return self._ticker_index.get(_fold(parse_ticker(ticker))) or self._ticker_index.get(
-            _compact(parse_ticker(ticker))
+        normalized = parse_ticker(ticker)
+        found = self._ticker_index.get(_fold(normalized)) or self._ticker_index.get(
+            _compact(normalized)
         )
+        if found is not None:
+            return found
+        # A market-qualified numeric ticker may omit leading zeroes
+        # (2722.HK == 02722.HK).  Resolve the numeric body through the same
+        # canonical mapping index used for bare numeric aliases.
+        digits = re.match(r"^0*(\d{3,6})(?:\.[A-Z]{1,3})?$", normalized)
+        return self._ticker_index.get(digits.group(1)) if digits else None
 
     # ---------- ticker（独立于映射表） ----------
 
@@ -561,11 +571,15 @@ class CompanyDirectory:
         if alias_hit is not None:
             hit_record, _ = alias_hit
             ticker_record = self.by_ticker(ticker) if ticker else None
-            canonical_record = ticker_record or hit_record
-            resolved = canonical_record.ticker or self._ticker_for(hit_record, compact=_compact(stem))
+            # An explicit ticker is stronger than an alias record whose
+            # canonical entry may use a different market suffix.  Only a
+            # direct ticker-index hit may replace it with the mapped form.
+            resolved = (ticker_record.ticker if ticker_record else ticker) or self._ticker_for(
+                hit_record, compact=_compact(stem)
+            )
             return CompanyMatch(
                 ticker=resolved or UNKNOWN_TICKER,
-                company=canonical_record.name,
+                company=hit_record.name,
                 matched_by=("filename_alias" if not ticker else "filename_alias+filer_ticker"),
                 raw_ticker=ticker,
             )
