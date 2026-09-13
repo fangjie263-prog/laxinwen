@@ -8,6 +8,13 @@ from news.research.document_text import CONTENT_UNREADABLE, read_doc_text
 from news.research.scanner import ResearchArchiveScanner
 
 
+def _historical(root, dirname: str, filename: str, payload: bytes = b"legacy"):
+    path = root / "2026-09-12" / dirname / filename
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(payload)
+    return path
+
+
 def test_company_names_and_ticker_variants_share_canonical_identity():
     directory = CompanyDirectory()
     names = [
@@ -70,10 +77,60 @@ def test_repair_dry_run_is_read_only_and_apply_preserves_store_identity(tmp_path
     dry_run = repair_archive(tmp_path, entries, apply=False)
     assert source.is_file()
     assert any("CANONICAL_TICKER" in line for line in dry_run)
+    entry = next(item for item in entries if item.path == source)
+    assert entry.suggested_dir == "02722.HK_重庆机电"
+    assert entry.suggested_filename == "20260912A_ChatGPT_02722.HK_重庆机电_研究.pdf"
+    assert entry.target.name == entry.suggested_filename
     with ResearchArchiveStore(db) as store:
         repair_archive(tmp_path, entries, store=store, apply=True)
-        moved = tmp_path / "2026-09-12" / "02722.HK_重庆机电" / source.name
+        moved = tmp_path / "2026-09-12" / "02722.HK_重庆机电" / entry.suggested_filename
         record = store.find_by_archive_path(moved)
         assert moved.is_file()
         assert record is not None
         assert record.notion_page_id == "page-existing"
+
+
+def test_unknown_directory_and_filename_are_rebuilt_from_canonical_identity(tmp_path):
+    cases = [
+        ("Unknown", "20260912A_Claude_重庆机电_研究.pdf", "02722.HK_重庆机电"),
+        ("Unknown_Unknown", "20260912A_Claude_Unknown_Unknown_盐湖股份_研究.pdf", "000792.SZ_盐湖股份"),
+        ("Unknown_盐盐湖股份", "20260912A_Unknown_Unknown_盐盐湖股份_研究.pdf", "000792.SZ_盐湖股份"),
+    ]
+    for dirname, filename, suggested_dir in cases:
+        root = tmp_path / dirname.replace("/", "_")
+        source = _historical(root, dirname, filename)
+        entry = inspect_archive(root)[0]
+        assert entry.suggested_dir == suggested_dir
+        assert suggested_dir.split("_", 1)[0] in entry.suggested_filename
+        assert "Unknown_Unknown" not in entry.suggested_filename
+        assert "盐盐湖股份" not in entry.suggested_filename
+        assert source.is_file()
+
+
+def test_review_required_never_moves_or_renames(tmp_path):
+    root = tmp_path / "review"
+    source = _historical(
+        root,
+        "NVDA_NVIDIA",
+        "20260912A_Unknown_NVDA_NVIDIA_研究.html",
+        "<html><body>重庆机电 02722.HK</body></html>".encode(),
+    )
+    entry = next(item for item in inspect_archive(root) if item.path == source)
+    assert entry.identity_status == "REVIEW_REQUIRED"
+    output = repair_archive(root, [entry], apply=True)
+    assert any("SKIPPED" in line and "REVIEW_REQUIRED" in line for line in output)
+    assert source.is_file()
+    assert not (root / "2026-09-12" / "REVIEW_REQUIRED").exists()
+
+
+def test_target_filename_conflict_is_skipped(tmp_path):
+    root = tmp_path / "collision"
+    source = _historical(root, "2722.HK_重庆机电", "20260912A_ChatGPT_2722.HK_重庆机电_研究.pdf")
+    target = root / "2026-09-12" / "02722.HK_重庆机电" / "20260912A_ChatGPT_02722.HK_重庆机电_研究.pdf"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"existing")
+    entry = next(item for item in inspect_archive(root) if item.path == source)
+    output = repair_archive(root, [entry], apply=True)
+    assert any("TARGET_EXISTS" in line for line in output)
+    assert source.is_file()
+    assert target.read_bytes() == b"existing"

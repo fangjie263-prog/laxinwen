@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -12,6 +13,8 @@ from .archive_store import ResearchArchiveStore
 from .company import UNKNOWN_COMPANY, UNKNOWN_TICKER, CompanyDirectory, CompanyMatch, directory_name, parse_ticker
 from .config import SUPPORTED_EXTENSIONS
 from .document_text import read_document_text
+from .ai_source import detect_ai_source
+from .scanner import build_normalized_name, extract_topic
 
 SAFE_STATUSES = {"SAFE", "CANONICALIZE_REQUIRED", "IDENTITY_REPAIR_AVAILABLE"}
 
@@ -31,6 +34,7 @@ class AuditEntry:
     canonical_ticker: str
     canonical_company: str
     suggested_dir: str
+    suggested_filename: str
     repair_reason: str
     notion_page_id: str = ""
 
@@ -40,7 +44,7 @@ class AuditEntry:
 
     @property
     def target(self) -> Path:
-        return self.path.parent.parent / self.suggested_dir / self.path.name
+        return self.path.parent.parent / self.suggested_dir / self.suggested_filename
 
 
 def _current_identity(dirname: str) -> tuple[str, str]:
@@ -56,6 +60,48 @@ def _current_identity(dirname: str) -> tuple[str, str]:
 
 def _match_content(companies: CompanyDirectory, snippets: tuple[str, ...]) -> CompanyMatch:
     return companies._detect_one("\n".join(snippets)) if snippets else CompanyMatch()
+
+
+def _date_prefix(path: Path) -> str:
+    match = re.match(r"^(\d{8})[A-Z]+_", path.stem)
+    if match:
+        return match.group(1)
+    return path.parent.parent.name.replace("-", "")
+
+
+def _letter(path: Path) -> str:
+    match = re.match(r"^\d{8}([A-Z]+)_", path.stem)
+    return match.group(1) if match else "A"
+
+
+def _suggested_filename(
+    path: Path,
+    *,
+    companies: CompanyDirectory,
+    canonical_ticker: str,
+    canonical_company: str,
+    filename_match: CompanyMatch,
+) -> str:
+    ai = detect_ai_source(path.name).source
+    record = companies.by_ticker(canonical_ticker)
+    aliases = list(record.aliases) if record is not None else []
+    aliases.extend(("Unknown", filename_match.company, canonical_company, path.parent.name))
+    topic = extract_topic(
+        path.name,
+        ai_source=ai,
+        ticker=canonical_ticker,
+        company=canonical_company,
+        aliases=aliases,
+    )
+    return build_normalized_name(
+        date_prefix=_date_prefix(path),
+        letter=_letter(path),
+        ai_source=ai,
+        ticker=canonical_ticker,
+        company=canonical_company,
+        topic=topic,
+        extension=path.suffix.lower(),
+    )
 
 
 def _entry_for_file(path: Path, companies: CompanyDirectory, store: ResearchArchiveStore | None) -> AuditEntry:
@@ -79,6 +125,7 @@ def _entry_for_file(path: Path, companies: CompanyDirectory, store: ResearchArch
         if record is not None:
             notion_page_id = record.notion_page_id
 
+    suggested_filename = path.name
     if resolved.identity_status == "CONFLICT":
         identity_status, reason = "REVIEW_REQUIRED", "IDENTITY_CONFLICT"
         canonical_ticker, canonical_company, suggested_dir = UNKNOWN_TICKER, UNKNOWN_COMPANY, "REVIEW_REQUIRED"
@@ -88,8 +135,18 @@ def _entry_for_file(path: Path, companies: CompanyDirectory, store: ResearchArch
     else:
         canonical_ticker, canonical_company = resolved.ticker, resolved.company
         suggested_dir = directory_name(canonical_ticker, canonical_company)
+        suggested_filename = _suggested_filename(
+            path,
+            companies=companies,
+            canonical_ticker=canonical_ticker,
+            canonical_company=canonical_company,
+            filename_match=filename_match,
+        )
         if current_dir == suggested_dir:
-            identity_status, reason = "SAFE", "ALREADY_CANONICAL"
+            if path.name == suggested_filename:
+                identity_status, reason = "SAFE", "ALREADY_CANONICAL"
+            else:
+                identity_status, reason = "CANONICALIZE_REQUIRED", "CANONICAL_FILENAME"
         elif current_ticker == UNKNOWN_TICKER or current_company == UNKNOWN_COMPANY:
             identity_status, reason = "IDENTITY_REPAIR_AVAILABLE", "IDENTITY_MAPPING"
         elif current_ticker != canonical_ticker:
@@ -105,7 +162,8 @@ def _entry_for_file(path: Path, companies: CompanyDirectory, store: ResearchArch
         content_ticker=content_match.ticker, content_company=content_match.company,
         content_status=content_status, identity_status=identity_status,
         canonical_ticker=canonical_ticker, canonical_company=canonical_company,
-        suggested_dir=suggested_dir, repair_reason=reason, notion_page_id=notion_page_id,
+        suggested_dir=suggested_dir, suggested_filename=suggested_filename,
+        repair_reason=reason, notion_page_id=notion_page_id,
     )
 
 
@@ -133,6 +191,7 @@ def format_audit(entries: list[AuditEntry], archive_dir: str | Path) -> list[str
             f"  content_ticker={item.content_ticker} content_company={item.content_company} content_status={item.content_status}",
             f"  canonical_ticker={item.canonical_ticker} canonical_company={item.canonical_company}",
             f"  identity_status={item.identity_status} suggested_dir={item.suggested_dir}",
+            f"  suggested_filename={item.suggested_filename} suggested_full_path={item.target}",
             f"  needs_review={'YES' if item.needs_review else 'NO'} historical_error={'YES' if item.current_dir != item.suggested_dir else 'NO'}",
             f"  notion_page_id={item.notion_page_id or '(not-in-state-db)'} notion_action=PRESERVE_NO_REUPLOAD",
         ])
@@ -149,7 +208,13 @@ def format_repair_plan(entries: list[AuditEntry]) -> list[str]:
         elif item.current_dir == item.suggested_dir:
             lines.append(f"SAFE · NOOP · {item.path} reason={item.repair_reason}")
         else:
-            lines.append(f"{item.path}\n→ {item.target}\nidentity_status={item.identity_status} repair_reason={item.repair_reason}")
+            lines.append(
+                f"current_path={item.path}\n"
+                f"suggested_directory={item.suggested_dir}\n"
+                f"suggested_filename={item.suggested_filename}\n"
+                f"suggested_full_path={item.target}\n"
+                f"identity_status={item.identity_status} repair_reason={item.repair_reason}"
+            )
     return lines
 
 
