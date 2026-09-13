@@ -2,6 +2,18 @@
   "_comment": "AI Research Archive 公司映射表。ticker 是未来检索的主键，必须单独保留；aliases 用于文件名识别（可继续追加，不需要改代码）。注意：ticker 识别本身不依赖本文件——文件名里出现 000660.KS / 09696.HK 这类代码时一定被识别，本文件只用于补充「规范公司名」与别名。",
   "companies": [
     {
+      "ticker": "02722.HK",
+      "company_name": "重庆机电",
+      "aliases": ["重庆机电", "2722.HK", "2722", "02722"],
+      "market": "HK"
+    },
+    {
+      "ticker": "000792.SZ",
+      "company_name": "盐湖股份",
+      "aliases": ["盐湖股份", "000792"],
+      "market": "SZ"
+    },
+    {
       "ticker": "09696.HK",
       "company_name": "天齐锂业",
       "aliases": [

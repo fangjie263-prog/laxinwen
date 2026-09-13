@@ -24,7 +24,7 @@ from .company import UNKNOWN_COMPANY, UNKNOWN_TICKER, CompanyDirectory
 from .company import directory_name as company_directory_name
 from .config import IGNORED_EXTENSIONS, SUPPORTED_EXTENSIONS, ResearchArchiveConfig
 from .dates import detect_date
-from .document_text import read_document_text
+from .document_text import CONTENT_UNREADABLE, read_document_text
 from .sanitize import (
     index_to_letters,
     join_filename,
@@ -70,6 +70,11 @@ class ResearchCandidate:
     duplicate: bool = False
     duplicate_of: Optional[str] = None
     warnings: list[str] = field(default_factory=list)
+    content_status: str = "UNKNOWN"
+    identity_status: str = "CANONICAL"
+    filename_company: str = UNKNOWN_COMPANY
+    content_company: str = UNKNOWN_COMPANY
+    company_matched_by: str = "unknown"
 
     @property
     def company_dir(self) -> str:
@@ -95,13 +100,20 @@ class ResearchCandidate:
 
     def plan_line(self, index: int) -> str:
         flag = "重复" if self.duplicate else "新增"
-        return (
+        lines = [
             f"{index:>3}. [{flag}] {self.path.name}\n"
             f"      sha256={self.sha256[:16]}… size={self.size}\n"
             f"      date={self.date}(source={self.date_source}) ticker={self.ticker} "
-            f"company={self.company} ai={self.ai_source}({self.ai_matched_by})\n"
-            f"      → {self.archive_path}"
-        )
+            f"company={self.company}({self.company_matched_by}) ai={self.ai_source}({self.ai_matched_by})\n"
+            f"      content={self.content_status} identity={self.identity_status} file={self.path.name}"
+        ]
+        if self.identity_status == "CONFLICT":
+            lines.append(
+                f"      filename_company={self.filename_company} "
+                f"content_company={self.content_company} ACTION=REVIEW_REQUIRED"
+            )
+        lines.append(f"      → {self.archive_path}")
+        return "\n".join(lines)
 
 
 def _is_temp_file(path: Path) -> bool:
@@ -245,12 +257,14 @@ class ResearchArchiveScanner:
         digest = sha256_file(path)
 
         content_texts: tuple[str, ...] = ()
+        content_status = "UNKNOWN"
         document = None
         if self.read_content:
             document = read_document_text(path)
             if document.error:
                 warnings.append(document.error)
-            content_texts = document.snippets
+            content_status = document.content_status
+            content_texts = document.snippets if content_status != CONTENT_UNREADABLE else ()
 
         # 日期固定顺序：filename → metadata → mtime → Unknown（ctime 不参与）
         date_match = detect_date(
@@ -264,8 +278,12 @@ class ResearchArchiveScanner:
         company_match = self.companies.detect(
             path.name,
             content_text="\n".join(content_texts) if content_texts else "",
+            content_status=content_status,
         )
-        ai_match = detect_ai_source(path.name, content_texts=content_texts)
+        ai_match = detect_ai_source(
+            path.name,
+            content_texts=content_texts if content_status != CONTENT_UNREADABLE else (),
+        )
 
         aliases: list[str] = []
         if company_match.known:
@@ -290,6 +308,7 @@ class ResearchArchiveScanner:
         # 目录名统一由 company.directory_name 决定（需求五）：
         # 公司已识别但 ticker 未识别时 → ``盐湖股份``，绝不生成 ``Unknown_盐湖股份``。
         company_dir = sanitize_filename(
+            "REVIEW_REQUIRED" if company_match.identity_status == "CONFLICT" else
             company_directory_name(company_match.ticker, company_match.company),
             fallback=UNKNOWN_COMPANY,
         )
@@ -319,6 +338,11 @@ class ResearchArchiveScanner:
             topic=topic, letter=letter, normalized_name=normalized,
             archive_dir=archive_dir, archive_path=archive_path,
             duplicate=duplicate, duplicate_of=duplicate_of, warnings=warnings,
+            content_status=content_status, identity_status=company_match.identity_status,
+            filename_company=self.companies._detect_one(path.name).company,
+            content_company=(self.companies._detect_one("\n".join(content_texts)).company
+                             if content_texts else UNKNOWN_COMPANY),
+            company_matched_by=("filename+mapping" if company_match.matched_by == "filename_alias" else company_match.matched_by),
         )
 
     def _next_letter(self, *, date: str, company_dir: str) -> str:

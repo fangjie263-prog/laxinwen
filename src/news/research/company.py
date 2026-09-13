@@ -126,7 +126,7 @@ _NAME_NOISE = {
     "研究", "研究报告", "报告", "分析", "深度", "深度研究", "行业研究",
     "调研", "周报", "月报", "年报", "季报", "点评", "跟踪", "更新",
     "摘要", "正文", "目录", "附件", "草稿", "终稿", "定稿", "最终版",
-    "未知", "无", "其他", "其它", "文档", "文件", "资料",
+    "未知", "无法识别", "无", "其他", "其它", "文档", "文件", "资料",
 }
 _NAME_SUFFIX_NOISE = ("研究报告", "深度研究", "行业研究", "研究", "报告", "分析", "系列", "跟踪")
 # 以「行业 / 板块 / 主题」结尾的片段是研究主题，不是公司名
@@ -166,6 +166,18 @@ class CompanyRecord:
 
 
 DEFAULT_COMPANIES: tuple[dict, ...] = (
+    {
+        "ticker": "02722.HK",
+        "company_name": "重庆机电",
+        "aliases": ["重庆机电", "2722.HK", "2722", "02722"],
+        "market": "HK",
+    },
+    {
+        "ticker": "000792.SZ",
+        "company_name": "盐湖股份",
+        "aliases": ["盐湖股份", "000792"],
+        "market": "SZ",
+    },
     {
         "ticker": "09696.HK",
         "company_name": "天齐锂业",
@@ -295,6 +307,8 @@ class CompanyMatch:
     company: str = UNKNOWN_COMPANY
     matched_by: str = "unknown"
     raw_ticker: str = ""
+    source: str = "unknown"
+    identity_status: str = "CANONICAL"
 
     @property
     def known(self) -> bool:
@@ -313,7 +327,9 @@ class CompanyDirectory:
     """公司映射表（可扩展；可从 JSON 文件覆盖内置默认）。"""
 
     def __init__(self, records: Iterable[CompanyRecord] | None = None):
-        self._records: list[CompanyRecord] = list(records or self._default_records())
+        self._records: list[CompanyRecord] = list(
+            self._default_records() if records is None else records
+        )
         # 别名 → 记录（精确归一化）
         self._alias_index: dict[str, CompanyRecord] = {}
         # ticker 归一化 → 记录
@@ -397,9 +413,17 @@ class CompanyDirectory:
     def by_ticker(self, ticker: str) -> Optional[CompanyRecord]:
         if not ticker:
             return None
-        return self._ticker_index.get(_fold(parse_ticker(ticker))) or self._ticker_index.get(
-            _compact(parse_ticker(ticker))
+        normalized = parse_ticker(ticker)
+        found = self._ticker_index.get(_fold(normalized)) or self._ticker_index.get(
+            _compact(normalized)
         )
+        if found is not None:
+            return found
+        # A market-qualified numeric ticker may omit leading zeroes
+        # (2722.HK == 02722.HK).  Resolve the numeric body through the same
+        # canonical mapping index used for bare numeric aliases.
+        digits = re.match(r"^0*(\d{3,6})(?:\.[A-Z]{1,3})?$", normalized)
+        return self._ticker_index.get(digits.group(1)) if digits else None
 
     # ---------- ticker（独立于映射表） ----------
 
@@ -508,7 +532,7 @@ class CompanyDirectory:
 
     # ---------- 统一入口 ----------
 
-    def detect(self, filename: str, *, content_text: str = "") -> CompanyMatch:
+    def _detect_one(self, filename: str, *, content_text: str = "") -> CompanyMatch:
         """按需求优先级识别 ticker / 公司。
 
         1. **独立 ticker 识别**（不依赖映射表）
@@ -546,11 +570,17 @@ class CompanyDirectory:
         alias_hit = self._match_alias(stem)
         if alias_hit is not None:
             hit_record, _ = alias_hit
-            resolved = ticker or self._ticker_for(hit_record, compact=_compact(stem))
+            ticker_record = self.by_ticker(ticker) if ticker else None
+            # An explicit ticker is stronger than an alias record whose
+            # canonical entry may use a different market suffix.  Only a
+            # direct ticker-index hit may replace it with the mapped form.
+            resolved = (ticker_record.ticker if ticker_record else ticker) or self._ticker_for(
+                hit_record, compact=_compact(stem)
+            )
             return CompanyMatch(
                 ticker=resolved or UNKNOWN_TICKER,
                 company=hit_record.name,
-                matched_by="filename_alias" if not ticker else "filename_alias+filer_ticker",
+                matched_by=("filename_alias" if not ticker else "filename_alias+filer_ticker"),
                 raw_ticker=ticker,
             )
 
@@ -585,6 +615,57 @@ class CompanyDirectory:
                 raw_ticker=ticker,
             )
         return CompanyMatch()
+
+    @staticmethod
+    def _same_identity(left: CompanyMatch, right: CompanyMatch) -> bool:
+        """Compare resolved identities without allowing a weak source to win."""
+        if left.ticker_known and right.ticker_known:
+            return parse_ticker(left.ticker) == parse_ticker(right.ticker)
+        if left.company != UNKNOWN_COMPANY and right.company != UNKNOWN_COMPANY:
+            return _fold(left.company) == _fold(right.company)
+        return True
+
+    def detect(
+        self, filename: str, *, content_text: str = "", content_status: str = "OK"
+    ) -> CompanyMatch:
+        """Resolve one identity, with filename evidence ahead of content evidence.
+
+        Unreadable/diagnostic document text is intentionally excluded from this
+        method by the scanner; the guard here also makes the API safe to call
+        directly.
+        """
+        filename_match = self._detect_one(filename)
+        if not content_text or content_status == "UNREADABLE":
+            return CompanyMatch(
+                ticker=filename_match.ticker, company=filename_match.company,
+                matched_by=filename_match.matched_by, raw_ticker=filename_match.raw_ticker,
+                source="filename" if filename_match.known else "unknown",
+            )
+        content_match = self._detect_one(content_text)
+        if not content_match.known:
+            return CompanyMatch(
+                ticker=filename_match.ticker, company=filename_match.company,
+                matched_by=filename_match.matched_by, raw_ticker=filename_match.raw_ticker,
+                source="filename" if filename_match.known else "unknown",
+            )
+        if filename_match.known and not self._same_identity(filename_match, content_match):
+            return CompanyMatch(
+                ticker=filename_match.ticker, company=filename_match.company,
+                matched_by="filename+content", raw_ticker=filename_match.raw_ticker,
+                source="filename+content", identity_status="CONFLICT",
+            )
+        # Merge complementary evidence, then canonicalize through the mapping.
+        ticker = filename_match.ticker if filename_match.ticker_known else content_match.ticker
+        record = self.by_ticker(ticker) if ticker else None
+        company = record.name if record else (
+            filename_match.company if filename_match.company != UNKNOWN_COMPANY else content_match.company
+        )
+        ticker = record.ticker if record else (ticker or UNKNOWN_TICKER)
+        return CompanyMatch(
+            ticker=ticker, company=company or UNKNOWN_COMPANY,
+            matched_by="filename+mapping" if record else "filename+content",
+            raw_ticker=ticker, source="filename+content",
+        )
 
     def _ticker_for(self, record: CompanyRecord, *, compact: str) -> str:
         """公司名命中时，尽量同时拿到 ticker（同一家公司可能有多个市场代码）。"""
