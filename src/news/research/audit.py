@@ -81,11 +81,12 @@ def _suggested_filename(
     canonical_ticker: str,
     canonical_company: str,
     filename_match: CompanyMatch,
+    extra_aliases: tuple[str, ...] = (),
 ) -> str:
     ai = detect_ai_source(path.name).source
     record = companies.by_ticker(canonical_ticker)
     aliases = list(record.aliases) if record is not None else []
-    aliases.extend(("Unknown", filename_match.company, canonical_company, path.parent.name))
+    aliases.extend(("Unknown", filename_match.company, canonical_company, path.parent.name, *extra_aliases))
     topic = extract_topic(
         path.name,
         ai_source=ai,
@@ -101,6 +102,53 @@ def _suggested_filename(
         company=canonical_company,
         topic=topic,
         extension=path.suffix.lower(),
+    )
+
+
+def manual_repair_entry(
+    path: str | Path,
+    *,
+    ticker: str,
+    company: str,
+    companies: CompanyDirectory,
+) -> AuditEntry:
+    """Build a repair plan from an explicit human-confirmed identity.
+
+    This intentionally does not inspect document content or override automatic
+    conflict handling.  It is only an explicit operator instruction for one
+    known file.
+    """
+    source = Path(path)
+    record = companies.by_ticker(ticker)
+    canonical_ticker = record.ticker if record is not None else ticker
+    canonical_company = record.name if record is not None else company
+    filename_match = CompanyMatch(ticker=canonical_ticker, company=canonical_company, matched_by="manual")
+    suggested_dir = directory_name(canonical_ticker, canonical_company)
+    suggested_filename = _suggested_filename(
+        source,
+        companies=companies,
+        canonical_ticker=canonical_ticker,
+        canonical_company=canonical_company,
+        filename_match=filename_match,
+        extra_aliases=(ticker, company, *source.parent.name.split("_")),
+    )
+    current_ticker, current_company = _current_identity(source.parent.name)
+    return AuditEntry(
+        path=source,
+        current_dir=source.parent.name,
+        current_ticker=current_ticker,
+        current_company=current_company,
+        filename_ticker=UNKNOWN_TICKER,
+        filename_company=UNKNOWN_COMPANY,
+        content_ticker=UNKNOWN_TICKER,
+        content_company=UNKNOWN_COMPANY,
+        content_status="MANUAL_CONFIRMATION",
+        identity_status="MANUAL_CONFIRMED",
+        canonical_ticker=canonical_ticker,
+        canonical_company=canonical_company,
+        suggested_dir=suggested_dir,
+        suggested_filename=suggested_filename,
+        repair_reason="MANUAL_CONFIRMATION",
     )
 
 

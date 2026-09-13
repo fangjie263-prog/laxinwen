@@ -578,13 +578,30 @@ def cmd_research_archive(args: argparse.Namespace) -> int:
     from .research.config import load_research_config
     from .research.pipeline import run_research_archive
 
-    if args.audit or args.repair:
-        from .research.audit import format_audit, format_repair_plan, inspect_archive, repair_archive
+    if args.audit or args.repair or args.repair_file:
+        from .research.audit import (
+            format_audit, format_repair_plan, inspect_archive, manual_repair_entry,
+            repair_archive,
+        )
         from .research.company import CompanyDirectory
+        if args.repair_file and not args.repair:
+            print("ERROR · --repair-file requires --repair")
+            return 1
+        if args.repair_file and (not args.repair_ticker or not args.repair_company):
+            print("ERROR · --repair-file requires --repair-ticker and --repair-company")
+            return 1
         config = load_research_config(archive_dir=args.archive, companies_file=args.companies)
         archive_path = config.archive_dir
         companies = CompanyDirectory.from_file(config.companies_file)
-        entries = inspect_archive(archive_path, companies=companies)
+        if args.repair_file:
+            entries = [manual_repair_entry(
+                args.repair_file,
+                ticker=args.repair_ticker,
+                company=args.repair_company,
+                companies=companies,
+            )]
+        else:
+            entries = inspect_archive(archive_path, companies=companies)
         if args.audit:
             lines = format_audit(entries, archive_path)
             for line in lines:
@@ -884,6 +901,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_research.add_argument("--dry-run", action="store_true", help="强制 dry-run（即使同时传了 --apply）")
     p_research.add_argument("--audit", action="store_true", help="只读审计历史归档目录的公司身份拆分")
     p_research.add_argument("--repair", action="store_true", help="生成历史归档身份修复计划；必须同时 --apply 才会移动文件")
+    p_research.add_argument("--repair-file", default=None, help="人工确认的单文件 repair 目标路径（需同时指定 --repair）")
+    p_research.add_argument("--repair-ticker", default=None, help="人工确认的 canonical ticker")
+    p_research.add_argument("--repair-company", default=None, help="人工确认的 canonical company")
     p_research.add_argument("--retry-failed", action="store_true", help="重试上次失败的 Notion 上传")
     p_research.add_argument("--keep-inbox", action="store_true", help="归档成功后仍保留 Inbox 原文件（默认清理）")
     p_research.add_argument("--root-page-id", default=None, help="临时覆盖 NOTION_ROOT_PAGE_ID")

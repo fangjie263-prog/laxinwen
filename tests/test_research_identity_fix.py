@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from news.research.audit import format_audit, inspect_archive, repair_archive
+from news.research.audit import format_audit, inspect_archive, manual_repair_entry, repair_archive
 from news.research.archive_store import ResearchArchiveStore, ResearchFileRecord
 from news.research.company import CompanyDirectory
 from news.research.config import ResearchArchiveConfig
@@ -134,3 +134,39 @@ def test_target_filename_conflict_is_skipped(tmp_path):
     assert any("TARGET_EXISTS" in line for line in output)
     assert source.is_file()
     assert target.read_bytes() == b"existing"
+
+
+def test_manual_confirmed_review_file_repairs_filename_directory_and_sqlite(tmp_path):
+    root = tmp_path / "archive"
+    source = _historical(
+        root,
+        "NVDA_NVIDIA",
+        "20260912A_Unknown_NVDA_NVIDIA_重庆机电深度价值与资本周期研判.pdf",
+    )
+    db = tmp_path / "research.db"
+    with ResearchArchiveStore(db) as store:
+        store.upsert(ResearchFileRecord(
+            sha256="manual-sha", archive_path=str(source), ticker="NVDA", company="NVIDIA",
+            notion_page_id="existing-page", status="UPLOADED",
+        ))
+
+    entry = manual_repair_entry(
+        source, ticker="02722.HK", company="重庆机电", companies=CompanyDirectory()
+    )
+    assert entry.identity_status == "MANUAL_CONFIRMED"
+    assert entry.suggested_dir == "02722.HK_重庆机电"
+    assert entry.suggested_filename == "20260912A_Unknown_02722.HK_重庆机电_深度价值与资本周期研判.pdf"
+
+    dry_run = repair_archive(root, [entry], apply=False)
+    assert source.is_file()
+    assert any(entry.suggested_filename in line for line in dry_run)
+
+    with ResearchArchiveStore(db) as store:
+        applied = repair_archive(root, [entry], store=store, apply=True)
+        target = root / "2026-09-12" / entry.suggested_dir / entry.suggested_filename
+        record = store.find_by_archive_path(target)
+        assert any("APPLIED" in line for line in applied)
+        assert target.is_file()
+        assert not source.exists()
+        assert record is not None
+        assert record.notion_page_id == "existing-page"
