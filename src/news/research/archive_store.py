@@ -327,6 +327,23 @@ class ResearchArchiveStore:
         """失败记录错误原因；**不会**无限重复上传（由上层 status 判断控制）。"""
         self.mark(sha256, status=STATUS_FAILED, error=str(error)[:2000])
 
+    def relocate(self, old_path: str | Path, new_path: str | Path, *, ticker: str = "", company: str = "") -> None:
+        """Synchronize a historical archive move without changing upload state."""
+        updates = ["archive_path = ?"]
+        params: list[Any] = [str(new_path)]
+        if ticker:
+            updates.append("ticker = ?")
+            params.append(ticker)
+        if company:
+            updates.append("company = ?")
+            params.append(company)
+        params.append(str(old_path))
+        with self._tx() as conn:
+            conn.execute(
+                f"UPDATE research_files SET {', '.join(updates)} WHERE archive_path = ?",
+                params,
+            )
+
     # ---------- 行转换 ----------
 
     @staticmethod

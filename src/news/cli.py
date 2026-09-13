@@ -578,13 +578,27 @@ def cmd_research_archive(args: argparse.Namespace) -> int:
     from .research.config import load_research_config
     from .research.pipeline import run_research_archive
 
-    if args.audit:
-        from .research.audit import audit_archive
+    if args.audit or args.repair:
+        from .research.audit import format_audit, format_repair_plan, inspect_archive, repair_archive
         from .research.company import CompanyDirectory
-        archive_path = args.archive or load_research_config(archive_dir=None).archive_dir
-        companies = CompanyDirectory.from_file(args.companies) if args.companies else CompanyDirectory()
-        for line in audit_archive(archive_path, companies):
-            print(line)
+        config = load_research_config(archive_dir=args.archive, companies_file=args.companies)
+        archive_path = config.archive_dir
+        companies = CompanyDirectory.from_file(config.companies_file)
+        entries = inspect_archive(archive_path, companies=companies)
+        if args.audit:
+            lines = format_audit(entries, archive_path)
+            for line in lines:
+                print(line)
+        else:
+            plan = format_repair_plan(entries)
+            for line in plan:
+                print(line)
+            if args.apply:
+                from .research.archive_store import ResearchArchiveStore
+                with ResearchArchiveStore(config.db_path) as repair_store:
+                    applied = repair_archive(archive_path, entries, store=repair_store, apply=True)
+                for line in applied[len(plan):]:
+                    print(line)
         return 0
 
     log_path = Path(__file__).resolve().parents[2] / "data" / "logs" / "research-archive.log"
@@ -869,6 +883,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_research.add_argument("--apply", action="store_true", help="真正执行归档（移动/切割/上传）；不加则 dry-run")
     p_research.add_argument("--dry-run", action="store_true", help="强制 dry-run（即使同时传了 --apply）")
     p_research.add_argument("--audit", action="store_true", help="只读审计历史归档目录的公司身份拆分")
+    p_research.add_argument("--repair", action="store_true", help="生成历史归档身份修复计划；必须同时 --apply 才会移动文件")
     p_research.add_argument("--retry-failed", action="store_true", help="重试上次失败的 Notion 上传")
     p_research.add_argument("--keep-inbox", action="store_true", help="归档成功后仍保留 Inbox 原文件（默认清理）")
     p_research.add_argument("--root-page-id", default=None, help="临时覆盖 NOTION_ROOT_PAGE_ID")
