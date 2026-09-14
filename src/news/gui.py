@@ -280,7 +280,7 @@ class _NewsReaderApp:
         self.notion_status_var = tk.StringVar(value="")
         self.notion_sched_frequency_var = tk.StringVar(value="hourly")
         self.notion_sched_time_var = tk.StringVar(value="08:10")
-        self.notion_sched_status_var = tk.StringVar(value="自动同步 Notion：未知")
+        self.notion_sched_status_var = tk.StringVar(value="自动同步 Notion（新闻 + 研究报告）：未知")
 
         # 抓取监控（小窗口摘要）：只保留最近若干条任务级摘要，不显示底层日志
         self._monitor_entries: list[str] = []
@@ -501,7 +501,7 @@ class _NewsReaderApp:
             foreground="#666",
         ).pack(side="left", padx=(8, 0))
         self.notion_sync_btn = ttk.Button(
-            row3, text="Notion 同步", command=self._on_notion_sync
+            row3, text="Notion 同步（新闻 + 研究报告）", command=self._on_notion_sync
         )
         self.notion_sync_btn.pack(side="left", padx=(12, 0))
         ttk.Label(
@@ -573,7 +573,7 @@ class _NewsReaderApp:
             anchor="w", pady=(6, 0)
         )
 
-        notion_card = ttk.LabelFrame(outer, text="自动同步 Notion", padding=10)
+        notion_card = ttk.LabelFrame(outer, text="自动同步 Notion（新闻 + 研究报告）", padding=10)
         notion_card.pack(fill="x", pady=(10, 0))
         notion_row = ttk.Frame(notion_card)
         notion_row.pack(fill="x")

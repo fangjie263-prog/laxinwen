@@ -167,6 +167,8 @@ def test_notion_sync_hook_disabled_by_default(monkeypatch):
 
 def test_notion_sync_hook_enabled_runs_archive(monkeypatch, tmp_path):
     monkeypatch.setenv("RESEARCH_ARCHIVE_IN_SCHEDULER", "1")
+    monkeypatch.delenv("NOTION_TOKEN", raising=False)
+    monkeypatch.delenv("NOTION_ROOT_PAGE_ID", raising=False)
     monkeypatch.setenv("RESEARCH_INBOX_DIR", str(tmp_path / "inbox"))
     monkeypatch.setenv("RESEARCH_ARCHIVE_DIR", str(tmp_path / "archive"))
     monkeypatch.setenv("RESEARCH_FAILED_DIR", str(tmp_path / "failed"))
@@ -183,14 +185,17 @@ def test_notion_sync_hook_enabled_runs_archive(monkeypatch, tmp_path):
     assert (tmp_path / "inbox" / "Claude 天齐锂业研究.html").is_file()
 
 
-def test_notion_sync_hook_does_not_break_existing_run_sync(monkeypatch):
-    """钩子关闭时 run_sync 的行为必须与原来完全一致。"""
+def test_notion_sync_also_reports_empty_research_archive(monkeypatch, tmp_path):
+    """统一入口在没有新研究报告时正常结束并给出明确状态。"""
     monkeypatch.delenv("RESEARCH_ARCHIVE_IN_SCHEDULER", raising=False)
+    monkeypatch.setenv("RESEARCH_INBOX_DIR", str(tmp_path / "inbox"))
+    monkeypatch.setenv("RESEARCH_ARCHIVE_DIR", str(tmp_path / "archive"))
+    monkeypatch.setenv("RESEARCH_FAILED_DIR", str(tmp_path / "failed"))
+    monkeypatch.setenv("RESEARCH_DB", str(tmp_path / "db.sqlite"))
     from news.notion_sync import run_sync
 
-    # dry-run 且导出目录为空 → 没有消息，说明钩子没有额外输出
     messages = run_sync(export_root=Path("/nonexistent-portable-root"), dry_run=True)
-    assert messages == []
+    assert "RESEARCH ARCHIVE · 研究报告：无新增/全部已去重" in messages
 
 
 def test_cli_dry_run_logs_each_line_once(tmp_path, capsys):

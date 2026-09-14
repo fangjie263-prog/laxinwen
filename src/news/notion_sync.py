@@ -1231,17 +1231,24 @@ class NotionSync:
 def run_research_archive_hook(
     *,
     dry_run: bool = False,
+    client: Any = None,
+    root_page_id: str = "",
+    enabled: Optional[bool] = None,
 ) -> list[str]:
-    """可选钩子：让现有 ``Laxinwen-Notion-Sync`` 任务顺带归档研究成果。
+    """让统一 Notion 同步入口顺带归档研究成果。
+
+    统一入口会传入已创建的 NotionClient，因此新闻和研究报告共享同一套
+    认证与 HTTP 客户端。直接调用本函数时仍保留旧环境变量开关的兼容行为。
 
     设计约束（不新增第二套 Scheduler / Token）：
 
-    - 默认 **关闭**（``RESEARCH_ARCHIVE_IN_SCHEDULER`` 未设置时不做任何事），
-      保证已有 Notion 同步行为完全不变；
-    - 开启后复用同一个 ``NOTION_TOKEN`` / ``NOTION_ROOT_PAGE_ID``；
+    - 由 ``run_sync`` 调用时始终运行；
+    - 复用 ``run_sync`` 已创建的 ``NotionClient`` / Root Page；
     - 归档失败不影响阅读包同步，只作为一条日志/消息返回。
     """
-    if not _research_archive_enabled():
+    if enabled is None:
+        enabled = _research_archive_enabled()
+    if not enabled:
         return []
     logger.info("RESEARCH ARCHIVE IN SCHEDULER: 开始归档研究成果（复用现有 Notion 凭据）")
     try:
@@ -1250,14 +1257,21 @@ def run_research_archive_hook(
 
         config = load_research_config(dry_run=dry_run)
         config.ensure_dirs()
+        if not dry_run and (client is None or not root_page_id):
+            return [
+                "RESEARCH ARCHIVE FAILED · 缺少统一 NotionClient/Root Page，"
+                "未创建第二套 Notion 认证"
+            ]
         result = run_research_archive(
             config=config,
-            client=None,
-            root_page_id="",
+            client=client,
+            root_page_id=root_page_id,
         )
         summary = result.as_dict()
+        if summary["new"] == 0 and summary["failed"] == 0:
+            return ["RESEARCH ARCHIVE · 研究报告：无新增/全部已去重"]
         return [
-            "RESEARCH ARCHIVE · "
+            "RESEARCH ARCHIVE · 研究报告："
             f"扫描 {summary['scanned']} · 新增 {summary['new']} · 重复 {summary['duplicates']} · "
             f"归档 {summary['archived']} · 切割 {summary['split']} · 上传 {summary['uploaded']} · "
             f"失败 {summary['failed']}"
@@ -1289,14 +1303,18 @@ def run_sync(
         state_path=state_path, researchreader_output=researchreader_output,
         researchreader_books=researchreader_books,
     )
-    hook_messages = run_research_archive_hook(dry_run=False)
     packages = ExportPackageScanner(config["export_root"]).scan()
     if config["researchreader_output"] and config["researchreader_books"]:
         packages.extend(ResearchReaderScanner(
             config["researchreader_output"], config["researchreader_books"]
         ).scan())
     if dry_run:
-        return hook_messages + NotionSync(
+        research_messages = run_research_archive_hook(
+            dry_run=True,
+            root_page_id=config["root_page_id"] or "dry-run",
+            enabled=True,
+        )
+        return research_messages + NotionSync(
             None, config["root_page_id"] or "dry-run",
             state_path=config["state_path"], max_upload_bytes=config["max_upload_bytes"],
         ).sync(packages, dry_run=True)
@@ -1304,7 +1322,13 @@ def run_sync(
         raise NotionSyncError("缺少 NOTION_ROOT_PAGE_ID")
     client = NotionClient(config["token"], timeout=timeout)
     try:
-        return hook_messages + NotionSync(
+        research_messages = run_research_archive_hook(
+            dry_run=False,
+            client=client,
+            root_page_id=config["root_page_id"],
+            enabled=True,
+        )
+        return research_messages + NotionSync(
             client, config["root_page_id"], state_path=config["state_path"],
             max_upload_bytes=config["max_upload_bytes"],
         ).sync(packages)
