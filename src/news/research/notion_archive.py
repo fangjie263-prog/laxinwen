@@ -104,7 +104,7 @@ def company_page_title(ticker: str, company: str) -> str:
     - ticker + company 都有 → ``09696.HK｜天齐锂业``
     - 只有 company          → ``哈尔滨电气``（不再是 ``Unknown｜哈尔滨电气``）
     - 只有 ticker           → ``09696.HK``（不再是 ``09696.HK｜Unknown``）
-    - 都 Unknown            → ``Unknown``
+    - 都 Unknown            → ``Unknown``（仅作为兼容性的标题 fallback，正常上传不创建该公司页）
     """
     ticker = (ticker or "").strip()
     company = (company or "").strip()
@@ -259,6 +259,13 @@ class ResearchNotionArchiver:
         existing.add(candidate)
         return candidate
 
+    @staticmethod
+    def unclassified_report_title(record: ResearchFileRecord) -> str:
+        """日期页下的资料标题，不伪造 Unknown 公司身份。"""
+        filename = record.normalized_filename or record.original_filename
+        title = Path(filename).stem.strip()
+        return title or "研究资料"
+
     # ---------- 上传 ----------
 
     def upload_candidate(
@@ -287,12 +294,14 @@ class ResearchNotionArchiver:
                                       page_id=record.notion_page_id)
 
         if dry_run:
+            destination = f"Root/{RESEARCH_CATEGORY_TITLE}/{candidate.date}"
+            if candidate.ticker != UNKNOWN_TICKER or candidate.company != UNKNOWN_COMPANY:
+                destination += f"/{company_directory_name(candidate.ticker, candidate.company)}"
             return NotionUploadResult(
                 ok=True, skipped=True,
                 message=(
                     f"DRY-RUN：将上传 {len(files)} 个文件 → "
-                    f"Root/{RESEARCH_CATEGORY_TITLE}/{candidate.date}/"
-                    f"{company_directory_name(candidate.ticker, candidate.company)}"
+                    f"{destination}"
                 ),
             )
 
@@ -306,13 +315,24 @@ class ResearchNotionArchiver:
             self.client.retrieve_page(self.root_page_id)
             category_page_id = self.find_or_create_category_page()
             date_page_id = self.find_or_create_date_page(category_page_id, candidate.date)
-            company_page_id = self.find_or_create_company_page(
-                date_page_id, company_page_title(candidate.ticker, candidate.company)
+            classified = (
+                candidate.ticker != UNKNOWN_TICKER
+                or candidate.company != UNKNOWN_COMPANY
             )
+            if classified:
+                parent_page_id = self.find_or_create_company_page(
+                    date_page_id, company_page_title(candidate.ticker, candidate.company)
+                )
+            else:
+                # 未知身份资料直接挂在日期页下，不创建 Unknown 公司页。
+                parent_page_id = date_page_id
             title = self.report_page_title_for(
-                record, letter=candidate.letter, company_page_id=company_page_id
+                record, letter=candidate.letter,
+                company_page_id=parent_page_id if classified else "",
             )
-            report_page_id = self.find_or_create_report_page(company_page_id, title)
+            if not classified:
+                title = self.unclassified_report_title(record)
+            report_page_id = self.find_or_create_report_page(parent_page_id, title)
 
             blocks: list[dict[str, Any]] = list(report_page_body(record))
             upload_ids: list[str] = []

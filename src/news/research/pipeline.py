@@ -166,8 +166,18 @@ def run_research_archive(
                 config, client=client, root_page_id=root_page_id, store=store
             )
 
-        if not archiver.can_upload and candidates:
-            # 明确失败而不是「静默归档但没上传」，避免用户以为已经同步到 Notion。
+        pending_upload = False
+        for candidate in candidates:
+            if not candidate.duplicate:
+                pending_upload = True
+                break
+            if retry_failed:
+                existing = store.find_by_sha256(candidate.sha256)
+                if existing is not None and existing.status == STATUS_FAILED:
+                    pending_upload = True
+                    break
+        if not archiver.can_upload and pending_upload:
+            # 只有实际缺少上传技术条件才阻止；身份未知 / 冲突不是阻断条件。
             for line in scanner.format_plan(candidates):
                 emit(line)
             emit(

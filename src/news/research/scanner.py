@@ -305,15 +305,21 @@ class ResearchArchiveScanner:
         company = company_match.company or UNKNOWN_COMPANY
         ai_source = ai_match.source or UNKNOWN_AI_SOURCE
 
-        # 目录名统一由 company.directory_name 决定（需求五）：
-        # 公司已识别但 ticker 未识别时 → ``盐湖股份``，绝不生成 ``Unknown_盐湖股份``。
-        company_dir = sanitize_filename(
-            "REVIEW_REQUIRED" if company_match.identity_status == "CONFLICT" else
-            company_directory_name(company_match.ticker, company_match.company),
-            fallback=UNKNOWN_COMPANY,
-        )
+        # 身份只决定分类，不决定是否上传：
+        # - 已知公司 / ticker（包括可审计的 conflict）进入对应公司目录；
+        # - 只有公司时使用公司目录；
+        # - 两者都未知时直接挂在日期目录，绝不制造 Unknown 公司目录。
+        if company_match.known:
+            company_dir = sanitize_filename(
+                company_directory_name(company_match.ticker, company_match.company),
+                fallback="",
+            )
+        else:
+            company_dir = ""
         date_dir = date_match.directory
-        archive_dir = self.config.archive_dir / date_dir / company_dir
+        archive_dir = self.config.archive_dir / date_dir
+        if company_dir:
+            archive_dir /= company_dir
 
         letter = self._next_letter(date=date_dir, company_dir=company_dir)
         normalized = build_normalized_name(

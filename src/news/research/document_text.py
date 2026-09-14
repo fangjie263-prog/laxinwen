@@ -21,6 +21,7 @@ import logging
 import re
 import shutil as _shutil
 import subprocess as _subprocess
+import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
@@ -41,6 +42,7 @@ _READABLE_RUN_RE = re.compile(
 PDF_MAX_CHARS = 60_000
 DOCX_MAX_CHARS = 60_000
 HTML_MAX_CHARS = 60_000
+PLAIN_TEXT_MAX_CHARS = 60_000
 
 # 可选依赖可用性（只探测一次）
 try:  # pragma: no cover - 依赖探测
@@ -301,6 +303,47 @@ def read_html_text(path: str | Path) -> DocumentText:
         return DocumentText(path=file_path, kind=".html", error=f"HTML 解析失败：{exc}", content_status=CONTENT_UNREADABLE)
 
 
+def read_plain_text(path: str | Path) -> DocumentText:
+    """读取 Markdown / TXT；它们是研究资料，即使不是标准报告也可归档。"""
+    file_path = Path(path)
+    try:
+        raw = file_path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return DocumentText(path=file_path, kind=file_path.suffix.lower(),
+                            error=f"文本读取失败：{exc}", content_status=CONTENT_UNREADABLE)
+    text = _truncate(raw, PLAIN_TEXT_MAX_CHARS)
+    return DocumentText(
+        path=file_path, kind=file_path.suffix.lower(), text=text,
+        title=(text.splitlines()[0].strip() if text else ""),
+        content_status=CONTENT_OK if text else CONTENT_UNREADABLE,
+    )
+
+
+def read_spreadsheet_text(path: str | Path) -> DocumentText:
+    """尽力读取表格文本；失败只影响识别，不影响原文件归档上传。"""
+    file_path = Path(path)
+    if file_path.suffix.lower() == ".xlsx":
+        try:
+            with zipfile.ZipFile(file_path) as archive:
+                values: list[str] = []
+                for name in archive.namelist():
+                    if name.startswith("xl/worksheets/") and name.endswith(".xml"):
+                        values.append(archive.read(name).decode("utf-8", errors="replace"))
+                text = _truncate("\n".join(values), PLAIN_TEXT_MAX_CHARS)
+                return DocumentText(
+                    path=file_path, kind=".xlsx", text=text,
+                    content_status=CONTENT_PARTIAL if text else CONTENT_UNREADABLE,
+                )
+        except Exception as exc:
+            return DocumentText(path=file_path, kind=".xlsx",
+                                error=f"XLSX 读取失败：{exc}", content_status=CONTENT_UNREADABLE)
+    return DocumentText(
+        path=file_path, kind=file_path.suffix.lower(),
+        error="未安装 XLS 解析器（不影响归档 / 上传）",
+        content_status=CONTENT_UNREADABLE,
+    )
+
+
 def read_document_text(path: str | Path) -> DocumentText:
     """按扩展名分派读取；未知扩展名返回空结果（不报错）。"""
     file_path = Path(path)
@@ -313,6 +356,10 @@ def read_document_text(path: str | Path) -> DocumentText:
         return read_doc_text(file_path)
     if kind == ".html":
         return read_html_text(file_path)
+    if kind in {".md", ".txt"}:
+        return read_plain_text(file_path)
+    if kind in {".xls", ".xlsx"}:
+        return read_spreadsheet_text(file_path)
     return DocumentText(path=file_path, kind=kind, error=f"不支持的扩展名：{kind or '(none)'}", content_status=CONTENT_UNREADABLE)
 
 

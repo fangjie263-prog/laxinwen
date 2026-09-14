@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import logging
 import re
+import zipfile
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -589,7 +591,111 @@ def split_file(
         return split_html(source, target_dir, stem=base_stem, max_bytes=max_bytes)
     if extension == ".doc":
         return _pass_through_binary(source, target_dir, stem=base_stem, max_bytes=max_bytes)
+    if extension in {".md", ".txt"}:
+        return split_text(source, target_dir, stem=base_stem, max_bytes=max_bytes)
+    if extension == ".xlsx":
+        return split_xlsx(source, target_dir, stem=base_stem, max_bytes=max_bytes)
+    if extension == ".xls":
+        return _pass_through_binary(source, target_dir, stem=base_stem, max_bytes=max_bytes)
     return SplitResult(kind=extension, error=f"不支持切割的文件类型：{extension or '(none)'}")
+
+
+def split_text(
+    source: str | Path, target_dir: str | Path, *, stem: str, max_bytes: int,
+) -> SplitResult:
+    """按行切分 Markdown/TXT，保持每个分片为合法 UTF-8 文本。"""
+    source = Path(source)
+    try:
+        lines = source.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
+    except OSError as exc:
+        return SplitResult(kind=source.suffix.lower(), error=str(exc))
+    chunks: list[bytes] = []
+    current = bytearray()
+    for line in lines:
+        encoded = line.encode("utf-8")
+        if len(encoded) > max_bytes:
+            return SplitResult(kind=source.suffix.lower(), error="单行超过文件大小限制，无法安全切分")
+        if current and len(current) + len(encoded) > max_bytes:
+            chunks.append(bytes(current))
+            current.clear()
+        current.extend(encoded)
+    if current or not chunks:
+        chunks.append(bytes(current))
+    out_dir = Path(target_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    parts: list[Path] = []
+    for index, payload in enumerate(chunks, start=1):
+        destination = _part_path(out_dir, stem, source.suffix.lower(), index)
+        destination.write_bytes(payload)
+        parts.append(destination)
+    return SplitResult(parts=parts, kind=source.suffix.lower(), reason="按行切分")
+
+
+def _local_name(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1]
+
+
+def split_xlsx(
+    source: str | Path, target_dir: str | Path, *, stem: str, max_bytes: int,
+) -> SplitResult:
+    """按 worksheet 行切分 XLSX，并保留为合法 ZIP/XLSX 文件。"""
+    source = Path(source)
+    try:
+        with zipfile.ZipFile(source, "r") as archive:
+            entries = {name: archive.read(name) for name in archive.namelist()}
+    except Exception as exc:
+        return SplitResult(kind=".xlsx", error=f"XLSX 读取失败：{exc}")
+
+    sheet_names = [name for name in entries if name.startswith("xl/worksheets/") and name.endswith(".xml")]
+    if not sheet_names:
+        return SplitResult(kind=".xlsx", error="XLSX 没有可切分的 worksheet")
+
+    sheet_chunks: dict[str, list[list[bytes]]] = {}
+    for name in sheet_names:
+        try:
+            root = ET.fromstring(entries[name])
+            sheet_data = next((node for node in root.iter() if _local_name(node.tag) == "sheetData"), None)
+            rows = list(sheet_data) if sheet_data is not None else []
+            chunks: list[list[bytes]] = []
+            current: list[bytes] = []
+            current_size = 0
+            for row in rows:
+                payload = ET.tostring(row, encoding="utf-8")
+                if len(payload) > max_bytes // 2:
+                    return SplitResult(kind=".xlsx", error="XLSX 单行超过文件大小限制，无法安全切分")
+                if current and current_size + len(payload) > max_bytes // 2:
+                    chunks.append(current)
+                    current, current_size = [], 0
+                current.append(payload)
+                current_size += len(payload)
+            chunks.append(current)
+            sheet_chunks[name] = chunks
+        except Exception as exc:
+            return SplitResult(kind=".xlsx", error=f"XLSX worksheet 解析失败：{exc}")
+
+    part_count = max(len(chunks) for chunks in sheet_chunks.values())
+    out_dir = Path(target_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    parts: list[Path] = []
+    for index in range(part_count):
+        part_entries = dict(entries)
+        for name in sheet_names:
+            root = ET.fromstring(entries[name])
+            sheet_data = next((node for node in root.iter() if _local_name(node.tag) == "sheetData"), None)
+            if sheet_data is not None:
+                for child in list(sheet_data):
+                    sheet_data.remove(child)
+                for payload in sheet_chunks[name][index] if index < len(sheet_chunks[name]) else []:
+                    sheet_data.append(ET.fromstring(payload))
+            part_entries[name] = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+        destination = _part_path(out_dir, stem, ".xlsx", index + 1)
+        with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED) as output:
+            for name, payload in part_entries.items():
+                output.writestr(name, payload)
+        if destination.stat().st_size > max_bytes:
+            return SplitResult(kind=".xlsx", error="XLSX 结构化切分后仍超过文件大小限制")
+        parts.append(destination)
+    return SplitResult(parts=parts, kind=".xlsx", reason="按 worksheet 行切分")
 
 
 def _pass_through_binary(
@@ -642,6 +748,11 @@ def verify_part(path: str | Path, kind: str) -> bool:
         if suffix == ".doc":
             # 二进制容器无法解析内容：非空即视为「原文件可用」，
             # 避免因无法解析而误判失败、导致文件被丢弃。
+            return file_path.stat().st_size > 0
+        if suffix == ".xlsx":
+            with zipfile.ZipFile(file_path) as archive:
+                return "[Content_Types].xml" in archive.namelist()
+        if suffix in {".xls", ".md", ".txt"}:
             return file_path.stat().st_size > 0
     except Exception as exc:
         logger.warning("分片校验失败 %s: %s", file_path, exc)

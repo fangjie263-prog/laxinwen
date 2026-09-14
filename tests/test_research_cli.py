@@ -127,17 +127,22 @@ def test_explicit_dry_run_wins_over_env(monkeypatch, tmp_path):
 
 def test_supported_and_ignored_extensions_do_not_overlap():
     # 需求八：.doc（旧版 Word）必须一起支持
-    assert set(SUPPORTED_EXTENSIONS) == {".pdf", ".docx", ".doc", ".html", ".htm"}
+    assert set(SUPPORTED_EXTENSIONS) == {
+        ".pdf", ".docx", ".doc", ".html", ".htm",
+        ".md", ".txt", ".xls", ".xlsx",
+    }
     assert not set(SUPPORTED_EXTENSIONS) & set(IGNORED_EXTENSIONS)
-    for ignored in (".txt", ".md", ".png", ".jpg"):
+    for ignored in (".png", ".jpg"):
         assert ignored in IGNORED_EXTENSIONS
+    assert ".md" not in IGNORED_EXTENSIONS
+    assert ".txt" not in IGNORED_EXTENSIONS
 
 
 def test_config_is_supported_helper(tmp_path):
     config = ResearchArchiveConfig()
     assert config.is_supported("a.pdf")
     assert config.is_supported("a.HTM")
-    assert not config.is_supported("a.txt")
+    assert config.is_supported("a.txt")
     assert not config.is_supported("a.png")
 
 

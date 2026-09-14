@@ -203,7 +203,10 @@ def test_unknown_ai_and_company_land_in_unknown_dir(config, store):
     fake = FakeNotion()
     run_research_archive(config=config, store=store, archiver=make_archiver(config, store, fake))
     # 需求五：公司未识别时不生成 Unknown_公司 / Unknown_Unknown 占位目录
-    assert list(config.archive_dir.rglob("Unknown"))
+    date_dirs = [path for path in config.archive_dir.iterdir() if path.is_dir()]
+    assert date_dirs
+    assert list(date_dirs[0].rglob("*.html"))
+    assert not list(config.archive_dir.rglob("Unknown"))
     assert not list(config.archive_dir.rglob("Unknown_Unknown"))
     assert not list(config.archive_dir.rglob("Unknown_*"))
     record = store.list_records()[0]

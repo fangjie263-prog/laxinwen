@@ -34,13 +34,16 @@ _DEFAULT_DATA = _PROJECT_ROOT / "data" / "research"
 # 处理范围（需求三）：只处理最终研究成果。
 # ``.doc``（旧版 Word 二进制格式）必须一起支持：真实投递目录里确实存在
 # ``SK海力士20260831.doc`` 这类文件，不能被静默忽略。
-SUPPORTED_EXTENSIONS = (".pdf", ".docx", ".doc", ".html", ".htm")
+SUPPORTED_EXTENSIONS = (
+    ".pdf", ".docx", ".doc", ".html", ".htm",
+    ".md", ".txt", ".xls", ".xlsx",
+)
 
 # 明确忽略（不处理）的类型，写出来是为了让行为可读、可测
 IGNORED_EXTENSIONS = (
-    ".txt", ".md", ".markdown", ".png", ".jpg", ".jpeg", ".gif", ".webp",
+    ".markdown", ".png", ".jpg", ".jpeg", ".gif", ".webp",
     ".bmp", ".tif", ".tiff", ".heic", ".tmp", ".part", ".crdownload",
-    ".zip", ".rar", ".7z", ".json", ".csv", ".xlsx", ".xls", ".pptx", ".ppt",
+    ".zip", ".rar", ".7z", ".json", ".csv", ".pptx", ".ppt",
 )
 
 
