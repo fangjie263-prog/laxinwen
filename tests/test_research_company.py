@@ -57,7 +57,13 @@ def test_company_name_from_filename(directory, filename, ticker, company):
     assert match.matched_by in {"filename_alias", "filename_name", "filename_ticker"}
 
 
-@pytest.mark.parametrize("filename", ["锂行业研究.pdf", "GPU研究.html", "研究报告.pdf"])
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "锂行业研究.pdf", "GPU研究.html", "研究报告.pdf",
+        "TEST_AI对话.md", "TEST_AI对话.txt", "TEST_无法识别公司.md",
+    ],
+)
 def test_no_company_is_unknown_not_guessed(directory, filename):
     """需求十九：没有明确公司时不允许自动猜一个上市公司。"""
     match = directory.detect(filename)
@@ -66,6 +72,30 @@ def test_no_company_is_unknown_not_guessed(directory, filename):
     assert not match.known
     # 需求五：两者都 Unknown 时目录名就是 Unknown，不生成 Unknown_Unknown 占位
     assert match.directory_name == "Unknown"
+
+
+def test_generic_sentence_is_not_company(directory):
+    match = directory.detect(
+        "TEST_AI对话.md",
+        content_text="我们讨论了一家暂时无法明确识别上市公司的企业。",
+    )
+    assert match.ticker == UNKNOWN_TICKER
+    assert match.company == UNKNOWN_COMPANY
+
+
+def test_financial_metric_in_content_is_not_ticker(directory):
+    match = directory.detect(
+        "TEST_AI对话.md",
+        content_text="我们讨论了一家暂时无法明确识别上市公司的企业，ROIC 只是一个估值指标。",
+    )
+    assert match.ticker == UNKNOWN_TICKER
+    assert match.company == UNKNOWN_COMPANY
+
+
+def test_mapped_company_name_still_resolves(directory):
+    match = directory.detect("重庆机电深度投资分析.pdf")
+    assert match.ticker == "02722.HK"
+    assert match.company == "重庆机电"
 
 
 def test_directory_name_format(directory):

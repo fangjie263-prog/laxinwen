@@ -61,7 +61,7 @@ _MARKET_SUFFIXES = (
 # ticker 前缀 / 整体命中这些词时不算 ticker（避免 AI 名 / 序号 / 研究词误判）
 _TICKER_STOPWORD_EXACT = {
     "PDF", "DOCX", "DOC", "HTML", "HTM", "TXT", "XLSX", "PPTX", "CSV",
-    "AI", "IPO", "ESG", "ROE", "ROA", "PE", "PB", "PS", "EV", "DCF",
+    "AI", "IPO", "ESG", "ROE", "ROA", "ROIC", "PE", "PB", "PS", "EV", "DCF",
     "GPU", "CPU", "CEO", "CFO", "CTO", "COO", "YOY", "QOQ", "MOM", "USD",
     "CNY", "RMB", "HKD", "EUR", "JPY", "AND", "THE", "FOR", "WITH",
     "PART", "NO", "OK", "VS", "ETF", "WACC", "IRR", "NPV", "EBIT",
@@ -128,6 +128,22 @@ _NAME_NOISE = {
     "摘要", "正文", "目录", "附件", "草稿", "终稿", "定稿", "最终版",
     "未知", "无法识别", "无", "其他", "其它", "文档", "文件", "资料",
 }
+
+# 资料类型 / 对话状态等通用描述不能成为公司身份；即使误加进映射表，
+# 也不应作为可靠 alias 使用。
+_GENERIC_DESCRIPTION_NAMES = frozenset({
+    "ai对话", "对话", "聊天记录", "研究", "研究报告", "投资分析", "深度研究",
+    "无法识别公司", "未知公司", "unknown", "unknown company",
+})
+
+
+def _is_generic_description(value: str) -> bool:
+    normalized = re.sub(r"[\s_\-—–|/:：]+", "", str(value or "").strip()).casefold()
+    generic = {
+        re.sub(r"[\s_\-—–|/:：]+", "", item).casefold()
+        for item in _GENERIC_DESCRIPTION_NAMES
+    }
+    return normalized in generic
 _NAME_SUFFIX_NOISE = ("研究报告", "深度研究", "行业研究", "研究", "报告", "分析", "系列", "跟踪")
 # 以「行业 / 板块 / 主题」结尾的片段是研究主题，不是公司名
 _NAME_INDUSTRY_SUFFIX = ("行业", "板块", "产业", "赛道", "主题", "概念", "指数", "市场")
@@ -487,6 +503,8 @@ class CompanyDirectory:
         for alias, record in sorted(self._alias_index.items(), key=lambda item: -len(item[0])):
             if len(alias) < 2:
                 continue
+            if _is_generic_description(alias):
+                continue
             if alias in compact:
                 return record, alias
             if re.search(rf"(?<![a-z0-9]){re.escape(alias)}(?![a-z0-9])", folded):
@@ -584,17 +602,7 @@ class CompanyDirectory:
                 raw_ticker=ticker,
             )
 
-        # 4) 文件名里的公司名称（映射表未收录也不丢）
-        name = self._han_name(stem)
-        if name:
-            return CompanyMatch(
-                ticker=ticker or UNKNOWN_TICKER,
-                company=name,
-                matched_by="filename_company",
-                raw_ticker=ticker,
-            )
-
-        # 5) 文档内容
+        # 4) 文档内容：只接受映射表 / 可靠 alias，绝不把任意中文句子切成公司名。
         if content_text:
             content_hit = self._match_alias(content_text)
             if content_hit is not None:
@@ -606,7 +614,7 @@ class CompanyDirectory:
                     raw_ticker=ticker,
                 )
 
-        # 6) Unknown（ticker 仍可独立保留）
+        # 5) Unknown（ticker 仍可独立保留）
         if ticker:
             return CompanyMatch(
                 ticker=ticker,

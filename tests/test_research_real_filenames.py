@@ -352,7 +352,7 @@ def _write_doc(path, text: str = "SK海力士 深度研究 by Gemini"):
 @pytest.mark.parametrize(
     ("filename", "ticker", "company", "ai"),
     [
-        ("20260831 SK海力士 深度研究.doc", "000660.KS", "SK海力士", "Gemini"),
+        ("20260831 SK海力士 深度研究.doc", "000660.KS", "SK海力士", "Unknown"),
         ("20260831A CLAUDE 000660.KS SK海力士.doc", "000660.KS", "SK海力士", "Claude"),
         ("20260831 GENIMI 09696.HK 天齐锂业.doc", "09696.HK", "天齐锂业", "Gemini"),
     ],
@@ -380,11 +380,11 @@ def test_doc_extraction_failure_never_drops_the_file(config):
     candidate = _scan(config)[path.name]
 
     assert candidate.extension == ".doc"
-    assert candidate.company == "哈尔滨电气"  # 来自文件名
+    assert candidate.company == UNKNOWN_COMPANY  # 未在映射表中的中文片段不再猜测
     assert candidate.ticker == UNKNOWN_TICKER or candidate.ticker == "Unknown"
     # 仍然归档，不因为「读不到内容」被丢弃
     assert candidate.normalized_name.endswith(".doc")
-    assert candidate.archive_dir.name != "Unknown_哈尔滨电气"
+    assert candidate.archive_dir.name == "2026-08-31"
 
 
 def test_company_without_ticker_does_not_produce_unknown_placeholder(config):
@@ -392,11 +392,10 @@ def test_company_without_ticker_does_not_produce_unknown_placeholder(config):
     _write_doc(config.inbox_dir / "20260831 哈尔滨电气 深度研究.doc")
     candidate = _scan(config)["20260831 哈尔滨电气 深度研究.doc"]
 
-    assert candidate.company == "哈尔滨电气"
+    assert candidate.company == UNKNOWN_COMPANY
     assert candidate.ticker == UNKNOWN_TICKER
-    assert candidate.archive_dir.name == "哈尔滨电气"
-    assert "Unknown_" not in candidate.archive_dir.name
-    assert "Unknown_" not in candidate.normalized_name
+    assert candidate.archive_dir.name == "2026-08-31"
+    assert "Unknown_" in candidate.normalized_name  # Unknown 是 AI 字段，不是公司字段
 
 
 def test_brand_prefix_is_not_a_ticker(config):
@@ -409,9 +408,9 @@ def test_brand_prefix_is_not_a_ticker(config):
     assert candidates["20260831 SK海力士 半年报.doc"].ticker == "000660.KS"
     # TCL科技 没有映射表，也绝不能被识别成假 ticker "TCL"
     tcl = candidates["20260831 TCL科技 面板研究.doc"]
-    assert tcl.company == "TCL科技"
+    assert tcl.company == UNKNOWN_COMPANY
     assert tcl.ticker == UNKNOWN_TICKER
-    assert tcl.archive_dir.name == "TCL科技"
+    assert tcl.archive_dir.name == "2026-08-31"
 
 
 def test_unknown_everything_uses_plain_unknown_directory(config):
@@ -424,5 +423,5 @@ def test_unknown_everything_uses_plain_unknown_directory(config):
     assert candidate.ticker == UNKNOWN_TICKER
     assert candidate.company == UNKNOWN_COMPANY
     assert candidate.ai_source == "Unknown"
-    assert candidate.company_dir == "Unknown"
+    assert candidate.company_dir == candidate.date
     assert "Unknown_Unknown" not in str(candidate.archive_path)

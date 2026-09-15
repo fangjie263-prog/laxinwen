@@ -60,8 +60,8 @@ def test_only_supported_extensions_are_scanned(config, store):
     (config.inbox_dir / "截图.png").write_bytes(b"\x89PNG")
     scanner = ResearchArchiveScanner(config, store=store, read_content=False)
     names = [path.name for path in scanner.iter_inbox_files()]
-    assert names == ["报告.docx", "报告.pdf", "研究成果.html", "旧页面.htm"] or sorted(names) == sorted(
-        ["报告.docx", "报告.pdf", "研究成果.html", "旧页面.htm"]
+    assert names == ["报告.docx", "报告.pdf", "研究成果.html", "旧页面.htm", "笔记.md", "草稿.txt"] or sorted(names) == sorted(
+        ["报告.docx", "报告.pdf", "研究成果.html", "旧页面.htm", "笔记.md", "草稿.txt"]
     )
     assert all(path.suffix.lower() in SUPPORTED_EXTENSIONS for path in scanner.iter_inbox_files())
 
@@ -139,8 +139,8 @@ def test_unknown_ai_and_company_are_marked(config, store):
     assert candidate.ai_source == "Unknown"
     assert candidate.ticker == "Unknown"
     assert candidate.company == "Unknown"
-    # 需求五：都识别不出时目录名是 Unknown（不生成 Unknown_Unknown 占位）
-    assert candidate.company_dir == "Unknown"
+    # 未识别身份时直接挂在日期目录，不生成 Unknown 公司目录。
+    assert candidate.company_dir == candidate.date
 
 
 def test_illegal_chars_in_filename_are_cleaned(config, store):
